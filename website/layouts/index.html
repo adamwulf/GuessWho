@@ -343,14 +343,14 @@
         </p>
         <div class="mac-gallery">
           <figure>
-            <div class="mac-window">
-              <div class="mac-titlebar" aria-hidden="true">
-                <span></span><span></span><span></span>
-              </div>
-              {{ if fileExists "static/images/mac-people.png" }}
-                <img src="{{ "images/mac-people.png" | relURL }}" width="1600" height="1000"
-                     alt="GuessWho for Mac showing people and organizations side by side."
-                     loading="lazy" decoding="async">
+            <div class="mac-shot">
+              {{ if fileExists "static/images/mac-people-light.png" }}
+                <picture>
+                  <source srcset="{{ "images/mac-people-dark.png" | relURL }}" media="(prefers-color-scheme: dark)">
+                  <img src="{{ "images/mac-people-light.png" | relURL }}" width="1600" height="1349"
+                       alt="GuessWho for Mac showing the Organizations view: the sidebar, a list of companies, and a company's departments and people side by side."
+                       loading="lazy" decoding="async">
+                </picture>
               {{ else }}
                 <div class="mac-placeholder" role="img" aria-label="Reserved space for a GuessWho Mac people and organizations screenshot">
                   <span class="shot-tag">Mac preview</span>
@@ -362,14 +362,14 @@
             <figcaption>Browse your network by person, company, or department.</figcaption>
           </figure>
           <figure>
-            <div class="mac-window">
-              <div class="mac-titlebar" aria-hidden="true">
-                <span></span><span></span><span></span>
-              </div>
-              {{ if fileExists "static/images/mac-contact.png" }}
-                <img src="{{ "images/mac-contact.png" | relURL }}" width="1600" height="1000"
-                     alt="GuessWho for Mac showing a contact and the context connected to them."
-                     loading="lazy" decoding="async">
+            <div class="mac-shot">
+              {{ if fileExists "static/images/mac-contact-light.png" }}
+                <picture>
+                  <source srcset="{{ "images/mac-contact-dark.png" | relURL }}" media="(prefers-color-scheme: dark)">
+                  <img src="{{ "images/mac-contact-light.png" | relURL }}" width="1600" height="1349"
+                       alt="GuessWho for Mac showing a contact and the context connected to them: their organization, dated notes, and linked people."
+                       loading="lazy" decoding="async">
+                </picture>
               {{ else }}
                 <div class="mac-placeholder" role="img" aria-label="Reserved space for a GuessWho Mac contact screenshot">
                   <span class="shot-tag">Mac preview</span>
