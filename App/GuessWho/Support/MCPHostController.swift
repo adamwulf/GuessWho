@@ -30,6 +30,10 @@ final class MCPHostController: NSObject {
 
     private let service: SyncService
     private let repository: ContactsRepository
+    /// Retain the exact defaults instance registered with KVO. Constructing a
+    /// new wrapper for the same suite during teardown is not equivalent: KVO
+    /// registrations belong to the observed object instance.
+    private let groupDefaults: UserDefaults?
     private var state: State = .stopped
     private var host: MCPPipeHost?
     private var observerInstalled = false
@@ -40,10 +44,6 @@ final class MCPHostController: NSObject {
     /// threads).
     private nonisolated(unsafe) static let kvoContext = UnsafeMutableRawPointer.allocate(byteCount: 1, alignment: 1)
 
-    private var groupDefaults: UserDefaults? {
-        CLIHelper.appGroupID.flatMap { UserDefaults(suiteName: $0) }
-    }
-
     /// Device-local agent-activity log (plans/cli-mcp.md Phase 2). Lives in
     /// the app's own Application Support directory — NEVER the synced
     /// sidecar root or an iCloud container (a synced audit log would be
@@ -52,9 +52,15 @@ final class MCPHostController: NSObject {
     /// so the Recently Deleted screen works while the channel is off.
     let auditLog = MCPAuditLog(fileURL: MCPHostController.auditLogURL())
 
-    init(service: SyncService, repository: ContactsRepository) {
+    init(
+        service: SyncService,
+        repository: ContactsRepository,
+        groupDefaults: UserDefaults? = nil
+    ) {
         self.service = service
         self.repository = repository
+        self.groupDefaults = groupDefaults
+            ?? CLIHelper.appGroupID.flatMap { UserDefaults(suiteName: $0) }
         super.init()
     }
 
