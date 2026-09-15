@@ -28,6 +28,11 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
     /// every reload path.
     let guidesRepository: GuidesRepository
     let contactPhotoLoader: ContactPhotoLoader
+    /// In sample-data mode (DEBUG, `GUESSWHO_SAMPLE=1`), the background task that
+    /// seeds the in-memory sample stores. The launch reloads await it so the
+    /// sample people/event are present before the first list renders. `nil` in a
+    /// normal run (and always in Release). See `SampleData`.
+    private let sampleSeed: Task<Void, Never>?
     #if targetEnvironment(macCatalyst)
     /// App-side end of the CLI/MCP channel (plans/cli-mcp.md). Lazy so it
     /// only materializes on `bootstrap()` in `didFinishLaunching`; Catalyst
@@ -94,7 +99,15 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
         UserDefaults.standard.register(defaults: [
             AppSettings.Key.debugModeEnabled: AppSettings.Default.debugModeEnabled
         ])
+        #if DEBUG
+        // Sample-data mode (screenshots): swap the real Contacts/Calendar/iCloud
+        // wiring for in-memory sample stores + a throwaway sidecar root. Only
+        // when launched with GUESSWHO_SAMPLE=1 (the "GuessWho (Sample)" scheme).
+        let sampleMode = SampleData.isEnabled
+        let service = sampleMode ? SampleData.makeService() : SyncService()
+        #else
         let service = SyncService()
+        #endif
         let contactsRepository = service.makeContactsRepository()
         self.service = service
         self.favoritesStore = FavoritesListStore(service: service)
@@ -102,6 +115,17 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
         self.eventsRepository = EventsRepository(service: service)
         self.guidesRepository = GuidesRepository(service: service)
         self.contactPhotoLoader = ContactPhotoLoader(repository: contactsRepository)
+        #if DEBUG
+        if sampleMode {
+            self.sampleSeed = Task { @MainActor in
+                await SampleData.seed(service: service, contacts: contactsRepository)
+            }
+        } else {
+            self.sampleSeed = nil
+        }
+        #else
+        self.sampleSeed = nil
+        #endif
         super.init()
     }
 
@@ -155,6 +179,9 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
         // the request methods are idempotent on iPhone where the gate
         // already asked.
         Task { @MainActor in
+            // Sample-data mode: wait for the in-memory people/event to be seeded
+            // before the first reload publishes (no-op / nil in a normal run).
+            await sampleSeed?.value
             let startedAt = DispatchTime.now().uptimeNanoseconds
             let signpostID = StartupLoadSignpost.begin("startup_contacts_cache")
             Self.startupLoadLog.info("startup cache load started", ["cache": "contacts"])
@@ -185,6 +212,9 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
             ])
         }
         Task { @MainActor in
+            // Sample-data mode: wait for the seeded sidecar event before the
+            // first events reload (no-op / nil in a normal run).
+            await sampleSeed?.value
             let startedAt = DispatchTime.now().uptimeNanoseconds
             let signpostID = StartupLoadSignpost.begin("startup_events_cache")
             Self.startupLoadLog.info("startup cache load started", ["cache": "events"])
