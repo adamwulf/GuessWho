@@ -420,34 +420,18 @@ a:focus-visible {
   margin-top: 0.8rem;
   font-size: 0.98rem;
 }
-.mac-window {
-  overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  border-radius: 1rem;
-  background: var(--bezel);
-  box-shadow: var(--shadow);
-}
-.mac-titlebar {
-  display: flex;
-  align-items: center;
-  gap: 0.38rem;
-  height: 2rem;
-  padding-inline: 0.8rem;
-  background: color-mix(in srgb, var(--bezel) 88%, white);
-}
-.mac-titlebar span {
-  width: 0.62rem;
-  height: 0.62rem;
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.22);
-}
-.mac-window > img {
+/* Screenshots already carry their own macOS window chrome + shadow, so the
+   container just holds the transparent PNG at its natural aspect ratio. */
+.mac-shot { min-width: 0; }
+.mac-shot picture { display: block; }
+.mac-shot img {
+  display: block;
   width: 100%;
-  aspect-ratio: 8 / 5;
-  object-fit: cover;
-  background: var(--bg2);
+  height: auto;
 }
 .mac-placeholder {
+  border: 1px solid var(--line);
+  border-radius: 1rem;
   min-height: clamp(14rem, 28vw, 21rem);
   display: flex;
   flex-direction: column;
