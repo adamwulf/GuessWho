@@ -41,6 +41,33 @@ struct MCPWriteIntegrationTests {
         makeService(root: root, store: INV2StubContactStore(contacts: contacts))
     }
 
+    #if targetEnvironment(macCatalyst)
+    /// KVO removal must use the exact `UserDefaults` object registered at
+    /// bootstrap. Two wrappers for the same suite are different observed
+    /// objects, and removing from the second one raises an Objective-C
+    /// exception. A repeated shutdown must also be a no-op for observation.
+    @Test
+    func hostShutdownRemovesDefaultsObserversExactlyOnce() throws {
+        let root = try makeTempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let suiteName = "MCPHostControllerTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let service = makeService(root: root)
+        let controller = MCPHostController(
+            service: service,
+            repository: service.makeContactsRepository(),
+            groupDefaults: defaults)
+
+        controller.bootstrap()
+        controller.shutdown()
+        controller.shutdown()
+    }
+    #endif
+
     @Test
     func agentTagWriteOnAdoptedEventIsLiveInUIReadsAndOnDisk() async throws {
         let root = try makeTempRoot()
