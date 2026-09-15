@@ -14,9 +14,11 @@
 // Bundle id
 PRODUCT_BUNDLE_IDENTIFIER = com.milestonemade.guesswho
 
-// Display name — "Debug"-suffixed so an Xcode-installed debug build is obvious
-// on the Home Screen. Read via CFBundleDisplayName in GuessWho/Info.plist.
-GUESSWHO_DISPLAY_NAME = GuessWho Debug
+// Display name. Read via CFBundleDisplayName in GuessWho/Info.plist. Kept as
+// the plain product name (no "Debug" suffix) so the window title reads like a
+// production install — the marketing screenshots are captured from a Debug /
+// sample build, and "GuessWho Debug" in the title bar would leak into them.
+GUESSWHO_DISPLAY_NAME = GuessWho
 
 // LinkedIn-handoff wake scheme — Debug-distinct so the Debug extension's wake
 // URL opens the Xcode-installed app build. Hyphenated (not ".debug") per

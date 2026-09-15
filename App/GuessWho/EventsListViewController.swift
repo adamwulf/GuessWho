@@ -577,7 +577,15 @@ final class EventsListViewController: UIViewController {
             sidecarBannerHost = nil
         }
 
-        let showSidecar = service.sidecarLocation.needsBanner
+        var showSidecar = service.sidecarLocation.needsBanner
+        #if DEBUG
+        // Sample-data mode (screenshots) deliberately runs on a private,
+        // throwaway local sidecar root. That is `.localFallback`, but it is NOT
+        // the "your iCloud is unavailable" condition this banner warns a real
+        // user about — so suppress it and let the marketing screenshots read
+        // like a production install. See SampleData.
+        if SampleData.isEnabled { showSidecar = false }
+        #endif
         let showPermission: Bool = {
             switch service.eventsAuthorization {
             case .notDetermined, .denied, .restricted: return !bannerDismissed
@@ -596,6 +604,11 @@ final class EventsListViewController: UIViewController {
 
         if showSidecar {
             let host = UIHostingController(rootView: SidecarLocationBanner(location: service.sidecarLocation))
+            // Report the banner's true compact height to the header-sizing pass
+            // (systemLayoutSizeFitting). Without this the hosting view
+            // over-measures, so the pill floats in an over-tall header with
+            // large empty top/bottom margins.
+            host.sizingOptions = [.intrinsicContentSize]
             host.view.backgroundColor = .clear
             addChild(host)
             stack.addArrangedSubview(host.view)
