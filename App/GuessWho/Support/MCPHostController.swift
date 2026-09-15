@@ -55,12 +55,11 @@ final class MCPHostController: NSObject {
     init(
         service: SyncService,
         repository: ContactsRepository,
-        groupDefaults: UserDefaults? = nil
+        groupDefaults: UserDefaults?
     ) {
         self.service = service
         self.repository = repository
         self.groupDefaults = groupDefaults
-            ?? CLIHelper.appGroupID.flatMap { UserDefaults(suiteName: $0) }
         super.init()
     }
 

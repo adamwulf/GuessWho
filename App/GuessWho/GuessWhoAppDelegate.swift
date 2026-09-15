@@ -38,7 +38,9 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
     /// only materializes on `bootstrap()` in `didFinishLaunching`; Catalyst
     /// only (INV-5 — iOS has no host to serve).
     private(set) lazy var mcpHostController = MCPHostController(
-        service: service, repository: contactsRepository)
+        service: service,
+        repository: contactsRepository,
+        groupDefaults: CLIHelper.appGroupID.flatMap { UserDefaults(suiteName: $0) })
     #endif
 
     #if targetEnvironment(macCatalyst)
