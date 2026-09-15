@@ -63,6 +63,25 @@ enum SampleData {
             let now = Date()
             func minutesAgo(_ minutes: Double) -> Date { now.addingTimeInterval(-minutes * 60) }
 
+            // MARK: Organizations
+            //
+            // Seed real organization contacts, not just company-name strings on
+            // people. Without these records the Organizations list projects the
+            // names as read-only phantoms, so their cards have no Edit button and
+            // their department rows cannot navigate to department membership.
+            for name in [
+                "Apex Dynamics",
+                "Horizon Ventures",
+                "Northwind Labs",
+                "Studio Mosaic",
+                "Test Org",
+            ] {
+                _ = try await contacts.createContact(Contact(
+                    contactType: .organization,
+                    organizationName: name
+                ))
+            }
+
             // MARK: People
             //
             // The focused records match the website screenshots; the rest round
