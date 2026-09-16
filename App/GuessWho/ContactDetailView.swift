@@ -1137,9 +1137,10 @@ struct ContactDetailView: View {
                 Text(name)
                     .font(.title2.weight(.semibold))
                     .multilineTextAlignment(.center)
-                    // Long-press (iOS) / right-click (Catalyst) to copy the name
-                    // without entering the editor.
-                    .copyableText(name)
+                    // Tap (iOS) / click (Catalyst) copies the name without
+                    // entering the editor; a copy glyph fades in on hover on
+                    // Mac. Long-press / right-click still offers Copy too.
+                    .copyOnTap(name)
 
                 let subtitle = headerSubtitle(contact)
                 if !subtitle.isEmpty {
@@ -1147,7 +1148,7 @@ struct ContactDetailView: View {
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
-                        .copyableText(subtitle)
+                        .copyOnTap(subtitle)
                 }
             }
         }

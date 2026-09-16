@@ -122,6 +122,9 @@ struct PhantomOrganizationDetailView: View {
             Text(name)
                 .font(.title2).bold()
                 .multilineTextAlignment(.center)
+                // Tap / click copies the organization name; a copy glyph fades
+                // in on hover on Mac. Matches the contact header affordance.
+                .copyOnTap(name)
         }
     }
 
