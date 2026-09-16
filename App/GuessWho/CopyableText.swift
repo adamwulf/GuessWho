@@ -60,11 +60,16 @@ extension View {
 private struct CopyOnTapModifier: ViewModifier {
     let value: String
 
+    // Only the Catalyst affordance is stateful (hover + a timed checkmark).
+    // Touch confirms with a haptic and holds no state, so these don't exist
+    // there.
+    #if targetEnvironment(macCatalyst)
     @State private var isHovering = false
     @State private var didCopy = false
     /// Bumped on every copy so a later confirmation can't clear an earlier one's
     /// checkmark early when the user taps repeatedly.
     @State private var confirmToken = 0
+    #endif
 
     func body(content: Content) -> some View {
         affordance(content)
@@ -80,9 +85,10 @@ private struct CopyOnTapModifier: ViewModifier {
                     Label("Copy", systemImage: "doc.on.doc")
                 }
             }
-            // Collapse the (text + hidden glyphs) into one element, then present
-            // it to VoiceOver as a button that says it copies. Activation and
-            // the rotor both run copy(); the decorative glyphs stay hidden.
+            // Collapse this line into one VoiceOver element and present it as a
+            // button that says it copies; activation and the rotor both run
+            // copy(). On Catalyst this also folds in the hidden decorative
+            // glyphs; on touch the text is all there is.
             .accessibilityElement(children: .combine)
             .accessibilityAddTraits(.isButton)
             .accessibilityHint("Copies to the clipboard")
