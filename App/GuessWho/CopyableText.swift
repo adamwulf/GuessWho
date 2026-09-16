@@ -31,10 +31,16 @@ extension View {
     /// so the text is one tap away without opening the editor.
     ///
     /// On Mac Catalyst a subtle copy glyph fades in on hover to advertise the
-    /// affordance; on touch the tap is the affordance, so no persistent glyph is
-    /// shown. Either way a brief checkmark confirms a successful copy. The
-    /// long-press / right-click "Copy" menu from `copyableText` stays attached as
-    /// a second, VoiceOver-reachable path.
+    /// affordance and flips to a checkmark to confirm the copy; because that
+    /// glyph is persistent, the layout reserves a matching slot on the leading
+    /// side so the text stays centered. On touch the tap is the affordance, so
+    /// no glyph — and therefore no reserved width — is used; a success haptic
+    /// confirms instead, matching the platform convention of a silent copy.
+    ///
+    /// The tap gesture and the long-press / right-click "Copy" menu share one
+    /// `copy()`, so both write the pasteboard and announce "Copied" to
+    /// VoiceOver. VoiceOver reads the line as a button whose hint says it
+    /// copies, and its activation runs the same `copy()`.
     ///
     /// A no-op (plain, non-interactive text) when `value` is blank.
     @ViewBuilder
@@ -47,9 +53,10 @@ extension View {
     }
 }
 
-/// Backs `View.copyOnTap`: lays the text between two equal-width glyph slots so
-/// it stays centered whether or not the trailing copy glyph is showing, wires
-/// the tap-to-copy gesture, and holds a short checkmark confirmation.
+/// Backs `View.copyOnTap`: wires the tap-to-copy gesture, the shared context
+/// menu, and the VoiceOver semantics. The visible affordance is
+/// platform-split — a hover glyph on Catalyst, a success haptic on touch — so
+/// touch platforms reserve no layout width for an icon they never show.
 private struct CopyOnTapModifier: ViewModifier {
     let value: String
 
@@ -60,32 +67,54 @@ private struct CopyOnTapModifier: ViewModifier {
     @State private var confirmToken = 0
 
     func body(content: Content) -> some View {
+        affordance(content)
+            .contentShape(Rectangle())
+            .onTapGesture { copy() }
+            // The long-press / right-click menu runs the SAME copy(), so it too
+            // confirms via haptic/announcement instead of silently writing the
+            // pasteboard.
+            .contextMenu {
+                Button {
+                    copy()
+                } label: {
+                    Label("Copy", systemImage: "doc.on.doc")
+                }
+            }
+            // Collapse the (text + hidden glyphs) into one element, then present
+            // it to VoiceOver as a button that says it copies. Activation and
+            // the rotor both run copy(); the decorative glyphs stay hidden.
+            .accessibilityElement(children: .combine)
+            .accessibilityAddTraits(.isButton)
+            .accessibilityHint("Copies to the clipboard")
+            .accessibilityAction { copy() }
+    }
+
+    @ViewBuilder
+    private func affordance(_ content: Content) -> some View {
+        #if targetEnvironment(macCatalyst)
+        // Mac: a copy glyph fades in on hover as the affordance and flips to a
+        // checkmark right after a copy. The leading balancer reserves its width
+        // on the far side so the text stays centered whether or not it shows.
         HStack(spacing: 4) {
-            // Leading balancer: reserves the glyph's width on the opposite side
-            // so the text stays visually centered. Always invisible.
             glyph
                 .hidden()
                 .accessibilityHidden(true)
 
             content
 
-            // Trailing glyph: the copy affordance. Revealed on hover (Mac) and
-            // held briefly as a checkmark right after a copy so a touch tap gets
-            // confirmation even without a pointer.
             glyph
                 .opacity(isHovering || didCopy ? 1 : 0)
                 .accessibilityHidden(true)
         }
-        .contentShape(Rectangle())
-        .onTapGesture { copy() }
-        #if targetEnvironment(macCatalyst)
         .onHover { isHovering = $0 }
+        #else
+        // Touch: the tap is the affordance. No glyph, so nothing to reserve
+        // width for — the header text keeps the full column and its centering.
+        content
         #endif
-        // Keep the explicit long-press / right-click "Copy" menu as a second,
-        // discoverable path (and the VoiceOver-reachable one).
-        .copyableText(value)
     }
 
+    #if targetEnvironment(macCatalyst)
     /// Fixed-width so the leading balancer and the trailing affordance always
     /// match regardless of which symbol is showing (`doc.on.doc` vs `checkmark`).
     private var glyph: some View {
@@ -94,9 +123,18 @@ private struct CopyOnTapModifier: ViewModifier {
             .foregroundStyle(.secondary)
             .frame(width: 14)
     }
+    #endif
 
     private func copy() {
         UIPasteboard.general.string = value
+
+        // Confirm the copy: an announcement for VoiceOver on every platform, a
+        // success haptic on touch (Catalyst Macs have no haptics), and — only
+        // on Mac, where the glyph is visible — a brief checkmark.
+        UIAccessibility.post(notification: .announcement, argument: "Copied")
+        #if !targetEnvironment(macCatalyst)
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+        #else
         confirmToken += 1
         let token = confirmToken
         withAnimation(.easeInOut(duration: 0.15)) { didCopy = true }
@@ -105,5 +143,6 @@ private struct CopyOnTapModifier: ViewModifier {
             guard token == confirmToken else { return }
             withAnimation(.easeInOut(duration: 0.2)) { didCopy = false }
         }
+        #endif
     }
 }
