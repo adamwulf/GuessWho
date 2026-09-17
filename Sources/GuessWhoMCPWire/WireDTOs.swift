@@ -555,11 +555,14 @@ public struct WireLinkParticipant: Codable, Sendable {
 /// A connection may join more than two records. There is still exactly ONE
 /// row per connection: `kind`/`otherId` name the deterministic representative
 /// far record (event > place > contact, then endpoint order), and the OPTIONAL
-/// `participants` lists EVERY far record — the representative included — for a
-/// grouped connection. `participants` is omitted entirely for an ordinary
-/// two-record connection (a single far record), so those payloads are
-/// byte-identical to before this field existed, and an old payload with no
-/// `participants` key decodes to `nil`.
+/// `participants` lists every RESOLVABLE far record — the representative
+/// included. A far record that no longer resolves to a live record is dropped
+/// from the row (its id would not be readable), so `participants` reflects only
+/// the resolvable peers. `participants` is omitted entirely whenever exactly
+/// ONE far record resolves — an ordinary two-record connection, or a grouped
+/// connection whose other peers are currently missing (unresolvable) — so that
+/// payload is byte-identical to before this field existed, and an old payload
+/// with no `participants` key decodes to `nil`.
 public struct WireLink: Codable, Sendable {
     public let id: String
     /// The representative far record's kind: "person", "organization",
@@ -569,9 +572,10 @@ public struct WireLink: Codable, Sendable {
     public let otherId: String
     public let note: String?
     public let createdAt: String
-    /// Every far record of a GROUPED connection (three or more records), the
-    /// representative included; `nil`/omitted when the connection joins just
-    /// two records (a single far).
+    /// Every RESOLVABLE far record of the connection (the representative
+    /// included), present only when more than one resolves; `nil`/omitted when
+    /// exactly one far record resolves — a two-record connection, or a grouped
+    /// connection whose other peers are currently missing.
     public let participants: [WireLinkParticipant]?
 
     public init(

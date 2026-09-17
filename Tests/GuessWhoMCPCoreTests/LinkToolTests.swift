@@ -771,6 +771,41 @@ final class LinkToolTests: XCTestCase {
         XCTAssertFalse(json.contains("participants"), "the key is omitted, not null")
     }
 
+    /// A LEGACY binary self-link (endpointA == endpointB, from before the
+    /// self-connection guard existed) still renders in links_list: exactly one
+    /// row whose far is the near record itself, with no participants. This
+    /// degenerate fallback is the ONLY case near is echoed — a normal grouped
+    /// connection never returns the near record.
+    func testLegacyBinarySelfLinkRendersWithNearFallback() async {
+        let fixture = await linkFixture()
+        guard let jane = await contactID(fixture, query: "jane", name: "Jane Doe"),
+              let gala = await eventID(fixture, title: "Museum Gala")
+        else { return XCTFail("missing fixture records") }
+
+        // Canonical contact key via a throwaway connection, then a self-link
+        // written straight to the store (the dispatcher forbids creating one).
+        guard case .link(_, _, let helper)? = await create(
+            fixture, fromId: jane, fromKind: "person", toId: gala, toKind: "event")
+        else { return XCTFail("helper create failed") }
+        guard let janeKey = storedEndpoint(fixture, connectionId: helper.id, kind: .contact)
+        else { return XCTFail("could not read the contact endpoint key") }
+        try? fixture.linkEngine.removeLink(id: UUID(uuidString: helper.id)!)
+        guard let selfLink = try? fixture.linkEngine.addLink(
+            from: janeKey, to: janeKey, note: "Note to self")
+        else { return XCTFail("could not write the self-link") }
+
+        guard let rows = await list(fixture, id: jane, kind: "person") else {
+            return XCTFail("links_list failed")
+        }
+        XCTAssertEqual(rows.count, 1, "the self-link still renders")
+        XCTAssertEqual(rows.first?.id, selfLink.id.uuidString.lowercased())
+        XCTAssertEqual(rows.first?.kind, "person")
+        XCTAssertEqual(
+            rows.first?.otherId, jane,
+            "the degenerate self-link falls back to the near record")
+        XCTAssertNil(rows.first?.participants, "a self-link carries no participants")
+    }
+
     /// Deleting a grouped connection removes it from EVERY participant's list,
     /// and restoring it revives every participant's view — the whole-connection
     /// tombstone/restore never loses a member.
