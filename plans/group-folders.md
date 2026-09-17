@@ -48,11 +48,11 @@ Extend `SidecarKind`, `SidecarKey` switches, filesystem creation/listing/scoped 
 
 ### Group identity remains the main prerequisite
 
-Folders have native durable UUIDs; Contacts groups still need careful adoption. A successful local scan cannot prove that another device has not created an undiscovered identity. Permit duplicate group identities rather than assuming minting can be globally unique.
+Folders have native durable UUIDs; Contacts groups still need careful adoption. Placing a previously unplaced group inside a folder creates its identity and this device's trusted binding when absent, reusing a confirmed identity when available; untouched top-level groups need neither. A successful local scan cannot prove that another device has not created an undiscovered identity. Permit duplicate group identities rather than assuming minting can be globally unique.
 
 Add a separate, per-device binding cell on a group identity, recording its current local group handle and provenance: minted during an explicit operation on that group, or confirmed by the user. Legacy favorite pins and matching names/member fingerprints only suggest candidates. They cannot prove identity after delete/recreate. A missing bound group stays unresolved; never automatically bind a same-name replacement.
 
-For an unresolved placed group, show a non-selectable “Group unavailable on this device” row in its folder, with a Resolve action showing the saved name/path and a picker for the current group. Confirmation establishes that device's binding; cancel preserves data. Locally available groups without trusted bindings remain reachable at root. Folder results report unavailable descendants instead of silently omitting them. No UUIDs or storage terminology appear in this UI.
+For an unresolved placed group, show a non-selectable “Group unavailable on this device” row in its folder, with a Resolve action showing the saved name/path and a picker for the current group. Confirmation establishes that device's binding; cancel preserves data. This repairs an existing group placement across devices; it does not introduce contact/event adoption pickers. Locally available groups without trusted bindings remain reachable at root. Folder results report unavailable descendants instead of silently omitting them. No UUIDs or storage terminology appear in this UI.
 
 Trusted identities bound to the same local group form a local alias set. Render the group once. Choose its newest placement across aliases, including stamped roots/tombstones; absence does not compete. Ties use `(modifiedAt, modifiedBy, identityID)`. Write new moves to the smallest alias UUID with a stamp newer than all observed aliases. Do not delete/rewrite identities. Other devices may need their own confirmation; identical records and bindings must produce identical placement.
 
@@ -60,7 +60,7 @@ Generalize identity refresh beyond favorited groups to all placed identities. Us
 
 ## Tree projection, cycles, and deletion
 
-Proposed pure model: `GroupFolderTree`, with typed folder/group node IDs, effective parents, child lists, paths on demand, descendant group identities, and availability/conflict diagnostics. Use iterative traversal and visited sets; a 1,000-folder chain must remain usable without recursive stack growth or eagerly materializing every full path.
+Proposed pure model: `GroupFolderTree`, with typed folder/group node IDs, effective parents, child lists, paths on demand, descendant group identities, and availability/conflict diagnostics. A visible-row projection flattens this into the existing table: node ID, depth, expansion state, immediate-child count, and availability. Use iterative traversal and visited sets; a 1,000-folder chain must remain usable without recursive stack growth or eagerly materializing every full path.
 
 Local commands—create/rename/delete folder and move folder/group—run through repository mutation serialization. Validate the current snapshot immediately before writing and again after suspensions: destination exists and is a live folder; folder moves cannot target self or a descendant. Moving a folder carries its subtree. Reject unresolved required bindings or known unreadable hierarchy records. Single-key locking cannot prevent two devices from making individually valid moves that form a cycle.
 
@@ -83,7 +83,7 @@ Report hidden-marker and favorite-cleanup failures independently from Contacts d
 
 ## Folder member aggregation
 
-Introduce an error-aware repository read returning a `MemberSnapshot` for a typed group or folder scope. Return contacts, contributing groups per contact, failed/unresolved groups, and the hierarchy, membership, and contact-data/reconcile generations used. The existing empty-on-error method can remain compatible; aggregation uses a throwing/per-group-result path.
+Introduce an error-aware repository read returning a `MemberSnapshot` for a typed group or folder scope. Return contacts, contributing groups per contact, failed/unresolved groups, and the hierarchy, membership, and contact-data/reconcile generations used. The existing empty-on-error method can remain compatible; aggregation uses a throwing/per-group-result path.[^4]
 
 For a folder, enumerate every effective descendant group independently of expansion, deduplicate resolved group aliases, and fetch each group once with bounded concurrency. Within the package, normalize repeated unified-contact results by their transient local handle for this request only, then vend current `ContactID` values and union by those IDs. Resolve/refetch conflicting pre/post-reconcile versions through current package identity handling, including members absent from the global cache; never choose whichever async result finished last. Local handles remain an internal fetch-normalization aid, never durable identity or app keys. Reads mint nothing. Keep contacts and group provenance in memory, and rebuild after identity changes. Do not merge contacts by name/email. This respects the package/app identity boundary.[^7]
 
@@ -130,12 +130,12 @@ For implementation, run targeted new suites, then `swift test`, app tests on an 
 ## Sources
 
 [^1]: [Live Contacts group model](../Sources/GuessWhoSync/ContactGroup.swift:ContactGroup), [durable group identity hints](../Sources/GuessWhoSync/GroupIdentity.swift:GroupIdentity), and [current heuristic resolution](../Sources/GuessWhoSync/ContactsRepository.swift:ContactsRepository.resolveGroupIdentity)
-[^2]: [Identity writes preserve neighboring cells](../Sources/GuessWhoSync/GuessWhoSync+Groups.swift:GuessWhoSync.writeGroupIdentity), [raw cell merge](../Sources/GuessWhoSync/SidecarMerge.swift:merge), and [compatibility contract](../docs/sidecar-compatibility.md)
+[^2]: [Identity writes preserve neighboring cells](../Sources/GuessWhoSync/GuessWhoSync+Groups.swift:GuessWhoSync.writeGroupIdentity), [raw cell merge](../Sources/GuessWhoSync/SidecarMerge.swift:merge), and [compatibility guarantee and its limits](../docs/sidecar-compatibility.md#the-guarantee)
 [^3]: [Groups table and selection](../App/GuessWho/GroupsListViewController.swift:GroupsListViewController), [Catalyst group navigation](../App/GuessWho/GuessWhoSceneDelegate.swift:GuessWhoSceneDelegate.installGroupsList), and [member navigation](../App/GuessWho/GuessWhoSceneDelegate.swift:GuessWhoSceneDelegate.showGroupMembers)
 [^4]: [Member-list presentation and identity map](../App/GuessWho/GroupMembersListViewController.swift:GroupMembersListViewController), and [empty-on-error member read](../Sources/GuessWhoSync/ContactsRepository.swift:ContactsRepository.members)
 [^5]: [Filesystem kind routing/enumeration](../Sources/GuessWhoSync/FileSystemSidecarStore.swift:FileSystemSidecarStore), [watcher path mapping](../Sources/GuessWhoSync/SidecarFileWatcher.swift:SidecarFileWatcher.sidecarKey), and [repository sidecar relevance](../Sources/GuessWhoSync/ContactsRepository.swift:ContactsRepository.handledSidecarKinds)
 [^6]: [Group deletion and separate favorite cleanup](../App/GuessWho/GroupContextMenu.swift:GroupDeletionOperation)
-[^7]: [Opaque contact identity contract](../docs/contact-identity.md)
+[^7]: [Opaque contact identity contract](../docs/contact-identity.md#the-one-rule-three-layers)
 [^8]: [Sidebar double-click expansion](../App/GuessWho/SidebarViewController.swift:SidebarViewController.handleDoubleClick), and [collapsed count rendering](../App/GuessWho/SidebarViewController.swift:SidebarViewController.configure)
 [^9]: [Group CLI commands](../Sources/GuessWhoCLICore/GroupsCommand.swift:GroupsCommand), and [device-local group wire IDs](../Sources/GuessWhoMCPCore/WireRecordID.swift:WireRecordID.groupID)
 [^10]: [Malformed cells are dropped with a diagnostic count](../Sources/GuessWhoSync/SidecarEnvelope.swift:SidecarEnvelope)
