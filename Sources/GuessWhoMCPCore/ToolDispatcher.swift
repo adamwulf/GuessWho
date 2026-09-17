@@ -168,10 +168,14 @@ public actor ToolDispatcher {
             return gateError
         }
 
+        // A folder id is a UUID; a group id never is (`WireRecordID.groupID` is
+        // `g-` + 32 hex, which does not parse as one). So a UUID where a GROUP
+        // id belongs is a folder id handed to the wrong tool — say so, rather
+        // than reporting a group that cannot be found.
         if let groupId = requiredGroupID(in: request), UUID(uuidString: groupId) != nil {
             return .error(
                 helperId: helperId, messageId: messageId, code: .invalidParams,
-                message: "Members belong to a group, not a folder. Use a group id from contacts_list_groups.")
+                message: "That is a folder id, and this needs a group id from contacts_list_groups. Contacts belong to a group, not to a folder.")
         }
 
         // Reorder's permission domain is the complete stored set, not the
@@ -887,16 +891,22 @@ public actor ToolDispatcher {
             return folderFailure(GroupHierarchyError.folderNotFound(id),
                                  helperId: helperId, messageId: messageId)
         }
-        let snapshot = await contacts.memberSnapshot(for: .folder(id: id))
-        let current = await MainActor.run {
-            (revisions: contacts.memberRevisions, exists: contacts.groupFolderTree.folders[id] != nil)
+        // A folder's members come from several fetches, so a change can land
+        // while they run. Read again (bounded) until the snapshot is current,
+        // as the app's member list does. A read that never settles still
+        // answers: what makes paging safe is the cursor, which carries the
+        // revisions THIS snapshot started from, so a later page is rejected if
+        // anything moved. A caller that sent no cursor is never told its
+        // cursor is invalid.
+        var snapshot = await contacts.memberSnapshot(for: .folder(id: id))
+        var attempts = 1
+        while attempts < 3, await contacts.memberRevisions != snapshot.revisions {
+            snapshot = await contacts.memberSnapshot(for: .folder(id: id))
+            attempts += 1
         }
-        guard current.exists else {
+        guard await contacts.groupFolderTree.folders[id] != nil else {
             return folderFailure(GroupHierarchyError.folderNotFound(id),
                                  helperId: helperId, messageId: messageId)
-        }
-        guard snapshot.revisions == current.revisions else {
-            return invalidCursor(helperId: helperId, messageId: messageId)
         }
         var offset = 0
         if let cursor {

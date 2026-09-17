@@ -217,7 +217,12 @@ final class FolderToolTests: XCTestCase {
                 "name": "New name", "favorite": true,
             ])
             XCTAssertEqual(response.errorPayload?.code, .invalidParams, tool.rawValue)
-            XCTAssertTrue(response.errorPayload?.message.contains("Members belong to a group, not a folder") == true)
+            // The message has to make sense for EVERY tool in this loop — a
+            // rename or a move is not about members — so it names the mistake
+            // (a folder id where a group id belongs) first.
+            XCTAssertTrue(
+                response.errorPayload?.message.contains("That is a folder id, and this needs a group id") == true,
+                tool.rawValue)
         }
         XCTAssertNotNil(f.repository.groupFolderTree.folders[folder.id])
         XCTAssertEqual(f.repository.groups.count, 1)
