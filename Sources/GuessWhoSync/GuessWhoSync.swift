@@ -827,6 +827,25 @@ public final class GuessWhoSync: @unchecked Sendable {
     /// Note: a same-key (self) link would be counted twice by `linkCounts(ofKind:)` — once per endpoint.
     @discardableResult
     public func addLink(from a: SidecarKey, to b: SidecarKey, note: String) throws -> Link {
+        try addLink(endpoints: [a, b], note: note)
+    }
+
+    /// Creates a link across two-or-more entities, writing ONE envelope and
+    /// returning the minted Link. `endpoints[0]`/`[1]` become `endpointA`/
+    /// `endpointB`; anything past the second fills `additionalEndpoints`. The
+    /// caller is responsible for any dedup / source-exclusion it wants — this
+    /// primitive stores exactly the endpoints it is handed (so a self-link and
+    /// duplicate-participant links are both possible), mirroring the
+    /// "never dedups" contract of the binary form. A binary call writes NO
+    /// `additionalEndpoints` cell, so its envelope is byte-identical to the
+    /// pre-feature format.
+    @discardableResult
+    public func addLink(endpoints: [SidecarKey], note: String) throws -> Link {
+        guard endpoints.count >= 2 else { throw EmptyLinkSelectionError() }
+        let a = endpoints[0]
+        let b = endpoints[1]
+        let additionalEndpoints = Array(endpoints.dropFirst(2))
+
         let id = UUID()
         let key = SidecarKey(kind: .link, id: id.uuidString)
         let now = Date()
@@ -834,20 +853,26 @@ public final class GuessWhoSync: @unchecked Sendable {
         // Round-trip `now` through that string so the returned Link's createdAt
         // matches what link(id:) reads back.
         let createdAtStored = SidecarISO8601.date(from: SidecarISO8601.string(from: now)) ?? now
-        let envelope = SidecarEnvelope(
-            schemaVersion: 1,
-            entityID: key.id,
-            fields: [
-                Link.endpointAKey: SidecarCell(value: Link.encodeEndpoint(a), modifiedAt: now, modifiedBy: deviceID),
-                Link.endpointBKey: SidecarCell(value: Link.encodeEndpoint(b), modifiedAt: now, modifiedBy: deviceID),
-                Link.noteKey: SidecarCell(value: .string(note), modifiedAt: now, modifiedBy: deviceID),
-                Link.createdAtKey: SidecarCell(
-                    value: .string(SidecarISO8601.string(from: createdAtStored)),
-                    modifiedAt: now,
-                    modifiedBy: deviceID
-                ),
-            ]
-        )
+        var fields: [String: SidecarCell] = [
+            Link.endpointAKey: SidecarCell(value: Link.encodeEndpoint(a), modifiedAt: now, modifiedBy: deviceID),
+            Link.endpointBKey: SidecarCell(value: Link.encodeEndpoint(b), modifiedAt: now, modifiedBy: deviceID),
+            Link.noteKey: SidecarCell(value: .string(note), modifiedAt: now, modifiedBy: deviceID),
+            Link.createdAtKey: SidecarCell(
+                value: .string(SidecarISO8601.string(from: createdAtStored)),
+                modifiedAt: now,
+                modifiedBy: deviceID
+            ),
+        ]
+        // Only write the additionalEndpoints cell for a genuinely multi-endpoint
+        // link, so binary links stay byte-identical to the old format.
+        if !additionalEndpoints.isEmpty {
+            fields[Link.additionalEndpointsKey] = SidecarCell(
+                value: Link.encodeAdditionalEndpoints(additionalEndpoints),
+                modifiedAt: now,
+                modifiedBy: deviceID
+            )
+        }
+        let envelope = SidecarEnvelope(schemaVersion: 1, entityID: key.id, fields: fields)
         try withKeyLocked(key) { ctx in
             try ctx.write(envelope)
         }
@@ -858,7 +883,8 @@ public final class GuessWhoSync: @unchecked Sendable {
             note: note,
             createdAt: createdAtStored,
             modifiedAt: now,
-            modifiedBy: deviceID
+            modifiedBy: deviceID,
+            additionalEndpoints: additionalEndpoints
         )
     }
 
@@ -1012,11 +1038,14 @@ public final class GuessWhoSync: @unchecked Sendable {
         return projection
     }
 
-    /// Decode the link corpus once and index each valid link under both of its
-    /// endpoints. Soft-deleted links stay in the snapshot because `links(at:)`
-    /// has always returned tombstones; its repository callers apply their own
-    /// live/far-kind filters. A self-link is indexed once, matching the former
-    /// `endpointA == endpoint || endpointB == endpoint` append behavior.
+    /// Decode the link corpus once and index each valid link under each of its
+    /// DISTINCT endpoints. Soft-deleted links stay in the snapshot because
+    /// `links(at:)` has always returned tombstones; its repository callers apply
+    /// their own live/far-kind filters. `link.endpoints` is deduplicated, so a
+    /// self-link (or any duplicate participant) is indexed once per endpoint —
+    /// so every participant sees the shared link exactly once, matching the
+    /// former `endpointA == endpoint || endpointB == endpoint` append behavior
+    /// and generalizing it to additional endpoints.
     private func linkCorpusSnapshot() throws -> LinkCorpusSnapshot {
         try linkCorpusCache.value { [self] in
             var snapshot = LinkCorpusSnapshot(allLinks: [], linksByEndpoint: [:])
@@ -1024,9 +1053,8 @@ public final class GuessWhoSync: @unchecked Sendable {
                 guard let envelope = try readResult.get(),
                       let link = Link(from: envelope) else { return }
                 snapshot.allLinks.append(link)
-                snapshot.linksByEndpoint[link.endpointA, default: []].append(link)
-                if link.endpointB != link.endpointA {
-                    snapshot.linksByEndpoint[link.endpointB, default: []].append(link)
+                for endpoint in link.endpoints {
+                    snapshot.linksByEndpoint[endpoint, default: []].append(link)
                 }
             }
             return snapshot
@@ -1122,13 +1150,13 @@ public final class GuessWhoSync: @unchecked Sendable {
         ofKind kind: SidecarKind,
         into projection: inout LinkEndpointProjection
     ) {
-        if link.endpointA.kind == kind {
-            projection.endpoints.insert(link.endpointA)
-            projection.counts[link.endpointA, default: 0] += 1
-        }
-        if link.endpointB.kind == kind {
-            projection.endpoints.insert(link.endpointB)
-            projection.counts[link.endpointB, default: 0] += 1
+        // Tally per RAW endpoint SLOT (not the deduplicated participant set) so
+        // the documented legacy quirk holds: a same-key (self) link still counts
+        // twice for that endpoint. A multi-participant link's endpoints are
+        // distinct by construction, so each participant is still counted once.
+        for endpoint in link.endpointSlots where endpoint.kind == kind {
+            projection.endpoints.insert(endpoint)
+            projection.counts[endpoint, default: 0] += 1
         }
     }
 
@@ -1713,15 +1741,11 @@ public final class GuessWhoSync: @unchecked Sendable {
         for key in try sidecars.allKeys() where key.kind == .link {
             // Cheap pre-screen against the loser set so we only lock links we
             // intend to rewrite. The authoritative read happens inside the
-            // lock below; this read may be a moment stale.
+            // lock below; this read may be a moment stale. Any endpoint slot —
+            // endpointA, endpointB, OR an additional endpoint — that points at a
+            // loser makes the link a rewrite candidate.
             guard let pre = try sidecars.read(key) else { continue }
-            guard let preA = pre.fields[Link.endpointAKey],
-                  let preB = pre.fields[Link.endpointBKey],
-                  let preAEnd = Link.decodeEndpoint(preA.value),
-                  let preBEnd = Link.decodeEndpoint(preB.value) else { continue }
-            let preAMatches = preAEnd.kind == .contact && mapping[preAEnd.id] != nil
-            let preBMatches = preBEnd.kind == .contact && mapping[preBEnd.id] != nil
-            guard preAMatches || preBMatches else { continue }
+            guard Self.linkTouchesLoser(pre, mapping: mapping) else { continue }
 
             try withKeyLocked(key) { ctx in
                 // Re-read inside the lock: a concurrent setLinkNote or
@@ -1731,9 +1755,30 @@ public final class GuessWhoSync: @unchecked Sendable {
                       let bCell = envelope.fields[Link.endpointBKey],
                       let aEnd = Link.decodeEndpoint(aCell.value),
                       let bEnd = Link.decodeEndpoint(bCell.value) else { return }
+                // Additional endpoints (optional cell). A present-but-malformed
+                // cell aborts this link's rewrite, matching the base-cell rule.
+                let additionalCell = envelope.fields[Link.additionalEndpointsKey]
+                var additionalEnds: [SidecarKey] = []
+                if let additionalCell {
+                    guard case .array(let items) = additionalCell.value else { return }
+                    for item in items {
+                        guard let end = Link.decodeEndpoint(item) else { return }
+                        additionalEnds.append(end)
+                    }
+                }
+
                 let aWinner = aEnd.kind == .contact ? mapping[aEnd.id] : nil
                 let bWinner = bEnd.kind == .contact ? mapping[bEnd.id] : nil
-                guard aWinner != nil || bWinner != nil else { return }
+                var newAdditional = additionalEnds
+                var additionalChanged = false
+                for index in newAdditional.indices {
+                    let end = newAdditional[index]
+                    if end.kind == .contact, let winner = mapping[end.id] {
+                        newAdditional[index] = SidecarKey(kind: .contact, id: winner)
+                        additionalChanged = true
+                    }
+                }
+                guard aWinner != nil || bWinner != nil || additionalChanged else { return }
 
                 let now = Date()
                 var fields = envelope.fields
@@ -1751,25 +1796,59 @@ public final class GuessWhoSync: @unchecked Sendable {
                         modifiedBy: deviceID
                     )
                 }
+                if additionalChanged {
+                    fields[Link.additionalEndpointsKey] = SidecarCell(
+                        value: Link.encodeAdditionalEndpoints(newAdditional),
+                        modifiedAt: now,
+                        modifiedBy: deviceID
+                    )
+                }
                 try ctx.write(
                     SidecarEnvelope(schemaVersion: 1, entityID: envelope.entityID, fields: fields)
                 )
 
                 guard let linkID = UUID(uuidString: key.id) else { return }
-                // Record the link under EVERY loser whose collapse touched one
-                // of its endpoints, so it surfaces in the ContactOutcome of
-                // every contact whose Case D affected it. The caller dedups
-                // per-contact (a link appears at most once in a given outcome's
-                // rewrittenLinkIDs).
-                if aWinner != nil {
-                    rewrittenByLoser[aEnd.id, default: []].append(linkID)
+                // Record the link under EVERY DISTINCT loser whose collapse
+                // touched one of its endpoint slots (base or additional), so it
+                // surfaces in the ContactOutcome of every contact whose Case D
+                // affected it. The caller dedups per-contact (a link appears at
+                // most once in a given outcome's rewrittenLinkIDs).
+                var losersTouched: Set<String> = []
+                if aWinner != nil { losersTouched.insert(aEnd.id) }
+                if bWinner != nil { losersTouched.insert(bEnd.id) }
+                for end in additionalEnds where end.kind == .contact && mapping[end.id] != nil {
+                    losersTouched.insert(end.id)
                 }
-                if bWinner != nil, aEnd.id != bEnd.id {
-                    rewrittenByLoser[bEnd.id, default: []].append(linkID)
+                for loser in losersTouched {
+                    rewrittenByLoser[loser, default: []].append(linkID)
                 }
             }
         }
         return rewrittenByLoser
+    }
+
+    /// True iff any endpoint slot of `envelope` (endpointA, endpointB, or an
+    /// additional endpoint) is a `.contact` whose id is a loser in `mapping`.
+    private static func linkTouchesLoser(
+        _ envelope: SidecarEnvelope,
+        mapping: [String: String]
+    ) -> Bool {
+        for cellKey in [Link.endpointAKey, Link.endpointBKey] {
+            if let cell = envelope.fields[cellKey],
+               let end = Link.decodeEndpoint(cell.value),
+               end.kind == .contact, mapping[end.id] != nil {
+                return true
+            }
+        }
+        if let cell = envelope.fields[Link.additionalEndpointsKey],
+           case .array(let items) = cell.value {
+            for item in items {
+                if let end = Link.decodeEndpoint(item), end.kind == .contact, mapping[end.id] != nil {
+                    return true
+                }
+            }
+        }
+        return false
     }
 
     // Recursively acquire per-key locks in sorted UUID order, then execute

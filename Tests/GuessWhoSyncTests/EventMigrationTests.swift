@@ -347,6 +347,63 @@ struct EventMigrationTests {
     }
 
     @Test
+    func migrationRewritesEventEndpointInAdditionalSlotExactlyOnce() throws {
+        // Regression: a grouped link can carry its EVENT endpoint in the
+        // additionalEndpoints slot (endpointA/B being two contacts). The event
+        // id migration must remap that additional endpoint too, and still write
+        // the link envelope exactly once.
+        let inner = InMemorySidecarStore()
+        let sidecars = CountingSidecarStore(wrapping: inner)
+        let events = InMemoryEventStore()
+        let sync = GuessWhoSync(
+            contacts: InMemoryContactStore(),
+            events: events,
+            sidecars: sidecars,
+            deviceID: "device-A"
+        )
+
+        let legacyID = "legacy-event-additional-slot"
+        let ekid = "ek-additional-slot"
+        let event = Event(
+            id: Event.stableID(forEventKitID: ekid),
+            eventKitID: ekid, title: "Group",
+            startDate: Date(), endDate: Date().addingTimeInterval(60),
+            isAllDay: false, location: nil, eventKitNotes: nil
+        )
+        _ = try _injectEventAndTranslation(into: events, event: event, legacy: legacyID)
+        // Seed the legacy envelope through the inner store so it is NOT counted
+        // against the link's write tally.
+        _ = try seedLegacyEnvelope(in: inner, legacyID: legacyID)
+
+        let c1 = SidecarKey(kind: .contact, id: UUID().uuidString)
+        let c2 = SidecarKey(kind: .contact, id: UUID().uuidString)
+        let legacyEvent = SidecarKey(kind: .event, id: legacyID)
+        let link = try sync.addLink(endpoints: [c1, c2, legacyEvent], note: "grouped legacy event")
+
+        let linkKey = SidecarKey.forLink(link)
+        let writesBefore = sidecars.writeCounts[linkKey] ?? 0
+
+        let report = try sync.migrateEventsToSidecarFirst()
+        let migrated = try #require(report.migratedEvents.first { $0.oldExternalID == legacyID })
+        #expect(report.rewrittenLinkIDs == [link.id])
+
+        // Exactly one link envelope write during the migration.
+        let writesAfter = sidecars.writeCounts[linkKey] ?? 0
+        #expect(writesAfter - writesBefore == 1)
+
+        // The additional endpoint now points at the new event UUID; the two
+        // contact endpoints are untouched.
+        let rewritten = try #require(try sync.link(id: link.id))
+        #expect(rewritten.endpointA == c1)
+        #expect(rewritten.endpointB == c2)
+        #expect(rewritten.additionalEndpoints == [SidecarKey(kind: .event, id: migrated.newUUID.uuidString)])
+
+        // Re-indexed under the new event id, gone from the legacy id.
+        #expect(try sync.links(at: SidecarKey(kind: .event, id: migrated.newUUID.uuidString)).map(\.id) == [link.id])
+        #expect(try sync.links(at: legacyEvent).isEmpty)
+    }
+
+    @Test
     func migrationLeavesUntouchedLinksAlone() throws {
         let (sync, sidecars, events) = makeOrchestrator()
         let legacyID = "legacy-rewrite-only-one"

@@ -158,15 +158,15 @@ struct EventDetailView: View {
             }
         }
         .sheet(isPresented: $showingPicker) {
-            ContactPickerSheet(kind: .person) { contact, note in
-                await addLink(to: contact, note: note)
+            ContactPickerSheet(kind: .person) { contacts, note in
+                await addLink(to: contacts, note: note)
             }
         }
         .sheet(isPresented: $showingOrgPicker) {
             // Same link write as Add Contact — an organization is a Contact —
             // the picker just filters to organization records.
-            ContactPickerSheet(kind: .organization) { contact, note in
-                await addLink(to: contact, note: note)
+            ContactPickerSheet(kind: .organization) { contacts, note in
+                await addLink(to: contacts, note: note)
             }
         }
         .sheet(isPresented: $showingEventPicker) {
@@ -530,8 +530,8 @@ struct EventDetailView: View {
             }
         }
         for link in links {
-            if let contact = repository.linkedContact(of: link, forEventUUID: resolvedUUID),
-               contact.contactType == .person {
+            for contact in repository.linkedContacts(of: link, forEventUUID: resolvedUUID).compactMap({ $0 })
+            where contact.contactType == .person {
                 people.append(contact)
             }
         }
@@ -669,40 +669,64 @@ struct EventDetailView: View {
 
     @ViewBuilder
     private func linkedContactRow(_ link: ContactLink) -> some View {
-        let contact = repository.linkedContact(of: link, forEventUUID: resolvedUUID)
-
-        if let contact {
-            Button {
-                pushContactReference(ContactReference(id: contact.contactID))
-            } label: {
-                HStack(spacing: 12) {
-                    ContactAvatar(contact: contact, diameter: 28)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(contact.displayName)
-                        if !link.note.isEmpty {
-                            Text(link.note)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+        // All contacts on this link — one for a plain link, several for a grouped
+        // link that shares this note. Unresolved slots are preserved as nil.
+        let contacts = repository.linkedContacts(of: link, forEventUUID: resolvedUUID)
+        if contacts.count <= 1 {
+            // Single participant: the row is unchanged (tap anywhere to open the
+            // one contact, non-tinted name).
+            let contact = contacts.first ?? nil
+            if let contact {
+                Button {
+                    pushContactReference(ContactReference(id: contact.contactID))
+                } label: {
+                    HStack(spacing: 12) {
+                        ContactAvatar(contact: contact, diameter: 28)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(contact.displayName)
+                            linkNoteCaption(link)
                         }
+                        Spacer()
                     }
-                    Spacer()
+                    .contentShape(Rectangle())
                 }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-        } else {
-            HStack(spacing: 12) {
-                UnknownContactAvatar(diameter: 28)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("(Unknown contact)")
-                        .foregroundStyle(.secondary)
-                    if !link.note.isEmpty {
-                        Text(link.note)
-                            .font(.caption)
+                .buttonStyle(.plain)
+            } else {
+                HStack(spacing: 12) {
+                    UnknownContactAvatar(diameter: 28)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("(Unknown contact)")
                             .foregroundStyle(.secondary)
+                        linkNoteCaption(link)
                     }
                 }
             }
+        } else {
+            // Grouped link: one leading avatar (first resolved) + independently
+            // tappable, comma-separated names + the one shared note. The content
+            // column fills the remaining width (no trailing Spacer) so the names
+            // flow gets a bounded width and wraps naturally.
+            HStack(alignment: .top, spacing: 12) {
+                if let first = contacts.compactMap({ $0 }).first {
+                    ContactAvatar(contact: first, diameter: 28)
+                } else {
+                    UnknownContactAvatar(diameter: 28)
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    LinkParticipantNames(contacts: contacts)
+                    linkNoteCaption(link)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func linkNoteCaption(_ link: ContactLink) -> some View {
+        if !link.note.isEmpty {
+            Text(link.note)
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -834,15 +858,16 @@ struct EventDetailView: View {
     /// picker sheet knows it's safe to dismiss. A write failure returns `false`
     /// and surfaces via `service.recordError` so the user can pick a different
     /// contact or retry without losing the sheet.
-    private func addLink(to contact: Contact, note: String) async -> Bool {
+    private func addLink(to contacts: [Contact], note: String) async -> Bool {
         do {
-            // The link WRITE resolves-or-mints the CONTACT endpoint's GuessWho
-            // UUID internally (linking a never-touched contact reconciles +
-            // mints, transparent here), so there is no app-side reconcile. The
-            // EVENT endpoint is the bare `resolvedUUID` until the deferred
-            // event-identity migration.
+            // ONE grouped link write for the whole selection. The write dedups,
+            // excludes the event, and resolves-or-mints every CONTACT endpoint's
+            // GuessWho UUID internally (linking a never-touched contact
+            // reconciles + mints, transparent here), so there is no app-side
+            // reconcile. The EVENT endpoint is the bare `resolvedUUID` until the
+            // deferred event-identity migration.
             _ = try await repository.addEventLink(
-                for: contact.contactID,
+                for: contacts.map(\.contactID),
                 eventUUID: resolvedUUID,
                 note: note
             )
@@ -1055,67 +1080,72 @@ struct ContactPickerSheet: View {
     /// swaps the copy.
     let kind: ContactType
 
-    /// Returns `true` once the link has been created (or already existed),
-    /// `false` if the underlying reconcile-then-link sequence failed. The
-    /// picker surfaces its own neutral failure copy in that case — the host
-    /// view is also free to surface a richer message via `recordError`.
-    let onPick: (Contact, String) async -> Bool
+    /// Writes ONE link joining every picked contact to the entity with the one
+    /// shared note. Returns `true` once the link has been created, `false` if the
+    /// underlying reconcile-then-link sequence failed. The picker surfaces its
+    /// own neutral failure copy in that case — the host view is also free to
+    /// surface a richer message via `recordError`.
+    let onPick: ([Contact], String) async -> Bool
 
     @State private var query: String = ""
     @State private var contacts: [Contact] = []
-    @State private var selection: Contact?
+    // Ordered multi-selection so a grouped link keeps the pick order. Tapping a
+    // row toggles membership; the shared note applies to the whole selection.
+    @State private var selections: [Contact] = []
     @State private var note: String = ""
     @State private var isSubmitting: Bool = false
     @State private var errorMessage: String?
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 0) {
-                if let selection {
-                    Form {
-                        Section(kind == .organization ? "Organization" : "Contact") {
+            List {
+                // The one shared note + any failure copy sit above the list once
+                // at least one row is selected, so the picker stays a single
+                // scrolling surface (no separate confirm screen).
+                if !selections.isEmpty {
+                    Section("Note") {
+                        // Frozen while submitting: the note is snapshotted at
+                        // Add, so a late edit could not change what is written.
+                        TextField("Optional note", text: $note, axis: .vertical)
+                            .disabled(isSubmitting)
+                    }
+                    if let errorMessage {
+                        Section {
+                            Text(errorMessage)
+                                .font(.callout)
+                                .foregroundStyle(.red)
+                        }
+                    }
+                }
+                Section(kind == .organization ? "Organizations" : "Contacts") {
+                    if filteredContacts.isEmpty {
+                        Text(kind == .organization ? "No organizations." : "No contacts.")
+                            .foregroundStyle(.secondary)
+                    }
+                    ForEach(filteredContacts, id: \.id) { entry in
+                        Button {
+                            toggle(entry.contact)
+                        } label: {
                             HStack {
-                                Text(selection.displayName)
-                                Spacer()
-                                Button("Change") {
-                                    self.selection = nil
-                                    errorMessage = nil
-                                }
-                                .buttonStyle(.borderless)
-                                .disabled(isSubmitting)
-                            }
-                        }
-                        Section("Note") {
-                            TextField("Optional note", text: $note, axis: .vertical)
-                        }
-                        if let errorMessage {
-                            Section {
-                                Text(errorMessage)
-                                    .font(.callout)
-                                    .foregroundStyle(.red)
-                            }
-                        }
-                    }
-                } else {
-                    List {
-                        if filteredContacts.isEmpty {
-                            Text(kind == .organization ? "No organizations." : "No contacts.")
-                                .foregroundStyle(.secondary)
-                        }
-                        ForEach(filteredContacts, id: \.id) { entry in
-                            Button {
-                                selection = entry.contact
-                            } label: {
                                 Text(entry.contact.displayName)
+                                    .foregroundStyle(.primary)
+                                Spacer()
+                                if isSelected(entry.contact) {
+                                    Image(systemName: "checkmark")
+                                        .foregroundStyle(.tint)
+                                }
                             }
+                            .contentShape(Rectangle())
                         }
+                        .buttonStyle(.plain)
+                        .disabled(isSubmitting)
                     }
-                    .searchable(
-                        text: $query,
-                        prompt: kind == .organization ? "Search organizations" : "Search contacts"
-                    )
                 }
             }
+            .searchable(
+                text: $query,
+                prompt: kind == .organization ? "Search organizations" : "Search contacts"
+            )
             .navigationTitle(pickerTitle)
             .toolbar {
                 // Cancel stays enabled while submitting: if the underlying
@@ -1127,40 +1157,40 @@ struct ContactPickerSheet: View {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
                 }
-                if let selection {
-                    ToolbarItem(placement: .confirmationAction) {
-                        Button {
-                            // Re-entry guard: a double-tap or chord can fire
-                            // the Button twice before SwiftUI re-renders.
-                            // Setting `isSubmitting` synchronously here (NOT
-                            // inside the Task body) closes that window so a
-                            // second tap can't spawn a duplicate-link Task.
-                            guard !isSubmitting else { return }
-                            errorMessage = nil
-                            isSubmitting = true
-                            Task {
-                                let didLink = await onPick(
-                                    selection,
-                                    note.trimmingCharacters(in: .whitespacesAndNewlines)
-                                )
-                                if didLink {
-                                    dismiss()
-                                } else {
-                                    errorMessage = kind == .organization
-                                        ? "Couldn't add this organization. Try again or pick another."
-                                        : "Couldn't add this contact. Try again or pick another."
-                                }
-                                isSubmitting = false
-                            }
-                        } label: {
-                            if isSubmitting {
-                                ProgressView()
+                ToolbarItem(placement: .confirmationAction) {
+                    Button {
+                        // Re-entry guard: a double-tap or chord can fire the
+                        // Button twice before SwiftUI re-renders. Setting
+                        // `isSubmitting` synchronously here (NOT inside the Task
+                        // body) closes that window so a second tap can't spawn a
+                        // duplicate-link Task.
+                        guard !selections.isEmpty, !isSubmitting else { return }
+                        errorMessage = nil
+                        isSubmitting = true
+                        // Snapshot the draft NOW so the write uses exactly what
+                        // the user saw at Add, not a value edited mid-flight.
+                        let picked = selections
+                        let noteSnapshot = note.trimmingCharacters(in: .whitespacesAndNewlines)
+                        Task {
+                            let didLink = await onPick(picked, noteSnapshot)
+                            if didLink {
+                                dismiss()
                             } else {
-                                Text("Add")
+                                // Keep the selection + note so the user can retry.
+                                errorMessage = kind == .organization
+                                    ? "Couldn't add these organizations. Try again or pick differently."
+                                    : "Couldn't add these contacts. Try again or pick differently."
                             }
+                            isSubmitting = false
                         }
-                        .disabled(isSubmitting)
+                    } label: {
+                        if isSubmitting {
+                            ProgressView()
+                        } else {
+                            Text("Add")
+                        }
                     }
+                    .disabled(selections.isEmpty || isSubmitting)
                 }
             }
             .task { contacts = repository.contacts.filter { $0.contactType == kind } }
@@ -1168,13 +1198,26 @@ struct ContactPickerSheet: View {
     }
 
     private var pickerTitle: String {
-        if selection != nil { return "Add Link" }
-        return kind == .organization ? "Pick Organization" : "Pick Contact"
+        kind == .organization ? "Pick Organizations" : "Pick Contacts"
+    }
+
+    private func isSelected(_ contact: Contact) -> Bool {
+        selections.contains { $0.contactID == contact.contactID }
+    }
+
+    /// Add or remove `contact` from the ordered selection, keyed on the opaque
+    /// `ContactID` (never a raw `localID`).
+    private func toggle(_ contact: Contact) {
+        if let index = selections.firstIndex(where: { $0.contactID == contact.contactID }) {
+            selections.remove(at: index)
+        } else {
+            selections.append(contact)
+        }
     }
 
     /// Picker rows keyed by opaque `ContactID` (not raw `localID`) so the List's
-    /// diffing identity is the app's stable GuessWho identity. `selection` stays
-    /// a `Contact` because that's what `onPick` consumes.
+    /// diffing identity is the app's stable GuessWho identity. `selections` stays
+    /// `[Contact]` because that's what `onPick` consumes.
     private var filteredContacts: [(id: ContactID, contact: Contact)] {
         let sorted = contacts.sorted {
             $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending

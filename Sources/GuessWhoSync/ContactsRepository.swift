@@ -1816,58 +1816,66 @@ public final class ContactsRepository: NSObject {
         }
     }
 
-    /// Both live link collections needed by one contact-detail open, derived
+    /// All live link collections needed by one contact-detail open, derived
     /// from one engine endpoint lookup. The engine lookup is backed by the
     /// generation-gated link-corpus index, so the first call for a generation
     /// performs one corpus walk and subsequent contact opens are O(1).
     ///
-    /// Classification intentionally mirrors `links(for:)` and
-    /// `eventLinks(for:)`: tombstones are excluded, endpoint direction is
-    /// irrelevant, and the far endpoint kind alone chooses the destination
-    /// collection. An unreconciled contact has no durable link endpoint and
-    /// therefore returns two empty collections without minting identity.
+    /// Classification mirrors `links(for:)` / `eventLinks(for:)` /
+    /// `placeLinks(for:)`: tombstones are excluded, endpoint direction is
+    /// irrelevant, and each link gets SINGLE-ROW OWNERSHIP by far-endpoint
+    /// priority `event > place > contact` — a grouped event/place link (several
+    /// people sharing one note) is an event/place link for every participant, so
+    /// it appears in exactly one collection and never duplicates as a contact
+    /// row. An unreconciled contact has no durable link endpoint and therefore
+    /// returns empty collections without minting identity.
     public func contactDetailLinks(
         for id: ContactID
-    ) async -> (contactLinks: [Link], eventLinks: [Link]) {
-        guard let sync, let guessWhoID = id.guessWhoID else { return ([], []) }
+    ) async -> (contactLinks: [Link], eventLinks: [Link], placeLinks: [Link]) {
+        guard let sync, let guessWhoID = id.guessWhoID else { return ([], [], []) }
         let endpoint = SidecarKey(kind: .contact, id: guessWhoID)
         do {
             let allLinks = try await sync.links(at: endpoint)
             var contactLinks: [Link] = []
             var eventLinks: [Link] = []
+            var placeLinks: [Link] = []
             for link in allLinks where link.deletedAt == nil {
-                switch Self.otherEndpoint(of: link, from: endpoint).kind {
+                switch Self.linkClass(of: link, from: endpoint) {
                 case .contact:
                     contactLinks.append(link)
                 case .event:
                     eventLinks.append(link)
-                default:
+                case .place:
+                    placeLinks.append(link)
+                case .other:
                     break
                 }
             }
-            return (contactLinks, eventLinks)
+            return (contactLinks, eventLinks, placeLinks)
         } catch {
             lastError = "contact-detail links read failed: \(error.localizedDescription)"
-            return ([], [])
+            return ([], [], [])
         }
     }
 
     /// Live contact↔contact links on the contact identified by `id`. Excludes
-    /// soft-deleted links and links whose FAR endpoint is not a contact (those
-    /// are event links — see `eventLinks(for:)`). Returns `[]` when the contact
-    /// is unreconciled or the engine is unavailable. Mirrors
-    /// `SyncService.contactLinks(forContactUUID:)`.
+    /// soft-deleted links and links that are owned by an event or place (those
+    /// are event/place links — see `eventLinks(for:)` / `placeLinks(for:)`).
+    /// A contact link may still have SEVERAL contact participants (a shared
+    /// note among people); it stays a single contact-link row here. Returns
+    /// `[]` when the contact is unreconciled or the engine is unavailable.
+    /// Mirrors `SyncService.contactLinks(forContactUUID:)`.
     ///
     /// `async` — unlike the single-envelope reads above, the link read walks
     /// EVERY link sidecar on disk, so it rides the engine's background-hop
     /// overload rather than blocking the main actor. Same for
-    /// `eventLinks(for:)` / `linkedEventUUIDs(for:)` below.
+    /// `eventLinks(for:)` / `placeLinks(for:)` / `linkedEventUUIDs(for:)` below.
     public func links(for id: ContactID) async -> [Link] {
         guard let sync, let guessWhoID = id.guessWhoID else { return [] }
         let endpoint = SidecarKey(kind: .contact, id: guessWhoID)
         do {
             return try await sync.links(at: endpoint).filter { link in
-                link.deletedAt == nil && Self.otherEndpoint(of: link, from: endpoint).kind == .contact
+                link.deletedAt == nil && Self.linkClass(of: link, from: endpoint) == .contact
             }
         } catch {
             lastError = "links read failed: \(error.localizedDescription)"
@@ -1875,21 +1883,42 @@ public final class ContactsRepository: NSObject {
         }
     }
 
-    /// Live contact↔event links on the contact identified by `id`. Excludes
-    /// soft-deleted links and links whose FAR endpoint is not an event. Returns
-    /// `[]` when the contact is unreconciled or the engine is unavailable.
-    /// Mirrors `SyncService.eventLinks(forContactUUID:)`. (The CONTACT endpoint
-    /// is keyed on `ContactID`; the EVENT endpoint stays a bare UUID until the
-    /// deferred event-identity migration.)
+    /// Live event links on the contact identified by `id`: links whose far
+    /// endpoints include an event (single-row ownership `event > place >
+    /// contact`, so a shared event note among several people is one event row on
+    /// each participant's card, never also a contact row). Returns `[]` when the
+    /// contact is unreconciled or the engine is unavailable. Mirrors
+    /// `SyncService.eventLinks(forContactUUID:)`. (The CONTACT endpoint is keyed
+    /// on `ContactID`; the EVENT endpoint stays a bare UUID until the deferred
+    /// event-identity migration.)
     public func eventLinks(for id: ContactID) async -> [Link] {
         guard let sync, let guessWhoID = id.guessWhoID else { return [] }
         let endpoint = SidecarKey(kind: .contact, id: guessWhoID)
         do {
             return try await sync.links(at: endpoint).filter { link in
-                link.deletedAt == nil && Self.otherEndpoint(of: link, from: endpoint).kind == .event
+                link.deletedAt == nil && Self.linkClass(of: link, from: endpoint) == .event
             }
         } catch {
             lastError = "event links read failed: \(error.localizedDescription)"
+            return []
+        }
+    }
+
+    /// Live place links on the contact identified by `id`: links whose far
+    /// endpoints include a place but NO event (single-row ownership `event >
+    /// place > contact`, so a shared place note among several people is one place
+    /// row on each participant's card, never also a contact row). Returns `[]`
+    /// when the contact is unreconciled or the engine is unavailable. Analogous
+    /// to `eventLinks(for:)`; the PLACE endpoint is a bare sidecar UUID.
+    public func placeLinks(for id: ContactID) async -> [Link] {
+        guard let sync, let guessWhoID = id.guessWhoID else { return [] }
+        let endpoint = SidecarKey(kind: .contact, id: guessWhoID)
+        do {
+            return try await sync.links(at: endpoint).filter { link in
+                link.deletedAt == nil && Self.linkClass(of: link, from: endpoint) == .place
+            }
+        } catch {
+            lastError = "place links read failed: \(error.localizedDescription)"
             return []
         }
     }
@@ -1907,8 +1936,7 @@ public final class ContactsRepository: NSObject {
         do {
             return try await sync.links(at: endpoint).compactMap { link in
                 guard link.deletedAt == nil else { return nil }
-                let other = Self.otherEndpoint(of: link, from: endpoint)
-                return other.kind == .event ? other.id : nil
+                return link.otherEndpoints(from: endpoint).first { $0.kind == .event }?.id
             }
         } catch {
             lastError = "linked event UUIDs read failed: \(error.localizedDescription)"
@@ -1916,34 +1944,49 @@ public final class ContactsRepository: NSObject {
         }
     }
 
-    /// The bare EVENT-endpoint UUID of a single contact↔event `link`, relative to
-    /// the contact identified by `id`. The package classifies the link's
+    /// The bare EVENT-endpoint UUID of a single `link` that has an event, relative
+    /// to the contact identified by `id`. The package classifies the link's
     /// endpoints internally (resolving `id` to the contact endpoint) so a row
     /// rendering one linked event never constructs a `.contact` `SidecarKey`.
     /// Returns `nil` when the contact is unreconciled (it can hold no link) or
-    /// when neither endpoint is the contact (defensive). The EVENT endpoint stays
-    /// a bare UUID until the deferred event-identity migration.
+    /// when the link has no event endpoint. The EVENT endpoint stays a bare UUID
+    /// until the deferred event-identity migration.
     public func eventEndpointUUID(of link: Link, for id: ContactID) -> String? {
         guard let guessWhoID = id.guessWhoID else { return nil }
         let endpoint = SidecarKey(kind: .contact, id: guessWhoID)
-        let other = Self.otherEndpoint(of: link, from: endpoint)
-        return other.kind == .event ? other.id : nil
+        return link.otherEndpoints(from: endpoint).first { $0.kind == .event }?.id
     }
 
-    /// The far CONTACT endpoint of a contact↔contact `link`, relative to the
-    /// contact identified by `id`. The app gets the resolved `Contact` without
-    /// reading the far endpoint's bare GuessWho UUID.
+    /// The bare PLACE-endpoint UUID of a single `link` that has a place, relative
+    /// to the contact identified by `id`. The app resolves the place through the
+    /// Maps repository from this UUID; the CONTACT endpoint stays inside the
+    /// package. Returns `nil` when the contact is unreconciled or the link has no
+    /// place endpoint. Analogous to `eventEndpointUUID(of:for:)`.
+    public func linkedPlaceUUID(of link: Link, for id: ContactID) -> String? {
+        guard let guessWhoID = id.guessWhoID else { return nil }
+        let endpoint = SidecarKey(kind: .contact, id: guessWhoID)
+        return link.otherEndpoints(from: endpoint).first { $0.kind == .place }?.id
+    }
+
+    /// The far CONTACT endpoint of a `link`, relative to the contact identified
+    /// by `id`. For a binary contact↔contact link this is the other person; for
+    /// a grouped link it is the FIRST other contact participant. The app gets the
+    /// resolved `Contact` without reading the far endpoint's bare GuessWho UUID.
+    /// Prefer `linkedContacts(of:for:)` when a grouped link may have several
+    /// participants. Returns `nil` when `id` is not a participant of `link`.
     public func linkedContact(of link: Link, for id: ContactID) -> Contact? {
         guard let guessWhoID = id.guessWhoID else { return nil }
         let endpoint = SidecarKey(kind: .contact, id: guessWhoID)
-        guard link.endpointA == endpoint || link.endpointB == endpoint else { return nil }
-        let other = Self.otherEndpoint(of: link, from: endpoint)
-        return other.kind == .contact ? contact(guessWhoID: other.id) : nil
+        guard link.endpoints.contains(endpoint) else { return nil }
+        return Self.projectedContactEndpoints(of: link, from: endpoint)
+            .first
+            .flatMap { contact(guessWhoID: $0.id) }
     }
 
-    /// The CONTACT endpoint of a contact↔event `link`, relative to the event
-    /// sidecar UUID. The event UUID remains the deferred EventID migration's
-    /// boundary; the contact endpoint UUID stays inside the package.
+    /// The CONTACT endpoint of a `link`, relative to the event sidecar UUID. The
+    /// event UUID remains the deferred EventID migration's boundary; the contact
+    /// endpoint UUID stays inside the package. For a grouped event link this is
+    /// the FIRST contact participant — prefer `linkedContacts(of:forEventUUID:)`.
     public func linkedContact(of link: Link, forEventUUID eventUUID: String) -> Contact? {
         let endpoint = SidecarKey(kind: .event, id: eventUUID)
         return linkedContact(of: link, at: endpoint)
@@ -1952,11 +1995,43 @@ public final class ContactsRepository: NSObject {
     /// The far CONTACT endpoint of `link`, relative to any non-contact
     /// sidecar endpoint (currently an event or place). This keeps the bare
     /// GuessWho contact UUID inside the package while allowing generic entity
-    /// detail pages to resolve their linked contact.
+    /// detail pages to resolve their linked contact. For a grouped link this is
+    /// the FIRST contact participant — prefer `linkedContacts(of:at:)`.
     public func linkedContact(of link: Link, at endpoint: SidecarKey) -> Contact? {
-        guard link.endpointA == endpoint || link.endpointB == endpoint else { return nil }
-        let other = Self.otherEndpoint(of: link, from: endpoint)
-        return other.kind == .contact ? contact(guessWhoID: other.id) : nil
+        guard link.endpoints.contains(endpoint) else { return nil }
+        return Self.projectedContactEndpoints(of: link, from: endpoint)
+            .first
+            .flatMap { contact(guessWhoID: $0.id) }
+    }
+
+    /// Every OTHER contact participant of `link`, relative to the contact
+    /// identified by `id` — the co-participants of a shared note. Anchor-
+    /// agnostic: returns the other contacts whether the link is a plain
+    /// person↔person(s) link or is event/place-anchored (the event/place
+    /// endpoint is simply not a contact and so is excluded). Each slot is
+    /// resolved to a `Contact?`, PRESERVING an unresolved participant as `nil`
+    /// so the caller can render a placeholder without the list collapsing.
+    /// Returns `[]` when `id` is unreconciled or not a participant of `link`.
+    public func linkedContacts(of link: Link, for id: ContactID) -> [Contact?] {
+        guard let guessWhoID = id.guessWhoID else { return [] }
+        return linkedContacts(of: link, at: SidecarKey(kind: .contact, id: guessWhoID))
+    }
+
+    /// Every CONTACT participant of `link`, relative to the event sidecar UUID —
+    /// all the people sharing this event note. Preserves unresolved participants
+    /// as `nil`. Returns `[]` when the event is not an endpoint of `link`.
+    public func linkedContacts(of link: Link, forEventUUID eventUUID: String) -> [Contact?] {
+        linkedContacts(of: link, at: SidecarKey(kind: .event, id: eventUUID))
+    }
+
+    /// Every OTHER contact participant of `link`, relative to any endpoint
+    /// (contact, event, or place). Contact-only, current entity excluded,
+    /// unresolved participants preserved as `nil`, in `link.endpoints` order.
+    /// Returns `[]` when `endpoint` is not a participant of `link`.
+    public func linkedContacts(of link: Link, at endpoint: SidecarKey) -> [Contact?] {
+        guard link.endpoints.contains(endpoint) else { return [] }
+        return Self.projectedContactEndpoints(of: link, from: endpoint)
+            .map { contact(guessWhoID: $0.id) }
     }
 
     /// Whether the contact identified by `id` is favorited. Returns `false` when
@@ -2816,6 +2891,43 @@ public final class ContactsRepository: NSObject {
         return link
     }
 
+    /// Create ONE durable link joining `a` with every contact in `others` under
+    /// a single shared note. Rejects an empty selection with
+    /// `EmptyLinkSelectionError` (including a selection that reduces to empty
+    /// once the source `a` and duplicates are removed). Resolves-or-mints EVERY
+    /// identity first, deduplicates, excludes the source, THEN performs one link
+    /// envelope write, so every participant sees the same record exactly once.
+    /// Refreshes the cache for whichever contacts minted. Throws
+    /// `SidecarUnavailableError` when the engine is unavailable.
+    @discardableResult
+    public func addLink(from a: ContactID, to others: [ContactID], note: String) async throws -> Link {
+        guard let sync else { throw SidecarUnavailableError() }
+        // Drop the source token and duplicate tokens up front (ContactID
+        // equality) so an empty or all-source selection is rejected BEFORE we
+        // mint any identity — minting `a` only to then throw would leave a
+        // stray GuessWho URL on a contact the user never linked. A second,
+        // CANONICAL dedup still runs after resolve below, to catch two distinct
+        // tokens that resolve to the same GuessWho UUID.
+        let distinctOthers = Self.distinctContactIDs(others, excluding: [a])
+        guard !distinctOthers.isEmpty else { throw EmptyLinkSelectionError() }
+
+        var mintedLocalIDs: Set<String> = []
+        let aMinted = a.guessWhoID == nil
+        let aID = try await resolveOrMintGuessWhoID(for: a)
+        if aMinted { mintedLocalIDs.insert(a.localID) }
+        // Resolve/mint every additional participant BEFORE the one write, then
+        // canonical-dedup on the resolved UUID and drop any equal to the source.
+        let resolved = try await resolvedContactEndpoints(for: distinctOthers, excluding: [aID])
+        guard !resolved.endpoints.isEmpty else { throw EmptyLinkSelectionError() }
+        for lid in resolved.mintedLocalIDs { mintedLocalIDs.insert(lid) }
+        let link = try sync.addLink(
+            endpoints: [SidecarKey(kind: .contact, id: aID)] + resolved.endpoints,
+            note: note
+        )
+        for lid in mintedLocalIDs { await refreshContact(localID: lid) }
+        return link
+    }
+
     /// Mutate the note on an existing link. The link is identified by its own
     /// UUID (`linkID`), so no contact resolve-or-mint is needed — but it is a
     /// WRITE, so it throws `SidecarUnavailableError` when the engine is
@@ -2855,6 +2967,26 @@ public final class ContactsRepository: NSObject {
         return link
     }
 
+    /// Create ONE durable event link joining every contact in `ids` with the
+    /// event `eventUUID` under a single shared note. Rejects an empty selection
+    /// with `EmptyLinkSelectionError`. Resolves-or-mints EVERY contact identity
+    /// first, deduplicates, THEN performs one link envelope write; the event is
+    /// `endpointB` and the contacts fill `endpointA` + additional endpoints, so
+    /// the link is classified as an event link on every participant's card.
+    /// Throws `SidecarUnavailableError` when the engine is unavailable.
+    @discardableResult
+    public func addEventLink(for ids: [ContactID], eventUUID: String, note: String) async throws -> Link {
+        guard let sync else { throw SidecarUnavailableError() }
+        guard !ids.isEmpty else { throw EmptyLinkSelectionError() }
+        let resolved = try await resolvedContactEndpoints(for: ids)
+        guard let first = resolved.endpoints.first else { throw EmptyLinkSelectionError() }
+        var endpoints: [SidecarKey] = [first, SidecarKey(kind: .event, id: eventUUID)]
+        endpoints.append(contentsOf: resolved.endpoints.dropFirst())
+        let link = try sync.addLink(endpoints: endpoints, note: note)
+        for lid in resolved.mintedLocalIDs { await refreshContact(localID: lid) }
+        return link
+    }
+
     /// Create a durable contact↔place link. As with `addEventLink`, the
     /// CONTACT endpoint resolves-or-mints internally while the already-stored
     /// PLACE endpoint is addressed by its sidecar UUID.
@@ -2870,6 +3002,70 @@ public final class ContactsRepository: NSObject {
         )
         await refreshCacheIfMinted(minted, localID: id.localID)
         return link
+    }
+
+    /// Create ONE durable place link joining every contact in `ids` with the
+    /// place `placeUUID` under a single shared note. Rejects an empty selection
+    /// with `EmptyLinkSelectionError`. Resolves-or-mints EVERY contact identity
+    /// first, deduplicates, THEN performs one link envelope write; the place is
+    /// `endpointB` and the contacts fill `endpointA` + additional endpoints, so
+    /// the link is classified as a place link on every participant's card.
+    /// Throws `SidecarUnavailableError` when the engine is unavailable.
+    @discardableResult
+    public func addPlaceLink(for ids: [ContactID], placeUUID: String, note: String) async throws -> Link {
+        guard let sync else { throw SidecarUnavailableError() }
+        guard !ids.isEmpty else { throw EmptyLinkSelectionError() }
+        let resolved = try await resolvedContactEndpoints(for: ids)
+        guard let first = resolved.endpoints.first else { throw EmptyLinkSelectionError() }
+        var endpoints: [SidecarKey] = [first, SidecarKey(kind: .place, id: placeUUID)]
+        endpoints.append(contentsOf: resolved.endpoints.dropFirst())
+        let link = try sync.addLink(endpoints: endpoints, note: note)
+        for lid in resolved.mintedLocalIDs { await refreshContact(localID: lid) }
+        return link
+    }
+
+    /// `ids` with the `excluded` tokens removed and duplicate tokens collapsed,
+    /// preserving first-appearance order. Keyed on `ContactID` equality (its
+    /// effective identity), this is the CHEAP, pre-mint filter — it lets an
+    /// empty/all-source selection be rejected before any identity is minted.
+    /// A second canonical dedup on the resolved GuessWho UUID still follows,
+    /// since two distinct tokens can resolve to the same contact.
+    private static func distinctContactIDs(
+        _ ids: [ContactID],
+        excluding excluded: Set<ContactID>
+    ) -> [ContactID] {
+        var seen = excluded
+        var result: [ContactID] = []
+        for id in ids where seen.insert(id).inserted {
+            result.append(id)
+        }
+        return result
+    }
+
+    /// Resolve/mint every `ContactID` in `ids` to its canonical GuessWho contact
+    /// endpoint, in order, DEDUPLICATED (first appearance wins) and with any id
+    /// in `excluded` removed. Returns the ordered distinct endpoints plus the
+    /// localIDs of contacts that minted a fresh identity (so the caller refreshes
+    /// their cache entries after the write). Every identity is resolved BEFORE
+    /// the caller performs its single link write.
+    private func resolvedContactEndpoints(
+        for ids: [ContactID],
+        excluding excluded: Set<String> = []
+    ) async throws -> (endpoints: [SidecarKey], mintedLocalIDs: [String]) {
+        var seen = excluded
+        var endpoints: [SidecarKey] = []
+        var mintedLocalIDs: [String] = []
+        var mintedSeen: Set<String> = []
+        for id in ids {
+            let minted = id.guessWhoID == nil
+            let gw = try await resolveOrMintGuessWhoID(for: id)
+            if minted, mintedSeen.insert(id.localID).inserted {
+                mintedLocalIDs.append(id.localID)
+            }
+            guard seen.insert(gw).inserted else { continue }
+            endpoints.append(SidecarKey(kind: .contact, id: gw))
+        }
+        return (endpoints, mintedLocalIDs)
     }
 
     /// Toggle the favorite state of the contact identified by `id`, returning
@@ -2911,12 +3107,47 @@ public final class ContactsRepository: NSObject {
         await refreshContact(localID: localID)
     }
 
-    /// Far endpoint of `link` relative to `endpoint` (the one that is NOT
-    /// `endpoint`). Used to classify a link as contact↔contact vs contact↔event
-    /// by inspecting the FAR endpoint's `kind`. Mirrors
-    /// `SyncService.otherEndpoint(of:from:)`.
-    private static func otherEndpoint(of link: Link, from endpoint: SidecarKey) -> SidecarKey {
-        link.endpointA == endpoint ? link.endpointB : link.endpointA
+    /// Single-row ownership class of `link` relative to the near `endpoint`. A
+    /// link belongs to exactly ONE section on the near entity's card, chosen by
+    /// its far endpoints with priority `event > place > contact` — so a grouped
+    /// event/place link (several people sharing one note) is an event/place link
+    /// for EVERY participant and never also duplicates as a contact row. `.other`
+    /// covers a link whose only far endpoints are none of these kinds.
+    ///
+    /// This `event > place > contact` precedence is the canonical one; keep it
+    /// in sync with `GuessWhoMCPCore.ToolDispatcher.representativeRank`, which
+    /// applies the same ordering on the CLI/MCP link surface.
+    enum LinkClass { case event, place, contact, other }
+
+    static func linkClass(of link: Link, from endpoint: SidecarKey) -> LinkClass {
+        let others = link.otherEndpoints(from: endpoint)
+        // Self-link: the near endpoint is the ONLY participant (e.g. a binary
+        // contact link whose two endpoints collapsed to one canonical id under
+        // Case D). Keep it in the near entity's OWN section so the shared note
+        // stays visible/editable instead of vanishing — we never auto-tombstone
+        // it. A non-contact self-link has no card section, hence `.other`.
+        if others.isEmpty { return endpoint.kind == .contact ? .contact : .other }
+        if others.contains(where: { $0.kind == .event }) { return .event }
+        if others.contains(where: { $0.kind == .place }) { return .place }
+        if others.contains(where: { $0.kind == .contact }) { return .contact }
+        return .other
+    }
+
+    /// The contact endpoints of `link` to PROJECT relative to `endpoint`,
+    /// strictly excluding `endpoint` — EXCEPT a self-link (the near endpoint is
+    /// the only participant), where the near endpoint itself IS the projected
+    /// contact. That lone fallback preserves the pre-multi-endpoint behavior of
+    /// a binary self-link (before, a self-link's "far" end was the endpoint
+    /// itself), so a shared note on a Case-D-collapsed link stays visible and
+    /// editable. It does NOT change `Link.otherEndpoints`, which stays strict
+    /// (it never echoes the near endpoint) — the self-fallback lives only in
+    /// these repository projections.
+    static func projectedContactEndpoints(of link: Link, from endpoint: SidecarKey) -> [SidecarKey] {
+        let others = link.otherEndpoints(from: endpoint)
+        if others.isEmpty {
+            return endpoint.kind == .contact ? [endpoint] : []
+        }
+        return others.filter { $0.kind == .contact }
     }
 
     /// People rows addressed by `ContactID`, sectioned A–Z. Mirrors

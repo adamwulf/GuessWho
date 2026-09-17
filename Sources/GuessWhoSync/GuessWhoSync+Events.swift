@@ -342,7 +342,7 @@ extension GuessWhoSync {
             guard let envelope = try sidecars.read(key) else { continue }
             guard let link = Link(from: envelope) else { continue }
             guard link.deletedAt == nil else { continue }
-            guard link.endpointA.kind == .event || link.endpointB.kind == .event else { continue }
+            guard link.endpoints.contains(where: { $0.kind == .event }) else { continue }
             live.append(link)
         }
         live.sort { lhs, rhs in
@@ -353,7 +353,7 @@ extension GuessWhoSync {
         var seenEndpoints: Set<SidecarKey> = []
         var result: [Event] = []
         for link in live {
-            for endpoint in [link.endpointA, link.endpointB] where endpoint.kind == .event {
+            for endpoint in link.endpoints where endpoint.kind == .event {
                 guard seenEndpoints.insert(endpoint).inserted else { continue }
                 if let event = try event(at: endpoint) {
                     result.append(event)
@@ -1224,15 +1224,10 @@ extension GuessWhoSync {
         var rewritten: [UUID] = []
         for key in try sidecars.allKeys() where key.kind == .link {
             // Cheap pre-screen. The authoritative read happens inside the
-            // lock below; this read may be a moment stale.
+            // lock below; this read may be a moment stale. Any endpoint slot —
+            // base or additional — carrying a legacy event id is a candidate.
             guard let pre = try sidecars.read(key) else { continue }
-            guard let preA = pre.fields[Link.endpointAKey],
-                  let preB = pre.fields[Link.endpointBKey],
-                  let preAEnd = Link.decodeEndpoint(preA.value),
-                  let preBEnd = Link.decodeEndpoint(preB.value) else { continue }
-            let preAMatches = preAEnd.kind == .event && mapping[preAEnd.id] != nil
-            let preBMatches = preBEnd.kind == .event && mapping[preBEnd.id] != nil
-            guard preAMatches || preBMatches else { continue }
+            guard Self.linkTouchesEventMapping(pre, mapping: mapping) else { continue }
 
             try withKeyLocked(key) { ctx in
                 // Re-read inside the lock: a concurrent setLinkNote or
@@ -1242,9 +1237,30 @@ extension GuessWhoSync {
                       let bCell = envelope.fields[Link.endpointBKey],
                       let aEnd = Link.decodeEndpoint(aCell.value),
                       let bEnd = Link.decodeEndpoint(bCell.value) else { return }
+                // Additional endpoints (optional cell). A present-but-malformed
+                // cell aborts this link's rewrite, matching the base-cell rule.
+                let additionalCell = envelope.fields[Link.additionalEndpointsKey]
+                var additionalEnds: [SidecarKey] = []
+                if let additionalCell {
+                    guard case .array(let items) = additionalCell.value else { return }
+                    for item in items {
+                        guard let end = Link.decodeEndpoint(item) else { return }
+                        additionalEnds.append(end)
+                    }
+                }
+
                 let aWinner = aEnd.kind == .event ? mapping[aEnd.id] : nil
                 let bWinner = bEnd.kind == .event ? mapping[bEnd.id] : nil
-                guard aWinner != nil || bWinner != nil else { return }
+                var newAdditional = additionalEnds
+                var additionalChanged = false
+                for index in newAdditional.indices {
+                    let end = newAdditional[index]
+                    if end.kind == .event, let winner = mapping[end.id] {
+                        newAdditional[index] = SidecarKey(kind: .event, id: winner.uuidString)
+                        additionalChanged = true
+                    }
+                }
+                guard aWinner != nil || bWinner != nil || additionalChanged else { return }
 
                 let now = Date()
                 var fields = envelope.fields
@@ -1262,6 +1278,13 @@ extension GuessWhoSync {
                         modifiedBy: deviceID
                     )
                 }
+                if additionalChanged {
+                    fields[Link.additionalEndpointsKey] = SidecarCell(
+                        value: Link.encodeAdditionalEndpoints(newAdditional),
+                        modifiedAt: now,
+                        modifiedBy: deviceID
+                    )
+                }
                 try ctx.write(
                     SidecarEnvelope(schemaVersion: 1, entityID: envelope.entityID, fields: fields)
                 )
@@ -1272,6 +1295,30 @@ extension GuessWhoSync {
             }
         }
         return rewritten
+    }
+
+    /// True iff any endpoint slot of `envelope` (endpointA, endpointB, or an
+    /// additional endpoint) is an `.event` whose id is in `mapping`.
+    private static func linkTouchesEventMapping(
+        _ envelope: SidecarEnvelope,
+        mapping: [String: UUID]
+    ) -> Bool {
+        for cellKey in [Link.endpointAKey, Link.endpointBKey] {
+            if let cell = envelope.fields[cellKey],
+               let end = Link.decodeEndpoint(cell.value),
+               end.kind == .event, mapping[end.id] != nil {
+                return true
+            }
+        }
+        if let cell = envelope.fields[Link.additionalEndpointsKey],
+           case .array(let items) = cell.value {
+            for item in items {
+                if let end = Link.decodeEndpoint(item), end.kind == .event, mapping[end.id] != nil {
+                    return true
+                }
+            }
+        }
+        return false
     }
 
     private func makeCellCell(

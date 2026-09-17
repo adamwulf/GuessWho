@@ -216,16 +216,25 @@ final class LegacyScriptedContactSource: MCPContactSource {
             return all
                 .filter { link in
                     guard link.deletedAt == nil else { return false }
-                    let far = link.endpointA == endpoint ? link.endpointB : link.endpointA
-                    return far.kind == .contact
+                    // Grouped connections have more than one far endpoint;
+                    // mirror ContactsRepository.links(for:), which files a
+                    // connection under ONE category by event > place > contact
+                    // priority so it never appears in two lists. Keep it in the
+                    // contact's own connections only when contact is the winning
+                    // far class. For an ordinary two-record link this is exactly
+                    // the old `far.kind == .contact` test.
+                    return Self.representativeFarKind(link, from: endpoint) == .contact
                 }
                 .sorted { $0.createdAt < $1.createdAt }
         }
         let effective = effectiveID(id)
         return linksByID.values
             .filter { link in
-                link.deletedAt == nil
-                    && (link.endpointA.id == effective || link.endpointB.id == effective)
+                // `endpoints` covers endpointA, endpointB, and any additional
+                // endpoints, so a grouped connection is found from every one of
+                // its members; for a two-record link it is the same membership
+                // test as before.
+                link.deletedAt == nil && link.endpoints.contains { $0.id == effective }
             }
             .sorted { $0.createdAt < $1.createdAt }
     }
@@ -235,6 +244,18 @@ final class LegacyScriptedContactSource: MCPContactSource {
             return (try? engine.link(id: linkID)) ?? nil
         }
         return linksByID[linkID]
+    }
+
+    /// The category a connection is filed under, seen from `endpoint`, by the
+    /// same event > place > contact priority the live `ContactsRepository`
+    /// uses so a grouped connection appears in exactly one list. `nil` only
+    /// when `endpoint` is the connection's sole endpoint.
+    private static func representativeFarKind(_ link: Link, from endpoint: SidecarKey) -> SidecarKind? {
+        let fars = link.otherEndpoints(from: endpoint)
+        if fars.contains(where: { $0.kind == .event }) { return .event }
+        if fars.contains(where: { $0.kind == .place }) { return .place }
+        if fars.contains(where: { $0.kind == .contact }) { return .contact }
+        return fars.first?.kind
     }
 
     func isFavorite(_ id: ContactID) -> Bool {

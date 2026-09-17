@@ -121,13 +121,13 @@ struct GuidePlaceDetailView: View {
             await reloadLinks()
         }
         .sheet(isPresented: $showingContactPicker) {
-            ContactPickerSheet(kind: .person) { contact, note in
-                await addContactLink(to: contact, note: note)
+            ContactPickerSheet(kind: .person) { contacts, note in
+                await addContactLink(to: contacts, note: note)
             }
         }
         .sheet(isPresented: $showingOrganizationPicker) {
-            ContactPickerSheet(kind: .organization) { contact, note in
-                await addContactLink(to: contact, note: note)
+            ContactPickerSheet(kind: .organization) { contacts, note in
+                await addContactLink(to: contacts, note: note)
             }
         }
         .sheet(isPresented: $showingEventPicker) {
@@ -408,34 +408,62 @@ struct GuidePlaceDetailView: View {
 
     @ViewBuilder
     private func linkedContactRow(_ link: ContactLink) -> some View {
-        let contact = contactsRepository.linkedContact(of: link, at: placeEndpoint)
-        if let contact {
-            Button {
-                pushContactReference(ContactReference(id: contact.contactID))
-            } label: {
-                ActivityRowLayout {
-                    ContactAvatar(contact: contact, diameter: 20)
-                } content: {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(contact.displayName)
-                        if !link.note.isEmpty {
-                            Text(link.note)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+        // All contacts on this link — one for a plain link, several for a grouped
+        // link that shares this note. Unresolved slots are preserved as nil.
+        let contacts = contactsRepository.linkedContacts(of: link, at: placeEndpoint)
+        if contacts.count <= 1 {
+            // Single participant: unchanged full-row layout (tap the row to open
+            // the one contact).
+            let contact = contacts.first ?? nil
+            if let contact {
+                Button {
+                    pushContactReference(ContactReference(id: contact.contactID))
+                } label: {
+                    ActivityRowLayout {
+                        ContactAvatar(contact: contact, diameter: 20)
+                    } content: {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(contact.displayName)
+                            linkNoteCaption(link)
                         }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            } else {
+                ActivityRowLayout {
+                    UnknownContactAvatar(diameter: 20)
+                } content: {
+                    Text("(Unknown contact)")
+                        .foregroundStyle(.secondary)
                 }
             }
-            .buttonStyle(.plain)
         } else {
+            // Grouped link: one leading avatar (first resolved) + independently
+            // tappable, comma-separated names + the one shared note.
             ActivityRowLayout {
-                UnknownContactAvatar(diameter: 20)
+                if let first = contacts.compactMap({ $0 }).first {
+                    ContactAvatar(contact: first, diameter: 20)
+                } else {
+                    UnknownContactAvatar(diameter: 20)
+                }
             } content: {
-                Text("(Unknown contact)")
-                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 2) {
+                    LinkParticipantNames(contacts: contacts)
+                    linkNoteCaption(link)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
+        }
+    }
+
+    @ViewBuilder
+    private func linkNoteCaption(_ link: ContactLink) -> some View {
+        if !link.note.isEmpty {
+            Text(link.note)
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -552,10 +580,12 @@ struct GuidePlaceDetailView: View {
         links = await service.links(at: placeEndpoint)
     }
 
-    private func addContactLink(to contact: Contact, note: String) async -> Bool {
+    private func addContactLink(to contacts: [Contact], note: String) async -> Bool {
         do {
+            // ONE grouped link write for the whole selection — the repository
+            // dedups, excludes the place, and resolves-or-mints every endpoint.
             _ = try await contactsRepository.addPlaceLink(
-                for: contact.contactID,
+                for: contacts.map(\.contactID),
                 placeUUID: placeID.uuidString,
                 note: note
             )

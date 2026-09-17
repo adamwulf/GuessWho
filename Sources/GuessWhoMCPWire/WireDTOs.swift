@@ -530,27 +530,64 @@ public struct WireCustomField: Codable, Sendable {
     }
 }
 
+/// One far participant of a grouped connection (three or more records joined
+/// by a single connection). `kind`/`otherId` describe one record at a far end,
+/// readable with the matching read tool — the same vocabulary as `WireLink`'s
+/// own `kind`/`otherId`.
+public struct WireLinkParticipant: Codable, Sendable {
+    /// The record's kind: "person", "organization", "event", or "place".
+    public let kind: String
+    /// The record's id, in that kind's own id space.
+    public let otherId: String
+
+    public init(kind: String, otherId: String) {
+        self.kind = kind
+        self.otherId = otherId
+    }
+}
+
 /// One generic connection row (links_list / links_create), seen from the
 /// record it was listed on: `kind`/`otherId` describe the record at the
 /// FAR end, readable with the matching read tool (contacts_get,
 /// events_get, places_list). `id` is the connection's own id — the one
 /// links_delete takes.
+///
+/// A connection may join more than two records. There is still exactly ONE
+/// row per connection: `kind`/`otherId` name the deterministic representative
+/// far record (event > place > contact, then endpoint order), and the OPTIONAL
+/// `participants` lists every RESOLVABLE far record — the representative
+/// included. A far record that no longer resolves to a live record is dropped
+/// from the row (its id would not be readable), so `participants` reflects only
+/// the resolvable peers. `participants` is omitted entirely whenever exactly
+/// ONE far record resolves — an ordinary two-record connection, or a grouped
+/// connection whose other peers are currently missing (unresolvable) — so that
+/// payload is byte-identical to before this field existed, and an old payload
+/// with no `participants` key decodes to `nil`.
 public struct WireLink: Codable, Sendable {
     public let id: String
-    /// The other record's kind: "person", "organization", "event", or
-    /// "place".
+    /// The representative far record's kind: "person", "organization",
+    /// "event", or "place".
     public let kind: String
-    /// The other record's id, in that kind's own id space.
+    /// The representative far record's id, in that kind's own id space.
     public let otherId: String
     public let note: String?
     public let createdAt: String
+    /// Every RESOLVABLE far record of the connection (the representative
+    /// included), present only when more than one resolves; `nil`/omitted when
+    /// exactly one far record resolves — a two-record connection, or a grouped
+    /// connection whose other peers are currently missing.
+    public let participants: [WireLinkParticipant]?
 
-    public init(id: String, kind: String, otherId: String, note: String?, createdAt: String) {
+    public init(
+        id: String, kind: String, otherId: String, note: String?, createdAt: String,
+        participants: [WireLinkParticipant]? = nil
+    ) {
         self.id = id
         self.kind = kind
         self.otherId = otherId
         self.note = note
         self.createdAt = createdAt
+        self.participants = participants
     }
 }
 

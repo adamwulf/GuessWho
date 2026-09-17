@@ -43,43 +43,155 @@ struct DetailActivityFooter: View {
     }
 }
 
-enum LinkDirection {
-    case outgoing(other: SidecarKey)
-    case incoming(other: SidecarKey)
+/// A minimal flow layout: places its subviews left-to-right and wraps to a new
+/// line when the next subview would overflow the proposed width. It renders a
+/// link's participant names as a naturally-wrapping run of independently
+/// tappable buttons. A single participant lays out exactly like a plain label,
+/// so the one-name row is visually unchanged (`LinkParticipantNames` only
+/// reaches for this layout when there is more than one name).
+///
+/// Each item is measured (and placed) with its width CAPPED to the available
+/// line width, so a single name longer than the line — or enlarged by a large
+/// Dynamic Type setting — wraps INSIDE its own cell and reports its true
+/// multi-line height, instead of overflowing on one line. Line heights are the
+/// max of the measured (possibly multi-line) item heights.
+struct WrappingNameFlow: Layout {
+    /// Horizontal gap between items on a line. Zero because the comma-and-space
+    /// that separates names is baked into each name's own text.
+    var horizontalSpacing: CGFloat = 0
+    /// Vertical gap between wrapped lines.
+    var verticalSpacing: CGFloat = 2
 
-    var other: SidecarKey {
-        switch self {
-        case .outgoing(let other), .incoming(let other): return other
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let maxWidth = proposal.width ?? .infinity
+        let lines = layoutLines(subviews: subviews, maxWidth: maxWidth)
+        let width = lines.map(\.width).max() ?? 0
+        let height = lines.reduce(CGFloat.zero) { $0 + $1.height }
+            + verticalSpacing * CGFloat(max(0, lines.count - 1))
+        return CGSize(width: min(width, maxWidth), height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let lines = layoutLines(subviews: subviews, maxWidth: bounds.width)
+        var y = bounds.minY
+        for line in lines {
+            var x = bounds.minX
+            for item in line.items {
+                // Place each item at the SAME (capped) size it was measured at so
+                // a wrapped name renders identically to how it was sized.
+                subviews[item.index].place(
+                    at: CGPoint(x: x, y: y),
+                    anchor: .topLeading,
+                    proposal: ProposedViewSize(item.size)
+                )
+                x += item.size.width + horizontalSpacing
+            }
+            y += line.height + verticalSpacing
         }
     }
 
-    var isOutgoing: Bool {
-        if case .outgoing = self { return true }
-        return false
+    private struct FlowItem {
+        let index: Int
+        let size: CGSize
+    }
+
+    private struct FlowLine {
+        var items: [FlowItem] = []
+        var width: CGFloat = 0
+        var height: CGFloat = 0
+    }
+
+    /// Measure a subview, capping its width to `maxWidth`. When its ideal
+    /// single-line width exceeds the line, re-propose at the line width so the
+    /// text wraps internally and returns its true multi-line height.
+    private func measuredSize(_ subview: LayoutSubviews.Element, maxWidth: CGFloat) -> CGSize {
+        let ideal = subview.sizeThatFits(.unspecified)
+        guard maxWidth.isFinite, ideal.width > maxWidth else { return ideal }
+        return subview.sizeThatFits(ProposedViewSize(width: maxWidth, height: nil))
+    }
+
+    /// Group subviews into lines that each fit within `maxWidth`. Always keeps at
+    /// least one item per line; an over-wide single item was capped to the line
+    /// width by `measuredSize`, so it wraps internally rather than overflowing.
+    private func layoutLines(subviews: Subviews, maxWidth: CGFloat) -> [FlowLine] {
+        var lines: [FlowLine] = []
+        var current = FlowLine()
+        for index in subviews.indices {
+            let size = measuredSize(subviews[index], maxWidth: maxWidth)
+            let projected = current.items.isEmpty
+                ? size.width
+                : current.width + horizontalSpacing + size.width
+            if !current.items.isEmpty, projected > maxWidth {
+                lines.append(current)
+                current = FlowLine()
+                current.items = [FlowItem(index: index, size: size)]
+                current.width = size.width
+                current.height = size.height
+            } else {
+                current.items.append(FlowItem(index: index, size: size))
+                current.width = current.items.count == 1
+                    ? size.width
+                    : current.width + horizontalSpacing + size.width
+                current.height = max(current.height, size.height)
+            }
+        }
+        if !current.items.isEmpty { lines.append(current) }
+        return lines
     }
 }
 
-extension ContactLink {
-    /// Classifies this link relative to the opened `contactID`. Returns nil if
-    /// the contact is neither endpoint (shouldn't happen for links surfaced
-    /// from `links(at:)`, defensive guard).
-    ///
-    /// NO app-side identity compare: the identity comparison lives in the
-    /// package via `SidecarKey.matches(_:)`, which compares the endpoint key
-    /// against `contactID.guessWhoID` (a `package` field the app can't read).
-    /// This method only READS the package's already-fetched `SidecarKey`
-    /// endpoints (`endpointA`/`endpointB`) to label which end is the far
-    /// contact — it constructs no key and reads no bare UUID.
-    func direction(for contactID: ContactID) -> LinkDirection? {
-        if endpointA.matches(contactID) { return .outgoing(other: endpointB) }
-        if endpointB.matches(contactID) { return .incoming(other: endpointA) }
-        return nil
+/// Renders a link's far participants as a naturally-wrapping run of
+/// comma-separated names. Each resolved contact is an independently tappable
+/// button that pushes its detail; an unresolved endpoint (kept as `nil` by the
+/// package projection) reads "(Unknown contact)" in secondary text. A single
+/// participant renders exactly like the old one-name row (a plain tinted button
+/// laid out normally so a long name still wraps); multiple participants use the
+/// wrapping flow above.
+struct LinkParticipantNames: View {
+    let contacts: [Contact?]
+    @Environment(\.pushContactReference) private var pushContactReference
+
+    var body: some View {
+        // An empty projection still shows a single unknown row rather than
+        // rendering nothing, so a link with no resolvable far contact is visible.
+        let items = contacts.isEmpty ? [Contact?.none] : contacts
+        if items.count == 1 {
+            nameView(items[0], isLast: true)
+        } else {
+            WrappingNameFlow {
+                ForEach(Array(items.enumerated()), id: \.offset) { index, contact in
+                    nameView(contact, isLast: index == items.count - 1)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func nameView(_ contact: Contact?, isLast: Bool) -> some View {
+        let separator = isLast ? "" : ", "
+        if let contact {
+            Button {
+                pushContactReference(ContactReference(id: contact.contactID))
+            } label: {
+                Text(contact.displayName + separator)
+                    .font(.body)
+                    .foregroundStyle(.tint)
+            }
+            .buttonStyle(.plain)
+        } else {
+            Text("(Unknown contact)" + separator)
+                .font(.body)
+                .foregroundStyle(.secondary)
+        }
     }
 }
 
 struct LinkRow: View {
     let link: ContactLink
-    let otherContact: Contact?
+    /// The link's far contact participants (one for a plain link, several for a
+    /// grouped link that shares this note). `nil` slots are unresolved contacts,
+    /// preserved by the package projection.
+    let otherContacts: [Contact?]
     let isEditing: Bool
     @Binding var draftNote: String
     var noteFocus: FocusState<ContactDetailView.NoteFocus?>.Binding
@@ -88,20 +200,13 @@ struct LinkRow: View {
     let onCommit: () -> Void
     let onCancel: () -> Void
     let onDelete: () -> Void
-    // Bridge to the outer UIKit nav controller (iPhone shell) so the
-    // related-contact row pushes a fresh ContactDetailView. See
-    // `ReferenceNavigation.swift` for the env-closure defaults.
-    @Environment(\.pushContactReference) private var pushContactReference
-    // Needed to re-key the row's `Contact` to its opaque `ContactID` for the
-    // navigation push — the app can't mint a ContactID itself.
-    @Environment(ContactsRepository.self) private var repository
 
     var body: some View {
         ActivityRowLayout {
             leadingAvatar
         } content: {
             VStack(alignment: .leading, spacing: 4) {
-                otherContactView
+                LinkParticipantNames(contacts: otherContacts)
                 if isEditing {
                     editor
                 } else {
@@ -124,33 +229,16 @@ struct LinkRow: View {
         }
     }
 
-    // Leading column: the resolved contact's thumbnail avatar (initials-circle
-    // fallback). The unknown-contact case shows a generic person glyph in the
-    // same 20pt circular footprint so known and unknown rows stay aligned.
+    // Leading column: the FIRST resolved participant's thumbnail avatar
+    // (initials-circle fallback), keeping the single 20pt circular footprint for
+    // grouped links too. When no participant resolves, a generic person glyph in
+    // the same footprint keeps known and unknown rows aligned.
     @ViewBuilder
     private var leadingAvatar: some View {
-        if let other = otherContact {
-            ContactAvatar(contact: other, diameter: 20)
+        if let first = otherContacts.compactMap({ $0 }).first {
+            ContactAvatar(contact: first, diameter: 20)
         } else {
             UnknownContactAvatar(diameter: 20)
-        }
-    }
-
-    @ViewBuilder
-    private var otherContactView: some View {
-        if let other = otherContact {
-            Button {
-                pushContactReference(ContactReference(id: other.contactID))
-            } label: {
-                Text(other.displayName)
-                    .font(.body)
-                    .foregroundStyle(.tint)
-            }
-            .buttonStyle(.plain)
-        } else {
-            Text("(Unknown contact)")
-                .font(.body)
-                .foregroundStyle(.secondary)
         }
     }
 
@@ -248,16 +336,20 @@ struct AddLinkSheet: View {
     /// an organization is a `Contact` — so this only filters the picker and
     /// swaps the copy.
     let kind: ContactType
-    /// Hands back the far endpoint's ContactID (not a bare UUID): the store's
-    /// async `addLink(to:note:)` resolves-or-mints both endpoints.
-    let onSave: (_ other: ContactID, _ note: String) -> Void
+    /// Hands back the chosen far ContactIDs (not bare UUIDs) and the one shared
+    /// note. The store's async `addLink(to:note:)` resolves-or-mints every
+    /// endpoint and writes ONE grouped link. Returns `true` on success; `false`
+    /// keeps the sheet open with the selection and note intact so the user can
+    /// retry.
+    let onSave: (_ others: [ContactID], _ note: String) async -> Bool
 
     @State private var noteText: String = ""
-    // Picker selection. A `.record` points at a real contact's ContactID; a
-    // `.phantom` points at a company that has no record yet (the org picker only)
-    // — its record is created on save so the link has a real endpoint. Never a
-    // raw localID: the app never uses localID as an identity/selection token.
-    @State private var selection: Selection?
+    // Picker selection (ordered so a grouped link keeps the tap order). A
+    // `.record` points at a real contact's ContactID; a `.phantom` points at a
+    // company that has no record yet (the org picker only) — its record is
+    // created on save so the link has a real endpoint. Never a raw localID: the
+    // app never uses localID as an identity/selection token.
+    @State private var selections: [Selection] = []
     @State private var pickerSearch: String = ""
     @State private var eligible: [EligibleContact] = []
     @State private var didLoad = false
@@ -273,10 +365,15 @@ struct AddLinkSheet: View {
         NavigationStack {
             Form {
                 Section("Note") {
+                    // Frozen while saving: the note passed to the write is
+                    // snapshotted at Save (see `save()`), so a late edit here
+                    // could not change what is written anyway — disabling makes
+                    // that visible.
                     TextField("Note (optional)", text: $noteText, axis: .vertical)
+                        .disabled(isSaving)
                 }
 
-                Section(kind == .organization ? "Organization" : "Contact") {
+                Section(kind == .organization ? "Organizations" : "Contacts") {
                     if !didLoad {
                         ProgressView()
                     } else if eligible.isEmpty {
@@ -294,13 +391,13 @@ struct AddLinkSheet: View {
                     } else {
                         ForEach(filtered(eligible: eligible), id: \.id) { entry in
                             Button {
-                                selection = entry.selection
+                                toggle(entry.selection)
                             } label: {
                                 HStack {
                                     Text(entry.contact.displayName)
                                         .foregroundStyle(.primary)
                                     Spacer()
-                                    if selection == entry.selection {
+                                    if selections.contains(entry.selection) {
                                         Image(systemName: "checkmark")
                                             .foregroundStyle(.tint)
                                     }
@@ -308,6 +405,7 @@ struct AddLinkSheet: View {
                                 .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
+                            .disabled(isSaving)
                         }
                     }
                 }
@@ -330,7 +428,7 @@ struct AddLinkSheet: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") { save() }
-                        .disabled(selection == nil || isSaving)
+                        .disabled(selections.isEmpty || isSaving)
                 }
             }
             .task {
@@ -386,42 +484,61 @@ struct AddLinkSheet: View {
         return eligible.filter { $0.contact.matches(searchQuery: query) }
     }
 
+    /// Add or remove `selection` from the ordered selection set.
+    private func toggle(_ selection: Selection) {
+        if let index = selections.firstIndex(of: selection) {
+            selections.remove(at: index)
+        } else {
+            selections.append(selection)
+        }
+    }
+
     private func save() {
-        guard let selection, !isSaving else { return }
-        switch selection {
-        case .record(let id):
-            // Hand the far endpoint's ContactID straight back — the link WRITE
-            // (`ContactsRepository.addLink`) resolves-or-mints BOTH endpoints
-            // internally, so there is no app-side reconcile here. Any write
-            // failure surfaces through the store's reload, not this sheet.
-            onSave(id, noteText)
-            dismiss()
-        case .phantom(let key):
-            // A phantom has no record to point a link at, so create the
-            // organization first, then link to the real record it mints. The
-            // display name comes from the eligible row (canonical spelling).
-            let name = eligible.first { $0.selection == selection }?.contact.displayName ?? key
-            isSaving = true
-            Task { @MainActor in
-                do {
-                    // Reuse a record if one appeared since the picker loaded,
-                    // else create it — either way the link gets a real endpoint
-                    // and no duplicate org is minted on that race.
-                    let target: ContactID
-                    if let existing = repository.organizationContact(named: name) {
-                        target = existing.contactID
-                    } else {
-                        target = try await repository.createContact(
-                            Contact(contactType: .organization, organizationName: name)
-                        ).contactID
+        guard !selections.isEmpty, !isSaving else { return }
+        isSaving = true
+        // Snapshot the draft NOW, synchronously, so the async phantom-create
+        // path below writes exactly what the user saw at Save — never a value
+        // edited while the create was in flight. (The rows and note field are
+        // also disabled while `isSaving`, so nothing here can move.)
+        let pickedSelections = selections
+        let noteSnapshot = noteText
+        Task { @MainActor in
+            // Resolve every selection to a real ContactID first. A `.record`
+            // already is one; a `.phantom` has no record to point a link at, so
+            // create (or reuse) the organization here — either way the grouped
+            // link gets a real endpoint and no duplicate org is minted on a race.
+            var resolved: [ContactID] = []
+            for selection in pickedSelections {
+                switch selection {
+                case .record(let id):
+                    resolved.append(id)
+                case .phantom(let key):
+                    // Display name comes from the eligible row (canonical spelling).
+                    let name = eligible.first { $0.selection == selection }?.contact.displayName ?? key
+                    do {
+                        if let existing = repository.organizationContact(named: name) {
+                            resolved.append(existing.contactID)
+                        } else {
+                            let created = try await repository.createContact(
+                                Contact(contactType: .organization, organizationName: name)
+                            )
+                            resolved.append(created.contactID)
+                        }
+                    } catch {
+                        // Keep the sheet open with the selection + note intact so
+                        // the user can retry; the failure surfaces through the
+                        // host store's own error path.
+                        isSaving = false
+                        return
                     }
-                    onSave(target, noteText)
-                    dismiss()
-                } catch {
-                    // Keep the sheet open so the user can retry; the failure
-                    // surfaces through the store's own error path.
-                    isSaving = false
                 }
+            }
+            // ONE grouped link write for the whole selection. On failure keep the
+            // draft (selection + note) so the user can retry or pick differently.
+            if await onSave(resolved, noteSnapshot) {
+                dismiss()
+            } else {
+                isSaving = false
             }
         }
     }

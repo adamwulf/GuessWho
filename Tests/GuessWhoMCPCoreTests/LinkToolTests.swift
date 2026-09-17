@@ -650,4 +650,208 @@ final class LinkToolTests: XCTestCase {
         let fromJane = await list(fixture, id: jane, kind: "person")
         XCTAssertEqual(fromJane?.count, 1, "exactly one connection in the real store")
     }
+
+    // MARK: - Grouped connections (three or more participants)
+
+    /// The canonical endpoint key of the given kind on a stored connection —
+    /// read straight back from the real store so a hand-built grouped
+    /// connection reuses the EXACT keys `links(at:)` / `resolveFarEndpoint`
+    /// index and resolve (no id case/format guessing).
+    private func storedEndpoint(
+        _ fixture: Fixture, connectionId: String, kind: SidecarKind
+    ) -> SidecarKey? {
+        guard let uuid = UUID(uuidString: connectionId),
+              let link = (try? fixture.linkEngine.link(id: uuid)) ?? nil
+        else { return nil }
+        return link.endpoints.first { $0.kind == kind }
+    }
+
+    /// Build ONE grouped connection joining Jane (contact), the Museum Gala
+    /// (event), and the Bluebird place, keyed on production-canonical
+    /// endpoints. Returns the grouped connection's wire id plus each
+    /// participant's wire id. Two throwaway two-record connections supply the
+    /// canonical keys and are soft-deleted so only the grouped one stays live.
+    private func makeGroupedConnection(
+        _ fixture: Fixture
+    ) async -> (groupedId: String, jane: String, gala: String, place: String)? {
+        guard let jane = await contactID(fixture, query: "jane", name: "Jane Doe"),
+              let gala = await eventID(fixture, title: "Museum Gala"),
+              let place = await placeID(fixture)
+        else { return nil }
+        guard case .link(_, _, let jg)? = await create(
+                  fixture, fromId: jane, fromKind: "person", toId: gala, toKind: "event"),
+              case .link(_, _, let jp)? = await create(
+                  fixture, fromId: jane, fromKind: "person", toId: place, toKind: "place")
+        else { return nil }
+        guard let contactKey = storedEndpoint(fixture, connectionId: jg.id, kind: .contact),
+              let eventKey = storedEndpoint(fixture, connectionId: jg.id, kind: .event),
+              let placeKey = storedEndpoint(fixture, connectionId: jp.id, kind: .place)
+        else { return nil }
+        try? fixture.linkEngine.removeLink(id: UUID(uuidString: jg.id)!)
+        try? fixture.linkEngine.removeLink(id: UUID(uuidString: jp.id)!)
+        guard let grouped = try? fixture.linkEngine.addLink(
+            endpoints: [contactKey, eventKey, placeKey], note: "Trip crew")
+        else { return nil }
+        return (grouped.id.uuidString.lowercased(), jane, gala, place)
+    }
+
+    /// Listing a grouped connection from ANY endpoint returns exactly ONE row
+    /// (one connection id, never repeated) whose `participants` carry EVERY far
+    /// record — none dropped, the near record never listed — and from an
+    /// ADDITIONAL endpoint (the place) both other members still appear, where
+    /// the old binary far-picker returned a single (often wrong) far. The
+    /// legacy `kind`/`otherId` name the deterministic representative
+    /// (event > place > contact).
+    func testGroupedConnectionListsEveryFarParticipantFromEachEndpoint() async {
+        let fixture = await linkFixture()
+        guard let g = await makeGroupedConnection(fixture)
+        else { return XCTFail("could not build grouped connection") }
+
+        // The one row for the grouped connection, plus its participants as a
+        // set of [kind, otherId] pairs.
+        func groupedRow(_ id: String, _ kind: String) async -> (WireLink, Set<[String]>)? {
+            guard let rows = await list(fixture, id: id, kind: kind) else {
+                XCTFail("links_list failed for \(kind) \(id)")
+                return nil
+            }
+            XCTAssertEqual(rows.count, 1, "one row per connection, never repeated ids")
+            guard let row = rows.first, row.id == g.groupedId else {
+                XCTFail("the single row must be the grouped connection")
+                return nil
+            }
+            guard let participants = row.participants else {
+                XCTFail("a grouped connection must carry participants")
+                return nil
+            }
+            return (row, Set(participants.map { [$0.kind, $0.otherId] }))
+        }
+
+        // From the contact endpoint: participants are the event and the place;
+        // the representative is the event (event > place > contact).
+        guard let (janeRow, janeFars) = await groupedRow(g.jane, "person")
+        else { return }
+        XCTAssertEqual(janeFars, [["event", g.gala], ["place", g.place]])
+        XCTAssertEqual([janeRow.kind, janeRow.otherId], ["event", g.gala])
+
+        // From the event endpoint: participants are the contact and the place;
+        // the representative is the place (place > contact).
+        guard let (galaRow, galaFars) = await groupedRow(g.gala, "event")
+        else { return }
+        XCTAssertEqual(galaFars, [["person", g.jane], ["place", g.place]])
+        XCTAssertEqual([galaRow.kind, galaRow.otherId], ["place", g.place])
+
+        // From the place — an ADDITIONAL endpoint: participants are the contact
+        // AND the event (the case the old picker got wrong); representative is
+        // the event.
+        guard let (placeRow, placeFars) = await groupedRow(g.place, "place")
+        else { return }
+        XCTAssertEqual(placeFars, [["person", g.jane], ["event", g.gala]])
+        XCTAssertEqual([placeRow.kind, placeRow.otherId], ["event", g.gala])
+    }
+
+    /// A two-record connection carries NO `participants` (nil), and the encoded
+    /// payload omits the key entirely — the pre-grouping wire, byte-for-byte.
+    func testTwoRecordConnectionOmitsParticipants() async {
+        let fixture = await linkFixture()
+        guard let jane = await contactID(fixture, query: "jane", name: "Jane Doe"),
+              let gala = await eventID(fixture, title: "Museum Gala")
+        else { return XCTFail("missing fixture records") }
+        guard case .link(_, _, let echo)? = await create(
+            fixture, fromId: jane, fromKind: "person", toId: gala, toKind: "event")
+        else { return XCTFail("create failed") }
+
+        guard let row = (await list(fixture, id: jane, kind: "person"))?.first else {
+            return XCTFail("links_list failed")
+        }
+        XCTAssertEqual(row.id, echo.id)
+        XCTAssertNil(row.participants, "a single-far connection omits participants")
+
+        // The encoded row must not carry the key at all.
+        let json = String(decoding: (try? JSONEncoder().encode(row)) ?? Data(), as: UTF8.self)
+        XCTAssertFalse(json.contains("participants"), "the key is omitted, not null")
+    }
+
+    /// A LEGACY binary self-link (endpointA == endpointB, from before the
+    /// self-connection guard existed) still renders in links_list: exactly one
+    /// row whose far is the near record itself, with no participants. This
+    /// degenerate fallback is the ONLY case near is echoed — a normal grouped
+    /// connection never returns the near record.
+    func testLegacyBinarySelfLinkRendersWithNearFallback() async {
+        let fixture = await linkFixture()
+        guard let jane = await contactID(fixture, query: "jane", name: "Jane Doe"),
+              let gala = await eventID(fixture, title: "Museum Gala")
+        else { return XCTFail("missing fixture records") }
+
+        // Canonical contact key via a throwaway connection, then a self-link
+        // written straight to the store (the dispatcher forbids creating one).
+        guard case .link(_, _, let helper)? = await create(
+            fixture, fromId: jane, fromKind: "person", toId: gala, toKind: "event")
+        else { return XCTFail("helper create failed") }
+        guard let janeKey = storedEndpoint(fixture, connectionId: helper.id, kind: .contact)
+        else { return XCTFail("could not read the contact endpoint key") }
+        try? fixture.linkEngine.removeLink(id: UUID(uuidString: helper.id)!)
+        guard let selfLink = try? fixture.linkEngine.addLink(
+            from: janeKey, to: janeKey, note: "Note to self")
+        else { return XCTFail("could not write the self-link") }
+
+        guard let rows = await list(fixture, id: jane, kind: "person") else {
+            return XCTFail("links_list failed")
+        }
+        XCTAssertEqual(rows.count, 1, "the self-link still renders")
+        XCTAssertEqual(rows.first?.id, selfLink.id.uuidString.lowercased())
+        XCTAssertEqual(rows.first?.kind, "person")
+        XCTAssertEqual(
+            rows.first?.otherId, jane,
+            "the degenerate self-link falls back to the near record")
+        XCTAssertNil(rows.first?.participants, "a self-link carries no participants")
+    }
+
+    /// Deleting a grouped connection removes it from EVERY participant's list,
+    /// and restoring it revives every participant's view — the whole-connection
+    /// tombstone/restore never loses a member.
+    func testGroupedConnectionDeleteAndRestoreCoversAllParticipants() async {
+        let fixture = await linkFixture()
+        guard let g = await makeGroupedConnection(fixture)
+        else { return XCTFail("could not build grouped connection") }
+
+        let removed = await fixture.dispatcher.handle(.linksDelete(
+            helperId: Fixture.helper, messageId: TestMessageID.next(),
+            linkId: g.groupedId, idempotencyToken: nil))
+        guard case .acknowledged = removed else {
+            return XCTFail("expected acknowledgement, got \(String(describing: removed))")
+        }
+
+        // Gone from all three endpoints' lists.
+        let goneJane = await list(fixture, id: g.jane, kind: "person")
+        let goneGala = await list(fixture, id: g.gala, kind: "event")
+        let gonePlace = await list(fixture, id: g.place, kind: "place")
+        XCTAssertEqual(goneJane?.count, 0)
+        XCTAssertEqual(goneGala?.count, 0)
+        XCTAssertEqual(gonePlace?.count, 0)
+
+        // The tombstone survives on disk, note preserved.
+        let tombstone = (try? fixture.linkEngine.link(id: UUID(uuidString: g.groupedId)!)) ?? nil
+        XCTAssertNotNil(tombstone?.deletedAt, "remove must soft-delete, not erase")
+        XCTAssertEqual(tombstone?.note, "Trip crew")
+
+        // Restorable from Recently Deleted, and back on every participant's
+        // list (one row for the whole connection each) once revived.
+        let service = await MainActor.run {
+            RecentlyDeletedService(
+                audit: fixture.audit, contacts: fixture.contacts, events: fixture.events)
+        }
+        guard let row = await service.items().first(where: { $0.id == g.groupedId }) else {
+            return XCTFail("removed grouped connection should appear in Recently Deleted")
+        }
+        XCTAssertTrue(row.canRestore)
+        let didRestore = await service.restore(row)
+        XCTAssertTrue(didRestore)
+
+        let backJane = await list(fixture, id: g.jane, kind: "person")
+        let backGala = await list(fixture, id: g.gala, kind: "event")
+        let backPlace = await list(fixture, id: g.place, kind: "place")
+        XCTAssertEqual(backJane?.map(\.id), [g.groupedId])
+        XCTAssertEqual(backGala?.map(\.id), [g.groupedId])
+        XCTAssertEqual(backPlace?.map(\.id), [g.groupedId])
+    }
 }
