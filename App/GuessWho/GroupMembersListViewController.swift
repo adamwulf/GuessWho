@@ -1,7 +1,9 @@
 import UIKit
 import GuessWhoSync
 
-/// UIKit list of the members of one Contacts.app group. Pushed when a row is
+/// UIKit list of the members of one Contacts.app group — or of a FOLDER, which
+/// shows everyone in every group beneath it, at any depth, each person once.
+/// Pushed when a row is
 /// tapped in `GroupsListViewController` — on iPhone onto the Groups tab's nav
 /// stack, on Catalyst onto the supplementary column's nav. Renders members
 /// EXACTLY like `ContactsListViewController`: A–Z sectioning, the same two-line
@@ -16,10 +18,16 @@ import GuessWhoSync
 /// repository's separate `people`/`organizations` projections.
 ///
 /// Members are resolved from this VC's OWN `[ContactID: Contact]` map (built
-/// from the one-shot `members(ofGroup:)` fetch), not from `repository.contact(id:)`.
+/// from the repository's `memberSnapshot(for:)`), not from `repository.contact(id:)`.
 /// That guarantees every fetched member renders its name even in the (rare) case
 /// it isn't present in the main contacts cache, and keeps the member set tied to
-/// this group rather than the global address book.
+/// this scope rather than the global address book.
+///
+/// A folder's members come from several Contacts fetches, so the list says what
+/// it knows: a banner when some groups could not be loaded, and empty-state
+/// wording that tells "no groups here" from "no members" from "could not load."
+/// A folder has no favorite star and no way to add or remove a member — those
+/// belong to a group.
 final class GroupMembersListViewController: UIViewController {
     /// Closure-based selection callback so the SceneDelegate can mount/push a
     /// `ContactDetailView` (push on iPhone, replace-secondary on Catalyst)
@@ -27,7 +35,16 @@ final class GroupMembersListViewController: UIViewController {
     var didSelectContact: (Contact) -> Void = { _ in }
     var didSelectContacts: ([Contact]) -> Void = { _ in }
 
-    private let group: ContactGroup
+    /// Called once when the folder this list shows no longer exists (it was
+    /// deleted, here or on another device), so the host can return to the tree.
+    var scopeDidDisappear: () -> Void = {}
+
+    private let scope: GroupMemberScope
+    /// The group this list shows, or nil when it shows a folder.
+    private var group: ContactGroup? {
+        if case .group(let group) = scope { return group }
+        return nil
+    }
     private let repository: ContactsRepository
     private let photoLoader: ContactPhotoLoader
     private let favoritesStore: FavoritesListStore
@@ -57,15 +74,25 @@ final class GroupMembersListViewController: UIViewController {
 
     private var sectionLetters: [String] = []
 
-    /// The members this VC fetched for `group`, keyed by `ContactID` — the SOLE
+    /// The members this VC fetched for `scope`, keyed by `ContactID` — the SOLE
     /// source the cell provider resolves a member `Contact` from (see the type
-    /// doc). Filled once by `loadMembers()`.
+    /// doc). Replaced by each accepted `loadMembers()`.
     private var membersByID: [ContactID: Contact] = [:]
+
+    /// The last snapshot this list accepted. Drives the banner and the empty
+    /// state, and tells the reload observer whether the hierarchy moved since.
+    private var loadedSnapshot: GroupMemberSnapshot?
+
+    /// True while a load is in flight. The rows on screen may then be out of
+    /// date, so the row menu's bulk "Add to Group" is withheld until it lands.
+    private var isLoadingMembers = false
 
     private let emptyLabel = UILabel()
     private let activityIndicator = UIActivityIndicatorView(style: .medium)
+    private let partialBanner = PartialMembersBanner()
 
     private var hasLoaded = false
+    private var didReportDisappearance = false
 
     /// Guards `loadMembers()` against an out-of-order fetch — see that method.
     private var membersLoadID = UUID()
@@ -93,17 +120,30 @@ final class GroupMembersListViewController: UIViewController {
     private nonisolated(unsafe) var membershipObserver: NSObjectProtocol?
 
     init(
+        scope: GroupMemberScope,
+        repository: ContactsRepository,
+        photoLoader: ContactPhotoLoader,
+        favoritesStore: FavoritesListStore
+    ) {
+        self.scope = scope
+        self.repository = repository
+        self.photoLoader = photoLoader
+        self.favoritesStore = favoritesStore
+        super.init(nibName: nil, bundle: nil)
+        updateTitle()
+    }
+
+    convenience init(
         group: ContactGroup,
         repository: ContactsRepository,
         photoLoader: ContactPhotoLoader,
         favoritesStore: FavoritesListStore
     ) {
-        self.group = group
-        self.repository = repository
-        self.photoLoader = photoLoader
-        self.favoritesStore = favoritesStore
-        super.init(nibName: nil, bundle: nil)
-        title = GroupMembersListViewController.title(for: group)
+        self.init(
+            scope: .group(group),
+            repository: repository,
+            photoLoader: photoLoader,
+            favoritesStore: favoritesStore)
     }
 
     @available(*, unavailable)
@@ -152,19 +192,39 @@ final class GroupMembersListViewController: UIViewController {
         // that was just added.
         let myLoadID = UUID()
         membersLoadID = myLoadID
-        let members = await repository.members(ofGroup: group.localID)
+        isLoadingMembers = true
+
+        // A folder's members come from several fetches, which is not a
+        // transaction: a membership write, a contact edit, or a folder move can
+        // land between them. The repository says whether anything the snapshot
+        // depends on moved while it was read; one that spans a change is read
+        // again, never shown. Bounded, so a store that never settles still ends
+        // in the freshest result rather than a spinner.
+        var snapshot = await repository.memberSnapshot(for: scope)
+        var attempts = 1
+        while membersLoadID == myLoadID, !repository.isCurrent(snapshot), attempts < Self.maxLoadAttempts {
+            snapshot = await repository.memberSnapshot(for: scope)
+            attempts += 1
+        }
         guard membersLoadID == myLoadID else { return }
-        // Key each fetched member by its opaque `ContactID` (effective identity),
-        // exactly like the People list keys its rows. A member appears once per
-        // identity — last-writer-wins on the (transient pre-reconcile) duplicate
-        // window, matching the contact lists' de-dup behavior.
+
+        // The repository already returns each person once, keyed by the opaque
+        // `ContactID` every other list keys its rows by.
         var byID: [ContactID: Contact] = [:]
-        for member in members {
+        for member in snapshot.contacts {
             byID[member.contactID] = member
         }
         membersByID = byID
+        loadedSnapshot = snapshot
         hasLoaded = true
+        isLoadingMembers = false
         applySnapshot(animated: true)
+    }
+
+    private static let maxLoadAttempts = 3
+
+    @objc private func retryLoadMembers() {
+        Task { await loadMembers() }
     }
 
     // MARK: - Sort menu
@@ -181,11 +241,11 @@ final class GroupMembersListViewController: UIViewController {
             action: #selector(toggleGroupFavorite)
         )
         // rightBarButtonItems places index 0 rightmost, so [sort, star] reads
-        // "star | sort" left-to-right — star nearest the title.
-        navigationItem.rightBarButtonItems = [
-            makeSortBarButtonItem(repository: repository),
-            favoriteBarButton,
-        ]
+        // "star | sort" left-to-right — star nearest the title. A folder cannot
+        // be favorited, so its list shows the sort button alone.
+        var items = [makeSortBarButtonItem(repository: repository)]
+        if group != nil { items.append(favoriteBarButton) }
+        navigationItem.rightBarButtonItems = items
         updateFavoriteButton()
     }
 
@@ -226,6 +286,7 @@ final class GroupMembersListViewController: UIViewController {
 
     /// Repaint the star to reflect the group's current favorite state.
     private func updateFavoriteButton() {
+        guard let group else { return }
         let isFavorited = repository.isGroupFavorite(group)
         favoriteBarButton.image = UIImage(systemName: isFavorited ? "star.fill" : "star")
         favoriteBarButton.accessibilityLabel = isFavorited ? "Unfavorite" : "Favorite"
@@ -235,11 +296,12 @@ final class GroupMembersListViewController: UIViewController {
     /// posts `.favoritesDidChange`, which every other favorites surface (the
     /// Favorites list, the contact detail Groups section) observes to refresh.
     @objc private func toggleGroupFavorite() {
+        guard let group else { return }
         let desired = !repository.isGroupFavorite(group)
         Task { @MainActor [weak self] in
             guard let self else { return }
             do {
-                _ = try await self.repository.setGroupFavorite(desired, for: self.group)
+                _ = try await self.repository.setGroupFavorite(desired, for: group)
             } catch {
                 // Favorite persistence remains best-effort; reload below
                 // reflects the authoritative on-disk state.
@@ -272,6 +334,7 @@ final class GroupMembersListViewController: UIViewController {
             MainActor.assumeIsolated {
                 self?.refreshSortMenu()
                 self?.applySnapshot(animated: true)
+                self?.hierarchyOrContactsMayHaveChanged()
             }
         }
 
@@ -309,11 +372,55 @@ final class GroupMembersListViewController: UIViewController {
                 ContactsRepositoryGroupMembershipDidChangeKey.groupLocalID
             ] as? String
             MainActor.assumeIsolated {
-                guard let self,
-                      let changedGroupID,
-                      changedGroupID == self.group.localID else { return }
+                guard let self, let changedGroupID, self.covers(groupLocalID: changedGroupID) else {
+                    return
+                }
                 Task { await self.loadMembers() }
             }
+        }
+    }
+
+    /// Whether `groupLocalID` is one of the groups this list shows members of:
+    /// the group itself, or any group beneath the folder.
+    private func covers(groupLocalID: String) -> Bool {
+        switch scope {
+        case .group(let group):
+            return group.localID == groupLocalID
+        case .folder(let id):
+            return repository.groupFolderTree
+                .descendantGroupLocalIDs(ofFolder: id).contains(groupLocalID)
+        }
+    }
+
+    /// The repository reloaded. For a folder that can mean the folder is gone,
+    /// was renamed, or now covers different groups; for either scope it can mean
+    /// the contact records behind the rows changed. Read again only when
+    /// something this list depends on actually moved, so a sort flip or a star
+    /// toggle elsewhere does not refetch.
+    private func hierarchyOrContactsMayHaveChanged() {
+        if case .folder(let id) = scope, repository.groupFolderTree.folders[id] == nil {
+            // Only once the tree has loaded: an empty tree at launch is not a
+            // deleted folder.
+            if hasLoaded, !didReportDisappearance {
+                didReportDisappearance = true
+                scopeDidDisappear()
+            }
+            return
+        }
+        updateTitle()
+        guard let loadedSnapshot, !repository.isCurrent(loadedSnapshot), !isLoadingMembers else {
+            return
+        }
+        Task { await loadMembers() }
+    }
+
+    private func updateTitle() {
+        switch scope {
+        case .group(let group):
+            title = GroupMembersListViewController.title(for: group)
+        case .folder(let id):
+            let name = repository.groupFolderTree.folders[id]?.name ?? ""
+            title = name.isEmpty ? "Folder" : name
         }
     }
 
@@ -378,6 +485,8 @@ final class GroupMembersListViewController: UIViewController {
         activityIndicator.hidesWhenStopped = true
         activityIndicator.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(activityIndicator)
+
+        partialBanner.retryButton.addTarget(self, action: #selector(retryLoadMembers), for: .touchUpInside)
 
         NSLayoutConstraint.activate([
             emptyLabel.centerXAnchor.constraint(equalTo: view.safeAreaLayoutGuide.centerXAnchor),
@@ -448,24 +557,92 @@ final class GroupMembersListViewController: UIViewController {
     }
 
     private func updateEmptyState() {
-        let isEmpty = sectionLetters.isEmpty
-        // Show the spinner only while the first fetch is in flight; once it lands
-        // (`hasLoaded`), an empty member set surfaces the empty-state label.
-        emptyLabel.isHidden = !isEmpty || !hasLoaded
-        if isEmpty && !hasLoaded {
+        // The wording rules live in `GroupMemberListPresentation` (and its
+        // tests): spinner until the first load lands, then a message that tells
+        // "nothing matched" from "no groups here" from "no members" from
+        // "could not load" — and a banner whenever the result is partial.
+        let presentation = GroupMemberListPresentation.make(
+            snapshot: loadedSnapshot,
+            visibleRowCount: dataSource.snapshot().numberOfItems,
+            searchQuery: searchQuery)
+        emptyLabel.text = presentation.emptyMessage
+        emptyLabel.isHidden = presentation.emptyMessage == nil
+        if presentation.showsSpinner {
             activityIndicator.startAnimating()
         } else {
             activityIndicator.stopAnimating()
         }
-        // Name the query when a search filtered every member out, so an empty
-        // list reads as "nothing matched" rather than "empty group" (mirrors
-        // ContactsListViewController.updateEmptyState).
-        let trimmedQuery = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-        if isEmpty && hasLoaded && !trimmedQuery.isEmpty {
-            emptyLabel.text = "No members match \"\(trimmedQuery)\"."
-        } else {
-            emptyLabel.text = "No Members"
+        setPartialBannerVisible(presentation.showsPartialBanner)
+    }
+
+    /// The banner rides as the table's header so it scrolls with the rows and
+    /// needs no layout of its own. Reassigning `tableHeaderView` is what makes
+    /// UITableView re-measure it.
+    private func setPartialBannerVisible(_ visible: Bool) {
+        guard visible else {
+            if tableView.tableHeaderView != nil { tableView.tableHeaderView = nil }
+            return
         }
+        let width = tableView.bounds.width
+        let height = partialBanner.systemLayoutSizeFitting(
+            CGSize(width: width, height: UIView.layoutFittingCompressedSize.height),
+            withHorizontalFittingPriority: .required,
+            verticalFittingPriority: .fittingSizeLevel
+        ).height
+        let frame = CGRect(x: 0, y: 0, width: width, height: height)
+        guard tableView.tableHeaderView !== partialBanner || partialBanner.frame != frame else { return }
+        partialBanner.frame = frame
+        tableView.tableHeaderView = partialBanner
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        // Re-measure on a width change (rotation, column resize).
+        if tableView.tableHeaderView === partialBanner { setPartialBannerVisible(true) }
+    }
+}
+
+/// "Some groups couldn’t be loaded." with a Retry button. Shown above a
+/// folder's members when the result is partial, so what IS shown is never
+/// mistaken for everyone.
+private final class PartialMembersBanner: UIView {
+    let retryButton = UIButton(type: .system)
+    private let label = UILabel()
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        backgroundColor = .secondarySystemBackground
+
+        label.text = GroupMemberListPresentation.partialBannerMessage
+        label.font = .preferredFont(forTextStyle: .footnote)
+        label.textColor = .secondaryLabel
+        label.numberOfLines = 0
+        label.adjustsFontForContentSizeCategory = true
+
+        var configuration = UIButton.Configuration.plain()
+        configuration.title = "Retry"
+        configuration.buttonSize = .small
+        retryButton.configuration = configuration
+        retryButton.setContentHuggingPriority(.required, for: .horizontal)
+        retryButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+
+        let stack = UIStackView(arrangedSubviews: [label, retryButton])
+        stack.axis = .horizontal
+        stack.alignment = .center
+        stack.spacing = 8
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: layoutMarginsGuide.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: layoutMarginsGuide.trailingAnchor),
+            stack.topAnchor.constraint(equalTo: topAnchor, constant: 8),
+            stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -8),
+        ])
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is unsupported — PartialMembersBanner is code-only")
     }
 }
 
@@ -500,7 +677,10 @@ extension GroupMembersListViewController: UITableViewDelegate {
         contextMenuConfigurationForRowAt indexPath: IndexPath,
         point: CGPoint
     ) -> UIContextMenuConfiguration? {
-        addToGroupMenu.configuration(forRowAt: indexPath)
+        // While a reload is in flight the rows may be out of date; acting on a
+        // selection of them in bulk would treat stale rows as current.
+        guard !isLoadingMembers else { return nil }
+        return addToGroupMenu.configuration(forRowAt: indexPath)
     }
 }
 

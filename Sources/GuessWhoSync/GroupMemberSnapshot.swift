@@ -30,6 +30,12 @@ public struct GroupMemberSnapshot: Sendable {
         /// edit, a reload, a reconciliation, an external change — even when no
         /// membership moved, because the rows themselves may be out of date.
         public let contactData: Int
+
+        public init(hierarchy: Int, membership: Int, contactData: Int) {
+            self.hierarchy = hierarchy
+            self.membership = membership
+            self.contactData = contactData
+        }
     }
 
     public let scope: GroupMemberScope
@@ -46,6 +52,22 @@ public struct GroupMemberSnapshot: Sendable {
     /// `contacts` is a partial result.
     public let failedGroups: [ContactGroup]
     public let revisions: Revisions
+
+    public init(
+        scope: GroupMemberScope,
+        groups: [ContactGroup],
+        contacts: [Contact],
+        contributingGroups: [ContactID: [ContactGroup]],
+        failedGroups: [ContactGroup],
+        revisions: Revisions
+    ) {
+        self.scope = scope
+        self.groups = groups
+        self.contacts = contacts
+        self.contributingGroups = contributingGroups
+        self.failedGroups = failedGroups
+        self.revisions = revisions
+    }
 
     /// True when some group's members are missing from `contacts`. A partial
     /// snapshot must never be labeled with a complete count or as "no members."

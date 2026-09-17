@@ -18,14 +18,19 @@ struct GroupMutationLogicTests {
     func deletionAlwaysRemovesPersistentFavoriteWithoutConsultingCache() async throws {
         let group = ContactGroup(localID: "group-id", name: "Family")
         var calls: [String] = []
-        let operation = GroupDeletionOperation(
-            deleteFromContacts: { _ in calls.append("delete") },
-            removeFromFavorites: { _ in calls.append("favorite") }
+        let operation = GroupDeletionOperation<String>(
+            deleteFromContacts: { _ in
+                calls.append("delete")
+                return nil
+            },
+            removeFromFavorites: { _ in calls.append("favorite") },
+            finishFolderCleanup: { _ in calls.append("folder") }
         )
 
-        let cleanupError = try await operation.delete(group)
+        let outcome = try await operation.delete(group)
 
-        #expect(cleanupError == nil)
+        #expect(outcome.favoriteCleanupError == nil)
+        #expect(outcome.pendingFolderCleanup == nil)
         #expect(calls == ["delete", "favorite"])
     }
 
@@ -33,15 +38,65 @@ struct GroupMutationLogicTests {
     func favoriteCleanupFailureIsReportedAfterSuccessfulDeletion() async throws {
         let group = ContactGroup(localID: "group-id", name: "Family")
         var deleted = false
-        let operation = GroupDeletionOperation(
-            deleteFromContacts: { _ in deleted = true },
-            removeFromFavorites: { _ in throw InjectedGroupUIFailure() }
+        let operation = GroupDeletionOperation<String>(
+            deleteFromContacts: { _ in
+                deleted = true
+                return nil
+            },
+            removeFromFavorites: { _ in throw InjectedGroupUIFailure() },
+            finishFolderCleanup: { _ in }
         )
 
-        let cleanupError = try await operation.delete(group)
+        let outcome = try await operation.delete(group)
 
         #expect(deleted)
-        #expect(cleanupError is InjectedGroupUIFailure)
+        #expect(outcome.favoriteCleanupError is InjectedGroupUIFailure)
+    }
+
+    /// The group IS deleted; taking it out of its folder is what is still owed.
+    /// That is an outcome of a successful delete, never a thrown failure — and
+    /// retrying it must not delete anything again.
+    @Test
+    func owedFolderCleanupIsReportedAfterSuccessfulDeletionAndRetriedWithoutDeletingAgain() async throws {
+        let group = ContactGroup(localID: "group-id", name: "Family")
+        var calls: [String] = []
+        var cleanupSucceeds = false
+        let operation = GroupDeletionOperation<String>(
+            deleteFromContacts: { _ in
+                calls.append("delete")
+                return "owed"
+            },
+            removeFromFavorites: { _ in calls.append("favorite") },
+            finishFolderCleanup: { token in
+                calls.append("folder:\(token)")
+                if !cleanupSucceeds { throw InjectedGroupUIFailure() }
+            }
+        )
+
+        let outcome = try await operation.delete(group)
+        let pending = try #require(outcome.pendingFolderCleanup)
+        #expect(outcome.favoriteCleanupError == nil)
+
+        #expect(await operation.retryFolderCleanup(pending) == "owed")
+        cleanupSucceeds = true
+        #expect(await operation.retryFolderCleanup(pending) == nil)
+        #expect(calls == ["delete", "favorite", "folder:owed", "folder:owed"])
+    }
+
+    @Test
+    func failedDeletionThrowsAndCleansUpNothing() async {
+        let group = ContactGroup(localID: "group-id", name: "Family")
+        var calls: [String] = []
+        let operation = GroupDeletionOperation<String>(
+            deleteFromContacts: { _ in throw InjectedGroupUIFailure() },
+            removeFromFavorites: { _ in calls.append("favorite") },
+            finishFolderCleanup: { _ in calls.append("folder") }
+        )
+
+        await #expect(throws: InjectedGroupUIFailure.self) {
+            _ = try await operation.delete(group)
+        }
+        #expect(calls.isEmpty)
     }
 
     @Test(arguments: [StoreAuthorizationStatus.denied, .restricted])

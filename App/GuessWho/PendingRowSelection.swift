@@ -14,12 +14,16 @@ import UIKit
 /// That split is why this owns only the row, never the surrounding behavior.
 ///
 /// Generic over the list's diffable item id so all four section lists share one
-/// implementation (`ContactID`, `UUID`, and a group's `localID` string).
+/// implementation (`ContactID`, `UUID`, and the Groups tree's typed node id).
 @MainActor
 final class PendingRowSelection<ID: Hashable> {
     private var pending: ID?
 
     init() {}
+
+    /// The row still being asked for, if any. The Groups tree reads it to open
+    /// the folders above a requested group, which otherwise has no row to select.
+    var requested: ID? { pending }
 
     /// Ask for `id`'s row, replacing any earlier unfulfilled request.
     func request(_ id: ID) {
