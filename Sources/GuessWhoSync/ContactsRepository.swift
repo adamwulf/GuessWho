@@ -2660,13 +2660,19 @@ public final class ContactsRepository: NSObject {
 
     /// Create a folder inside `parentFolderID` (nil = top level) and return its
     /// id. Folder names need not be unique.
+    ///
+    /// `id` makes the create idempotent for a caller that may retry (automation
+    /// derives it from its idempotency token): a second call with the same id
+    /// writes nothing and returns the folder that is already there.
     @discardableResult
-    public func createGroupFolder(name: String, inFolder parentFolderID: String?) async throws -> String {
+    public func createGroupFolder(
+        name: String, inFolder parentFolderID: String?, id: UUID = UUID()
+    ) async throws -> String {
         try await performSerializedGroupMutation {
             guard let sync = self.sync else { throw SidecarUnavailableError() }
             await self.reloadGroupHierarchy()
             let parent = try self.validatedDestination(parentFolderID)
-            let folder = try sync.createGroupFolder(name: name, parentFolderID: parent)
+            let folder = try sync.createGroupFolder(name: name, parentFolderID: parent, id: id)
             await self.reloadGroupHierarchy()
             self.postDidReload(contactDataChanged: false)
             return folder.id
