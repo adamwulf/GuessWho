@@ -787,9 +787,12 @@ final class LinkToolTests: XCTestCase {
         }
 
         // Gone from all three endpoints' lists.
-        XCTAssertEqual(await list(fixture, id: g.jane, kind: "person")?.count, 0)
-        XCTAssertEqual(await list(fixture, id: g.gala, kind: "event")?.count, 0)
-        XCTAssertEqual(await list(fixture, id: g.place, kind: "place")?.count, 0)
+        let goneJane = await list(fixture, id: g.jane, kind: "person")
+        let goneGala = await list(fixture, id: g.gala, kind: "event")
+        let gonePlace = await list(fixture, id: g.place, kind: "place")
+        XCTAssertEqual(goneJane?.count, 0)
+        XCTAssertEqual(goneGala?.count, 0)
+        XCTAssertEqual(gonePlace?.count, 0)
 
         // The tombstone survives on disk, note preserved.
         let tombstone = (try? fixture.linkEngine.link(id: UUID(uuidString: g.groupedId)!)) ?? nil
@@ -806,10 +809,14 @@ final class LinkToolTests: XCTestCase {
             return XCTFail("removed grouped connection should appear in Recently Deleted")
         }
         XCTAssertTrue(row.canRestore)
-        XCTAssertTrue(await service.restore(row))
+        let didRestore = await service.restore(row)
+        XCTAssertTrue(didRestore)
 
-        XCTAssertEqual(await list(fixture, id: g.jane, kind: "person")?.map(\.id), [g.groupedId])
-        XCTAssertEqual(await list(fixture, id: g.gala, kind: "event")?.map(\.id), [g.groupedId])
-        XCTAssertEqual(await list(fixture, id: g.place, kind: "place")?.map(\.id), [g.groupedId])
+        let backJane = await list(fixture, id: g.jane, kind: "person")
+        let backGala = await list(fixture, id: g.gala, kind: "event")
+        let backPlace = await list(fixture, id: g.place, kind: "place")
+        XCTAssertEqual(backJane?.map(\.id), [g.groupedId])
+        XCTAssertEqual(backGala?.map(\.id), [g.groupedId])
+        XCTAssertEqual(backPlace?.map(\.id), [g.groupedId])
     }
 }
