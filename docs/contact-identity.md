@@ -187,20 +187,30 @@ It does not create, imply, or persist a GuessWho-ID relationship.
 
 ### Sidecar contact links
 
-A **sidecar contact link** is a package `Link` record joining two endpoints of
-the form `SidecarKey(kind: .contact, id: <GuessWho UUID>)`. It is a durable,
-specific hard link between two identified contacts. It is unrelated to
+A **sidecar contact link** is a package `Link` record joining two or more
+endpoints of the form `SidecarKey(kind: .contact, id: <GuessWho UUID>)`.
+Several contacts can share one link and one note, optionally with an event or
+place. It is a durable connection between identified records. It is unrelated to
 `CNContactRelation` name matching. If identity reconciliation collapses two
 GuessWho IDs on one unified contact, GuessWhoSync rewrites affected sidecar
-link endpoints from the losing ID to the canonical winning ID; it never rewrites
-or interprets name-only Contacts relationships as hard links.
+link endpoints, including additional participants, from the losing ID to the
+canonical winning ID; it never rewrites or interprets name-only Contacts
+relationships as hard links.
 
 To classify which end of a fetched link is the OPENED contact (near) and which
 is the far contact, the app asks the package — `SidecarKey.matches(_ contactID:)`
 tests an endpoint key against `contactID.guessWhoID` (a `package` field). The app
 never reads a bare GuessWho UUID to do this comparison itself; it passes a
-`ContactID` and the package answers. Far endpoints are projected by repository
-APIs; the app does not resolve their raw GuessWho UUIDs directly.
+`ContactID` and the package answers. Far contacts are projected by the repository's
+`linkedContacts` APIs, preserving unavailable participants as `nil`; the app does
+not resolve their raw GuessWho UUIDs directly.
+
+A shared link retains the original `endpointA` and `endpointB`, with further
+participants in an optional `additionalEndpoints` cell. Old links decode with
+an empty additional list. The link has one ID and note: editing the note or
+deleting the link affects every participant. Contact detail queries classify
+each link once, preferring its event, then place, then contacts, so the note is
+not duplicated across sections.
 
 ## The two package-internal identifiers
 
