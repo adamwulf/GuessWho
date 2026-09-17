@@ -49,6 +49,12 @@ struct DetailActivityFooter: View {
 /// tappable buttons. A single participant lays out exactly like a plain label,
 /// so the one-name row is visually unchanged (`LinkParticipantNames` only
 /// reaches for this layout when there is more than one name).
+///
+/// Each item is measured (and placed) with its width CAPPED to the available
+/// line width, so a single name longer than the line — or enlarged by a large
+/// Dynamic Type setting — wraps INSIDE its own cell and reports its true
+/// multi-line height, instead of overflowing on one line. Line heights are the
+/// max of the measured (possibly multi-line) item heights.
 struct WrappingNameFlow: Layout {
     /// Horizontal gap between items on a line. Zero because the comma-and-space
     /// that separates names is baked into each name's own text.
@@ -70,51 +76,66 @@ struct WrappingNameFlow: Layout {
         var y = bounds.minY
         for line in lines {
             var x = bounds.minX
-            for index in line.indices {
-                let size = subviews[index].sizeThatFits(.unspecified)
-                subviews[index].place(
+            for item in line.items {
+                // Place each item at the SAME (capped) size it was measured at so
+                // a wrapped name renders identically to how it was sized.
+                subviews[item.index].place(
                     at: CGPoint(x: x, y: y),
                     anchor: .topLeading,
-                    proposal: ProposedViewSize(size)
+                    proposal: ProposedViewSize(item.size)
                 )
-                x += size.width + horizontalSpacing
+                x += item.size.width + horizontalSpacing
             }
             y += line.height + verticalSpacing
         }
     }
 
+    private struct FlowItem {
+        let index: Int
+        let size: CGSize
+    }
+
     private struct FlowLine {
-        var indices: [Int] = []
+        var items: [FlowItem] = []
         var width: CGFloat = 0
         var height: CGFloat = 0
     }
 
-    /// Group subview indices into lines that each fit within `maxWidth`. Always
-    /// keeps at least one item per line so a single over-wide name still places
-    /// (it clips rather than vanishing — contact names are short in practice).
+    /// Measure a subview, capping its width to `maxWidth`. When its ideal
+    /// single-line width exceeds the line, re-propose at the line width so the
+    /// text wraps internally and returns its true multi-line height.
+    private func measuredSize(_ subview: LayoutSubviews.Element, maxWidth: CGFloat) -> CGSize {
+        let ideal = subview.sizeThatFits(.unspecified)
+        guard maxWidth.isFinite, ideal.width > maxWidth else { return ideal }
+        return subview.sizeThatFits(ProposedViewSize(width: maxWidth, height: nil))
+    }
+
+    /// Group subviews into lines that each fit within `maxWidth`. Always keeps at
+    /// least one item per line; an over-wide single item was capped to the line
+    /// width by `measuredSize`, so it wraps internally rather than overflowing.
     private func layoutLines(subviews: Subviews, maxWidth: CGFloat) -> [FlowLine] {
         var lines: [FlowLine] = []
         var current = FlowLine()
         for index in subviews.indices {
-            let size = subviews[index].sizeThatFits(.unspecified)
-            let projected = current.indices.isEmpty
+            let size = measuredSize(subviews[index], maxWidth: maxWidth)
+            let projected = current.items.isEmpty
                 ? size.width
                 : current.width + horizontalSpacing + size.width
-            if !current.indices.isEmpty, projected > maxWidth {
+            if !current.items.isEmpty, projected > maxWidth {
                 lines.append(current)
                 current = FlowLine()
-                current.indices = [index]
+                current.items = [FlowItem(index: index, size: size)]
                 current.width = size.width
                 current.height = size.height
             } else {
-                current.indices.append(index)
-                current.width = current.indices.count == 1
+                current.items.append(FlowItem(index: index, size: size))
+                current.width = current.items.count == 1
                     ? size.width
                     : current.width + horizontalSpacing + size.width
                 current.height = max(current.height, size.height)
             }
         }
-        if !current.indices.isEmpty { lines.append(current) }
+        if !current.items.isEmpty { lines.append(current) }
         return lines
     }
 }
@@ -344,7 +365,12 @@ struct AddLinkSheet: View {
         NavigationStack {
             Form {
                 Section("Note") {
+                    // Frozen while saving: the note passed to the write is
+                    // snapshotted at Save (see `save()`), so a late edit here
+                    // could not change what is written anyway — disabling makes
+                    // that visible.
                     TextField("Note (optional)", text: $noteText, axis: .vertical)
+                        .disabled(isSaving)
                 }
 
                 Section(kind == .organization ? "Organizations" : "Contacts") {
@@ -470,13 +496,19 @@ struct AddLinkSheet: View {
     private func save() {
         guard !selections.isEmpty, !isSaving else { return }
         isSaving = true
+        // Snapshot the draft NOW, synchronously, so the async phantom-create
+        // path below writes exactly what the user saw at Save — never a value
+        // edited while the create was in flight. (The rows and note field are
+        // also disabled while `isSaving`, so nothing here can move.)
+        let pickedSelections = selections
+        let noteSnapshot = noteText
         Task { @MainActor in
             // Resolve every selection to a real ContactID first. A `.record`
             // already is one; a `.phantom` has no record to point a link at, so
             // create (or reuse) the organization here — either way the grouped
             // link gets a real endpoint and no duplicate org is minted on a race.
             var resolved: [ContactID] = []
-            for selection in selections {
+            for selection in pickedSelections {
                 switch selection {
                 case .record(let id):
                     resolved.append(id)
@@ -503,7 +535,7 @@ struct AddLinkSheet: View {
             }
             // ONE grouped link write for the whole selection. On failure keep the
             // draft (selection + note) so the user can retry or pick differently.
-            if await onSave(resolved, noteText) {
+            if await onSave(resolved, noteSnapshot) {
                 dismiss()
             } else {
                 isSaving = false

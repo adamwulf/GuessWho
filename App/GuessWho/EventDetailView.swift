@@ -1104,7 +1104,10 @@ struct ContactPickerSheet: View {
                 // scrolling surface (no separate confirm screen).
                 if !selections.isEmpty {
                     Section("Note") {
+                        // Frozen while submitting: the note is snapshotted at
+                        // Add, so a late edit could not change what is written.
                         TextField("Optional note", text: $note, axis: .vertical)
+                            .disabled(isSubmitting)
                     }
                     if let errorMessage {
                         Section {
@@ -1164,11 +1167,12 @@ struct ContactPickerSheet: View {
                         guard !selections.isEmpty, !isSubmitting else { return }
                         errorMessage = nil
                         isSubmitting = true
+                        // Snapshot the draft NOW so the write uses exactly what
+                        // the user saw at Add, not a value edited mid-flight.
+                        let picked = selections
+                        let noteSnapshot = note.trimmingCharacters(in: .whitespacesAndNewlines)
                         Task {
-                            let didLink = await onPick(
-                                selections,
-                                note.trimmingCharacters(in: .whitespacesAndNewlines)
-                            )
+                            let didLink = await onPick(picked, noteSnapshot)
                             if didLink {
                                 dismiss()
                             } else {
