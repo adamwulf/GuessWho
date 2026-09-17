@@ -3904,11 +3904,14 @@ public final class ContactsRepository: NSObject {
     /// path makes the watcher post again, so an unconditional write would loop.
     /// The exception is group-identity resolution for a delivery that may name
     /// a `.group` sidecar: a peer device's identity arrives with no pin for
-    /// this device, and resolving it writes this device's pin (or prunes this
-    /// device's dead pin). That write settles instead of looping: its own echo
-    /// re-resolves through the now-live pin, which `resolveGroupIdentity`
-    /// returns before any write, and `writeGroupIdentity` skips a record that
-    /// equals what is on disk. The pass never refreshes fingerprints, so an
+    /// this device, and resolving it writes this device's pin. At most two
+    /// writes per identity per pass: a prune of this device's dead pin, then
+    /// the adopting pin when a same-name group is live. They settle instead of
+    /// looping: the echo of an adopting pin re-resolves through the now-live
+    /// pin, which `resolveGroupIdentity` returns before any write; the echo of
+    /// a prune with no group to adopt finds no pin and no name match, and
+    /// writes nothing; and `writeGroupIdentity` skips a record that equals
+    /// what is on disk. The pass never refreshes fingerprints, so an
     /// already-pinned identity costs one sidecar read and no Contacts fetch.
     private func refreshFromSidecarChange(_ changeSet: SidecarChangeSet, generation: Int) async {
         guard let changedKeys = changeSet.changedKeys else {

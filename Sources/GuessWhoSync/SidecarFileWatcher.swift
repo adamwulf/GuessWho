@@ -150,8 +150,9 @@ public extension Notification {
 /// from the subscriber side: every subscriber refresh path is READ-ONLY over
 /// sidecars (no write-back, so no loop) and debounced (so a burst costs one
 /// refresh). The one exception is `ContactsRepository`'s group-identity
-/// resolution for a `.group` delivery, whose single pin write settles on its
-/// own echo — see `ContactsRepository.refreshFromSidecarChange`. Any new
+/// resolution for a `.group` delivery, whose pin writes (at most a dead-pin
+/// prune followed by an adopting pin, per identity) settle on their own
+/// echo — see `ContactsRepository.refreshFromSidecarChange`. Any new
 /// write-back must prove the same. If echo refreshes ever prove noisy in
 /// practice, the escape
 /// hatch is store-side write journaling (compare changed paths against

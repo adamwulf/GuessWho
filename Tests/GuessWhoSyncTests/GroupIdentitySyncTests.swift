@@ -126,6 +126,35 @@ struct GroupIdentitySyncTests {
         #expect(world.sidecars.writeCount(for: key) == writesBefore + 1)
     }
 
+    /// The worst case for one identity in one pass: this device's pin points at
+    /// a group that no longer exists while a same-name group is live. The pass
+    /// writes twice — it prunes the dead pin, then pins the adopted group — and
+    /// the echo must still write nothing.
+    @Test
+    func deliveryWithDeadPin_prunesThenAdopts_andItsEchoWritesNothing() async throws {
+        let world = try makeWorld()
+        defer { world.cleanup() }
+        let (groupA, groupB) = try await world.createSharedGroup(named: "Work")
+        await world.b.repository.loadGroups()
+        var identity = try world.mintIdentityOnDeviceA(for: groupA)
+        // Device B once pinned a group it has since deleted.
+        identity.deviceLocalIDs = [World.deviceB: "deleted-local-id"]
+        try world.b.sync.writeGroupIdentity(identity)
+        let key = SidecarKey(kind: .group, id: identity.id)
+        let change = Delivery.exactKey.changeSet(identityID: identity.id)
+        let writesBefore = world.sidecars.writeCount(for: key)
+
+        #expect(await world.b.deliver(change))
+        #expect(world.sidecars.writeCount(for: key) == writesBefore + 2)
+        let stored = try #require(try world.b.sync.groupIdentity(id: identity.id))
+        #expect(stored.deviceLocalIDs[World.deviceB] == groupB.localID)
+        // Device B's writes never touch device A's pin.
+        #expect(stored.deviceLocalIDs[World.deviceA] == groupA.localID)
+
+        #expect(await world.b.deliver(change))
+        #expect(world.sidecars.writeCount(for: key) == writesBefore + 2)
+    }
+
     /// A delivery naming only kinds that cannot carry a group identity must not
     /// touch identities at all.
     @Test
