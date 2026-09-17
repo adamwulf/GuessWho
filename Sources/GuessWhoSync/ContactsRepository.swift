@@ -3024,12 +3024,6 @@ public final class ContactsRepository: NSObject {
         return link
     }
 
-    /// Resolve/mint every `ContactID` in `ids` to its canonical GuessWho contact
-    /// endpoint, in order, DEDUPLICATED (first appearance wins) and with any id
-    /// in `excluded` removed. Returns the ordered distinct endpoints plus the
-    /// localIDs of contacts that minted a fresh identity (so the caller refreshes
-    /// their cache entries after the write). Every identity is resolved BEFORE
-    /// the caller performs its single link write.
     /// `ids` with the `excluded` tokens removed and duplicate tokens collapsed,
     /// preserving first-appearance order. Keyed on `ContactID` equality (its
     /// effective identity), this is the CHEAP, pre-mint filter — it lets an
@@ -3048,6 +3042,12 @@ public final class ContactsRepository: NSObject {
         return result
     }
 
+    /// Resolve/mint every `ContactID` in `ids` to its canonical GuessWho contact
+    /// endpoint, in order, DEDUPLICATED (first appearance wins) and with any id
+    /// in `excluded` removed. Returns the ordered distinct endpoints plus the
+    /// localIDs of contacts that minted a fresh identity (so the caller refreshes
+    /// their cache entries after the write). Every identity is resolved BEFORE
+    /// the caller performs its single link write.
     private func resolvedContactEndpoints(
         for ids: [ContactID],
         excluding excluded: Set<String> = []
@@ -3114,12 +3114,9 @@ public final class ContactsRepository: NSObject {
     /// for EVERY participant and never also duplicates as a contact row. `.other`
     /// covers a link whose only far endpoints are none of these kinds.
     ///
-    /// This `event > place > contact` precedence is the canonical one. The
-    /// CLI/MCP link renderer picks a link's far endpoint with its own binary
-    /// logic (`GuessWhoMCPCore/ToolDispatcher.resolveFarEndpoint` /
-    /// `linkWireDescriptor`); if that surface ever adopts a representative-kind
-    /// ranking for multi-endpoint links, it MUST mirror this ordering so both
-    /// surfaces agree on which section a grouped link belongs to.
+    /// This `event > place > contact` precedence is the canonical one; keep it
+    /// in sync with `GuessWhoMCPCore.ToolDispatcher.representativeRank`, which
+    /// applies the same ordering on the CLI/MCP link surface.
     enum LinkClass { case event, place, contact, other }
 
     static func linkClass(of link: Link, from endpoint: SidecarKey) -> LinkClass {
