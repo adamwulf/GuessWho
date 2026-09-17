@@ -25,6 +25,8 @@ public enum MCPTool: String, CaseIterable, Sendable {
     case contactsListNotes = "contacts_list_notes"
     case contactsListCustomFields = "contacts_list_custom_fields"
     case contactsListGroups = "contacts_list_groups"
+    case foldersList = "folders_list"
+    case foldersListMembers = "folders_list_members"
     case organizationsListMembers = "organizations_list_members"
     case organizationsListDepartments = "organizations_list_departments"
     case organizationsListDepartmentMembers = "organizations_list_department_members"
@@ -81,6 +83,11 @@ public enum MCPTool: String, CaseIterable, Sendable {
     case favoritesSet = "favorites_set"
     case favoritesReorder = "favorites_reorder"
     case organizationsRenameDepartment = "organizations_rename_department"
+    case foldersCreate = "folders_create"
+    case foldersRename = "folders_rename"
+    case foldersMove = "folders_move"
+    case foldersDelete = "folders_delete"
+    case groupsMove = "groups_move"
     case groupsCreate = "groups_create"
     case groupsRename = "groups_rename"
     case groupsDelete = "groups_delete"
@@ -115,7 +122,7 @@ public enum MCPTool: String, CaseIterable, Sendable {
     public var permissionDomain: PermissionDomain {
         switch self {
         case .contactsSearch, .contactsList, .contactsGet, .contactsGetPhoto, .contactsListNotes,
-             .contactsListCustomFields, .contactsListGroups,
+             .contactsListCustomFields, .contactsListGroups, .foldersList, .foldersListMembers,
              .organizationsListMembers, .organizationsListDepartments,
              .organizationsListDepartmentMembers,
              .groupsListForContact,
@@ -131,6 +138,7 @@ public enum MCPTool: String, CaseIterable, Sendable {
              .contactsAddNote, .contactsEditNote, .contactsDeleteNote,
              .contactsSetCustomField, .contactsDeleteCustomField,
              .contactsSetFavorite, .organizationsRenameDepartment,
+             .foldersCreate, .foldersRename, .foldersMove, .foldersDelete, .groupsMove,
              .groupsCreate, .groupsRename, .groupsDelete,
              .groupsAddMembers, .groupsRemoveMembers, .groupsSetFavorite:
             return .contacts
@@ -158,7 +166,7 @@ public enum MCPTool: String, CaseIterable, Sendable {
     public var isWrite: Bool {
         switch self {
         case .contactsSearch, .contactsList, .contactsGet, .contactsGetPhoto, .contactsListNotes,
-             .contactsListCustomFields, .contactsListGroups,
+             .contactsListCustomFields, .contactsListGroups, .foldersList, .foldersListMembers,
              .organizationsListMembers, .organizationsListDepartments,
              .organizationsListDepartmentMembers,
              .groupsListForContact,
@@ -180,6 +188,7 @@ public enum MCPTool: String, CaseIterable, Sendable {
              .contactsSetFavorite,
              .favoritesSet, .favoritesReorder,
              .organizationsRenameDepartment,
+             .foldersCreate, .foldersRename, .foldersMove, .foldersDelete, .groupsMove,
              .groupsCreate, .groupsRename, .groupsDelete,
              .groupsAddMembers, .groupsRemoveMembers, .groupsSetFavorite,
              .eventsAddTag, .eventsEditTag, .eventsDeleteTag,
@@ -221,6 +230,11 @@ public enum MCPTool: String, CaseIterable, Sendable {
         "Optional: a unique string of your choosing that identifies this one change. If the call is retried with the same value, the change is applied only once."
     private static let eventIdDoc =
         "An event id — from events_list, or the otherId of a links_list row whose kind is event."
+    private static let folderIdDoc = "A folder id returned by folders_list."
+    private static let parentFolderIdSchema: Value = [
+        "type": .array([.string("string"), .string("null")]),
+        "description": .string("A folder id returned by folders_list. Omit or pass null for the top level."),
+    ]
     private static let groupIdDoc =
         "A group id returned by contacts_list_groups or groups_list_for_contact."
     private static let linkKindDoc =
@@ -884,6 +898,56 @@ public enum MCPTool: String, CaseIterable, Sendable {
                     "newName": Self.string("The new department name. It must not be empty or exactly the same as oldName after surrounding spaces are removed."),
                     "idempotencyToken": Self.string(Self.idempotencyDoc),
                 ], required: ["organizationId", "oldName", "newName"]))
+        case .foldersList:
+            return ToolMetadata(
+                name: rawValue,
+                description: "List folders in tree order, including each folder's parent folder.",
+                inputSchema: Self.schema(Self.pagingProperties))
+        case .foldersListMembers:
+            return ToolMetadata(
+                name: rawValue,
+                description: "List the contacts in every group inside a folder, including nested folders. Each contact appears once. A partial result names the groups that could not be loaded.",
+                inputSchema: Self.schema(Self.pagingProperties.merging([
+                    "folderId": Self.string(Self.folderIdDoc),
+                ]) { _, new in new }, required: ["folderId"]))
+        case .foldersCreate:
+            return ToolMetadata(
+                name: rawValue,
+                description: "Create a folder for groups. Returns the new folder.",
+                inputSchema: Self.schema([
+                    "name": Self.string("The folder's name."),
+                    "parentFolderId": Self.parentFolderIdSchema,
+                    "idempotencyToken": Self.string(Self.idempotencyDoc),
+                ], required: ["name"]))
+        case .foldersRename:
+            return ToolMetadata(
+                name: rawValue,
+                description: "Rename a folder. Returns the renamed folder.",
+                inputSchema: Self.schema([
+                    "folderId": Self.string(Self.folderIdDoc),
+                    "name": Self.string("The folder's new name."),
+                    "idempotencyToken": Self.string(Self.idempotencyDoc),
+                ], required: ["folderId", "name"]))
+        case .foldersMove, .groupsMove:
+            let argument = self == .foldersMove ? "folderId" : "groupId"
+            return ToolMetadata(
+                name: rawValue,
+                description: self == .foldersMove
+                    ? "Move a folder and its contents into another folder, or to the top level."
+                    : "Move a group into a folder, or to the top level. Its members stay the same.",
+                inputSchema: Self.schema([
+                    argument: Self.string(self == .foldersMove ? Self.folderIdDoc : Self.groupIdDoc),
+                    "parentFolderId": Self.parentFolderIdSchema,
+                    "idempotencyToken": Self.string(Self.idempotencyDoc),
+                ], required: [argument]))
+        case .foldersDelete:
+            return ToolMetadata(
+                name: rawValue,
+                description: "Delete a folder. Its folders and groups move up one level. No groups or contacts are deleted.",
+                inputSchema: Self.schema([
+                    "folderId": Self.string(Self.folderIdDoc),
+                    "idempotencyToken": Self.string(Self.idempotencyDoc),
+                ], required: ["folderId"]))
         case .groupsCreate:
             return ToolMetadata(
                 name: rawValue,

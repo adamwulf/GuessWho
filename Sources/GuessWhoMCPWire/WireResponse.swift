@@ -20,6 +20,9 @@ public enum WireResponse: Codable, Sendable {
     case contactPhoto(helperId: String, messageId: String, photo: WireContactPhoto)
     case notePage(helperId: String, messageId: String, page: WirePage<WireNote>)
     case customFieldPage(helperId: String, messageId: String, page: WirePage<WireCustomField>)
+    case folderPage(helperId: String, messageId: String, page: WirePage<WireFolder>)
+    case folder(helperId: String, messageId: String, folder: WireFolder)
+    case folderMemberPage(helperId: String, messageId: String, page: WireFolderMemberPage)
     case groupPage(helperId: String, messageId: String, page: WirePage<WireGroup>)
     case departmentPage(helperId: String, messageId: String, page: WirePage<String>)
     case group(helperId: String, messageId: String, group: WireGroup)
@@ -58,6 +61,9 @@ extension WireResponse: MCPResponseProtocol {
              .contactPhoto(let helperId, _, _),
              .notePage(let helperId, _, _),
              .customFieldPage(let helperId, _, _),
+             .folderPage(let helperId, _, _),
+             .folder(let helperId, _, _),
+             .folderMemberPage(let helperId, _, _),
              .groupPage(let helperId, _, _),
              .departmentPage(let helperId, _, _),
              .group(let helperId, _, _),
@@ -91,6 +97,9 @@ extension WireResponse: MCPResponseProtocol {
              .contactPhoto(_, let messageId, _),
              .notePage(_, let messageId, _),
              .customFieldPage(_, let messageId, _),
+             .folderPage(_, let messageId, _),
+             .folder(_, let messageId, _),
+             .folderMemberPage(_, let messageId, _),
              .groupPage(_, let messageId, _),
              .departmentPage(_, let messageId, _),
              .group(_, let messageId, _),
@@ -136,6 +145,12 @@ extension WireResponse: MCPResponseProtocol {
             return .notePage(helperId: helperId, messageId: messageId, page: page)
         case .customFieldPage(_, _, let page):
             return .customFieldPage(helperId: helperId, messageId: messageId, page: page)
+        case .folderPage(_, _, let page):
+            return .folderPage(helperId: helperId, messageId: messageId, page: page)
+        case .folder(_, _, let folder):
+            return .folder(helperId: helperId, messageId: messageId, folder: folder)
+        case .folderMemberPage(_, _, let page):
+            return .folderMemberPage(helperId: helperId, messageId: messageId, page: page)
         case .groupPage(_, _, let page):
             return .groupPage(helperId: helperId, messageId: messageId, page: page)
         case .departmentPage(_, _, let page):
@@ -204,6 +219,12 @@ extension WireResponse: MCPResponseProtocol {
         case .notePage(_, _, let page):
             return Self.jsonResult(page)
         case .customFieldPage(_, _, let page):
+            return Self.jsonResult(page)
+        case .folderPage(_, _, let page):
+            return Self.jsonResult(page)
+        case .folder(_, _, let folder):
+            return Self.jsonResult(folder)
+        case .folderMemberPage(_, _, let page):
             return Self.jsonResult(page)
         case .groupPage(_, _, let page):
             return Self.jsonResult(page)

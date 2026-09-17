@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import GuessWhoSync
 import GuessWhoMCPWire
@@ -167,6 +168,12 @@ public actor ToolDispatcher {
             return gateError
         }
 
+        if let groupId = requiredGroupID(in: request), UUID(uuidString: groupId) != nil {
+            return .error(
+                helperId: helperId, messageId: messageId, code: .invalidParams,
+                message: "Members belong to a group, not a folder. Use a group id from contacts_list_groups.")
+        }
+
         // Reorder's permission domain is the complete stored set, not the
         // caller-provided order. Load that authoritative snapshot once,
         // reject missing permission before the write budget, and pass the
@@ -228,6 +235,12 @@ public actor ToolDispatcher {
             response = await contactsListCustomFields(
                 helperId: helperId, messageId: messageId,
                 contactId: contactId, limit: limit, cursor: cursor)
+        case .foldersList(_, _, let limit, let cursor):
+            response = await foldersList(
+                helperId: helperId, messageId: messageId, limit: limit, cursor: cursor)
+        case .foldersListMembers(_, _, let folderId, let limit, let cursor):
+            response = await foldersListMembers(
+                helperId: helperId, messageId: messageId, folderId: folderId, limit: limit, cursor: cursor)
         case .contactsListGroups(_, _, let limit, let cursor):
             response = await contactsListGroups(
                 helperId: helperId, messageId: messageId, limit: limit, cursor: cursor)
@@ -304,6 +317,7 @@ public actor ToolDispatcher {
              .contactsSetFavorite,
              .favoritesSet, .favoritesReorder,
              .organizationsRenameDepartment,
+             .foldersCreate, .foldersRename, .foldersMove, .foldersDelete, .groupsMove,
              .groupsCreate, .groupsRename, .groupsDelete,
              .groupsAddMembers, .groupsRemoveMembers, .groupsSetFavorite,
              .eventsAddTag, .eventsEditTag, .eventsDeleteTag,
@@ -667,9 +681,11 @@ public actor ToolDispatcher {
         let favoriteStates = await MainActor.run {
             slice.map { contacts.isGroupFavorite($0) }
         }
+        let tree = await contacts.groupFolderTree
         let items = zip(slice, favoriteStates).map {
             WireMapping.group(
-                $0.0, id: WireRecordID.groupID(for: $0.0), isFavorite: $0.1)
+                $0.0, id: WireRecordID.groupID(for: $0.0), isFavorite: $0.1,
+                parentFolderId: tree.groups[$0.0.localID]?.parentFolderID)
         }
         return .groupPage(
             helperId: helperId, messageId: messageId,
@@ -794,14 +810,244 @@ public actor ToolDispatcher {
             let favoriteStates = await MainActor.run {
                 slice.map { contacts.isGroupFavorite($0) }
             }
+            let tree = await contacts.groupFolderTree
             let items = zip(slice, favoriteStates).map {
                 WireMapping.group(
-                    $0.0, id: WireRecordID.groupID(for: $0.0), isFavorite: $0.1)
+                    $0.0, id: WireRecordID.groupID(for: $0.0), isFavorite: $0.1,
+                    parentFolderId: tree.groups[$0.0.localID]?.parentFolderID)
             }
             return .groupPage(
                 helperId: helperId, messageId: messageId,
                 page: WirePage(items: items, nextCursor: nextCursor))
         }
+    }
+
+    // MARK: - Folder tools
+
+    private func requiredGroupID(in request: WireRequest) -> String? {
+        switch request {
+        case .groupsRename(_, _, let id, _, _),
+             .groupsDelete(_, _, let id, _),
+             .groupsSetFavorite(_, _, let id, _, _),
+             .groupsAddMembers(_, _, let id, _, _),
+             .groupsRemoveMembers(_, _, let id, _, _),
+             .groupsMove(_, _, let id, _, _):
+            return id
+        case .contactsList(_, _, _, _, let id, _, _):
+            return id
+        default:
+            return nil
+        }
+    }
+
+    private func foldersList(
+        helperId: String, messageId: String, limit: Int?, cursor: String?
+    ) async -> WireResponse {
+        guard let bounds = pageBounds(limit: limit, cursor: cursor) else {
+            return invalidCursor(helperId: helperId, messageId: messageId)
+        }
+        _ = await contacts.fetchGroups()
+        let tree = await contacts.groupFolderTree
+        let folders = tree.visibleRows().compactMap { row -> WireFolder? in
+            guard case .folder(let id) = row.id, let folder = tree.folders[id] else { return nil }
+            return Self.folderDTO(folder)
+        }
+        let (items, nextCursor) = bounds.slice(folders)
+        return .folderPage(helperId: helperId, messageId: messageId,
+                           page: WirePage(items: items, nextCursor: nextCursor))
+    }
+
+    private struct FolderMemberCursor: Codable {
+        let folderId: String
+        let hierarchy: Int
+        let membership: Int
+        let contactData: Int
+        let offset: Int
+
+        init(folderId: String, revisions: GroupMemberSnapshot.Revisions, offset: Int) {
+            self.folderId = folderId
+            hierarchy = revisions.hierarchy
+            membership = revisions.membership
+            contactData = revisions.contactData
+            self.offset = offset
+        }
+
+        func matches(folderId: String, revisions: GroupMemberSnapshot.Revisions) -> Bool {
+            self.folderId == folderId && hierarchy == revisions.hierarchy
+                && membership == revisions.membership && contactData == revisions.contactData
+        }
+    }
+
+    private func foldersListMembers(
+        helperId: String, messageId: String, folderId: String, limit: Int?, cursor: String?
+    ) async -> WireResponse {
+        _ = await contacts.fetchGroups()
+        let id = folderId.lowercased()
+        guard await contacts.groupFolderTree.folders[id] != nil else {
+            return folderFailure(GroupHierarchyError.folderNotFound(id),
+                                 helperId: helperId, messageId: messageId)
+        }
+        let snapshot = await contacts.memberSnapshot(for: .folder(id: id))
+        let current = await MainActor.run {
+            (revisions: contacts.memberRevisions, exists: contacts.groupFolderTree.folders[id] != nil)
+        }
+        guard current.exists else {
+            return folderFailure(GroupHierarchyError.folderNotFound(id),
+                                 helperId: helperId, messageId: messageId)
+        }
+        guard snapshot.revisions == current.revisions else {
+            return invalidCursor(helperId: helperId, messageId: messageId)
+        }
+        var offset = 0
+        if let cursor {
+            guard let data = Data(base64Encoded: cursor),
+                  let parsed = try? JSONDecoder().decode(FolderMemberCursor.self, from: data),
+                  parsed.matches(folderId: id, revisions: snapshot.revisions),
+                  parsed.offset >= 0, parsed.offset <= snapshot.contacts.count else {
+                return invalidCursor(helperId: helperId, messageId: messageId)
+            }
+            offset = parsed.offset
+        }
+        let count = min(max(limit ?? Self.defaultLimit, 1), Self.maxLimit)
+        let end = offset + min(count, snapshot.contacts.count - offset)
+        let nextCursor: String?
+        if end < snapshot.contacts.count {
+            let next = FolderMemberCursor(folderId: id, revisions: snapshot.revisions, offset: end)
+            nextCursor = (try? JSONEncoder().encode(next))?.base64EncodedString()
+        } else {
+            nextCursor = nil
+        }
+        let items = snapshot.contacts[offset..<end].map {
+            WireMapping.summary($0, id: WireRecordID.contactID(for: $0))
+        }
+        return .folderMemberPage(
+            helperId: helperId, messageId: messageId,
+            page: WireFolderMemberPage(items: items, nextCursor: nextCursor,
+                                       partial: snapshot.isPartial,
+                                       unloadedGroupIds: snapshot.failedGroups.map(WireRecordID.groupID)))
+    }
+
+    private static func folderDTO(_ folder: GroupFolderTree.Folder) -> WireFolder {
+        WireFolder(id: folder.id, name: folder.name, parentFolderId: folder.parentFolderID)
+    }
+
+    private static func folderUUID(token: String?) -> UUID {
+        guard let token else { return UUID() }
+        var bytes = Array(SHA256.hash(data: Data(("folders_create:" + token).utf8)).prefix(16))
+        bytes[6] = (bytes[6] & 0x0f) | 0x50
+        bytes[8] = (bytes[8] & 0x3f) | 0x80
+        return UUID(uuid: (bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+                           bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]))
+    }
+
+    private func folderWrite(
+        _ request: WireRequest, helperId: String, messageId: String
+    ) async -> WireResponse {
+        do {
+            let id: String
+            let action: MCPAuditEntry.Action
+            let prior: GroupFolderTree.Folder?
+            switch request {
+            case .foldersCreate(_, _, let name, let parent, let token):
+                let uuid = Self.folderUUID(token: token)
+                prior = await contacts.groupFolderTree.folders[uuid.uuidString.lowercased()]
+                id = try await contacts.createGroupFolder(name: name, inFolder: parent, id: uuid)
+                action = .createFolder
+            case .foldersRename(_, _, let folderId, let name, _):
+                id = folderId.lowercased()
+                prior = await contacts.groupFolderTree.folders[id]
+                try await contacts.renameGroupFolder(id: folderId, to: name)
+                action = .renameFolder
+            case .foldersMove(_, _, let folderId, let parent, _):
+                id = folderId.lowercased()
+                prior = await contacts.groupFolderTree.folders[id]
+                try await contacts.moveGroupFolder(id: folderId, toFolder: parent)
+                action = .moveFolder
+            case .foldersDelete(_, _, let folderId, _):
+                id = folderId.lowercased()
+                prior = await contacts.groupFolderTree.folders[id]
+                try await contacts.deleteGroupFolder(id: folderId)
+                action = .deleteFolder
+            case .groupsMove(_, _, let groupId, let parent, _):
+                guard let group = await resolveGroup(groupId) else {
+                    return groupNotFound(helperId: helperId, messageId: messageId)
+                }
+                let before = await contacts.groupFolderTree.groups[group.localID]
+                try await contacts.moveGroup(group, toFolder: parent)
+                let tree = await contacts.groupFolderTree
+                let after = tree.groups[group.localID]
+                if before != after {
+                    await recordAudit(.moveGroup, kind: .group, subjectID: groupId, subjectName: group.name,
+                                      instanceID: nil, postModifiedAt: nil,
+                                      priorValue: before?.parentFolderID.flatMap { tree.folders[$0]?.name } ?? "The top level",
+                                      newValue: after?.parentFolderID.flatMap { tree.folders[$0]?.name } ?? "The top level")
+                }
+                return .group(helperId: helperId, messageId: messageId,
+                              group: WireMapping.group(group, id: groupId,
+                                  isFavorite: await contacts.isGroupFavorite(group),
+                                  parentFolderId: after?.parentFolderID))
+            default:
+                return .error(helperId: helperId, messageId: messageId, code: .invalidParams,
+                              message: "That isn't a folder change.")
+            }
+            let tree = await contacts.groupFolderTree
+            let folder = tree.folders[id]
+            if prior != folder {
+                await recordAudit(action, kind: .folder, subjectID: id,
+                                  subjectName: folder?.name ?? prior?.name ?? "Folder",
+                                  instanceID: nil, postModifiedAt: nil,
+                                  priorValue: action == .moveFolder
+                                    ? prior?.parentFolderID.flatMap { tree.folders[$0]?.name } ?? "The top level"
+                                    : prior?.name,
+                                  newValue: action == .moveFolder
+                                    ? folder?.parentFolderID.flatMap { tree.folders[$0]?.name } ?? "The top level"
+                                    : folder?.name)
+            }
+            if let folder {
+                return .folder(helperId: helperId, messageId: messageId, folder: Self.folderDTO(folder))
+            }
+            guard action == .deleteFolder else {
+                return folderFailure(GroupHierarchyError.folderNotFound(id),
+                                     helperId: helperId, messageId: messageId)
+            }
+            return .acknowledged(helperId: helperId, messageId: messageId,
+                                 message: "The folder was deleted. Its folders and groups moved up one level.")
+        } catch let error as GroupHierarchyError {
+            return folderFailure(error, helperId: helperId, messageId: messageId)
+        } catch {
+            return await groupWriteFailure(error, helperId: helperId, messageId: messageId)
+        }
+    }
+
+    private func folderFailure(
+        _ error: GroupHierarchyError, helperId: String, messageId: String
+    ) -> WireResponse {
+        let code: WireErrorCode
+        let message: String
+        switch error {
+        case .invalidName:
+            code = .invalidParams
+            message = "A folder name must not be empty."
+        case .invalidFolderID:
+            code = .invalidParams
+            message = "Use a folder id from folders_list."
+        case .folderNotFound:
+            code = .notFound
+            message = "There is no such folder. List folders again."
+        case .folderDeleted:
+            code = .notFound
+            message = "That folder no longer exists. List folders again."
+        case .wouldCreateCycle:
+            code = .invalidParams
+            message = "A folder can't be moved into itself or into a folder inside it."
+        case .identityNotFound:
+            code = .notFound
+            message = WireErrorMessage.notFoundGroup
+        case .lossyEnvelope, .recordUnavailable, .timestampOverflow:
+            code = .writeFailed
+            message = "The folder or group information can't be read right now. Try again later."
+        }
+        return .error(helperId: helperId, messageId: messageId, code: code, message: message)
     }
 
     // MARK: - Group writes
@@ -857,7 +1103,8 @@ public actor ToolDispatcher {
             return .group(
                 helperId: helperId, messageId: messageId,
                 group: WireMapping.group(
-                    renamed, id: groupId, isFavorite: isFavorite))
+                    renamed, id: groupId, isFavorite: isFavorite,
+                    parentFolderId: await contacts.groupFolderTree.groups[group.localID]?.parentFolderID))
         } catch {
             return await groupWriteFailure(error, helperId: helperId, messageId: messageId)
         }
@@ -870,7 +1117,16 @@ public actor ToolDispatcher {
             return groupNotFound(helperId: helperId, messageId: messageId)
         }
         do {
-            try await contacts.deleteGroup(group)
+            let pending = try await contacts.deleteGroup(group)
+            var cleanupMessage: String?
+            if let pending {
+                do {
+                    try await contacts.retryGroupPlacementCleanup(pending)
+                    cleanupMessage = "The group was deleted. Its folder was updated on retry."
+                } catch {
+                    cleanupMessage = "The group was deleted, but its folder could not be updated."
+                }
+            }
             // Match the app's delete path: the Contacts deletion is the primary
             // operation, and stale favorite cleanup is best-effort afterwards.
             _ = try? await contacts.setGroupFavorite(false, for: group)
@@ -881,7 +1137,7 @@ public actor ToolDispatcher {
                 priorValue: group.name, newValue: nil)
             return .acknowledged(
                 helperId: helperId, messageId: messageId,
-                message: WireAckMessage.groupDeleted)
+                message: cleanupMessage ?? WireAckMessage.groupDeleted)
         } catch {
             return await groupWriteFailure(error, helperId: helperId, messageId: messageId)
         }
@@ -910,7 +1166,8 @@ public actor ToolDispatcher {
             return .group(
                 helperId: helperId, messageId: messageId,
                 group: WireMapping.group(
-                    group, id: groupId, isFavorite: favorite))
+                    group, id: groupId, isFavorite: favorite,
+                    parentFolderId: await contacts.groupFolderTree.groups[group.localID]?.parentFolderID))
         } catch {
             return await groupWriteFailure(error, helperId: helperId, messageId: messageId)
         }
@@ -1602,6 +1859,8 @@ public actor ToolDispatcher {
             return await organizationsRenameDepartment(
                 helperId: helperId, messageId: messageId,
                 organizationId: organizationId, oldName: oldName, newName: newName)
+        case .foldersCreate, .foldersRename, .foldersMove, .foldersDelete, .groupsMove:
+            return await folderWrite(request, helperId: helperId, messageId: messageId)
         case .groupsCreate(_, _, let name, _):
             return await groupsCreate(
                 helperId: helperId, messageId: messageId, name: name)

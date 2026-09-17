@@ -3,7 +3,7 @@ name: guesswho
 description: >-
   Read and write GuessWho contacts, events, and related data from the terminal
   with the `guesswho` command. Use this skill when you must find a contact, add
-  or change a contact, read or write notes, custom fields, tags, groups, events,
+  or change a contact, read or write notes, custom fields, tags, groups, folders, events,
   Maps guides and places, links between records, or favorites. GuessWho keeps a
   personal contact book plus private notes on top of the system Contacts and
   Calendar. All data stays on the local device.
@@ -36,7 +36,7 @@ A command is a noun group and a hyphenated verb:
 guesswho <noun> <verb> [ids…] [--flags…]
 ```
 
-The noun groups are: `contacts`, `organizations`, `groups`, `events`,
+The noun groups are: `contacts`, `organizations`, `groups`, `folders`, `events`,
 `guides`, `places`, `links`, and `favorites`.
 
 Rules:
@@ -123,6 +123,39 @@ This is the only command that asks the user to confirm. The app shows a dialog
 with the contact name. The command waits for the answer. If the user cancels,
 the command exits with code `10` and changes nothing.
 
+### Organize groups in folders
+
+```
+guesswho folders list
+guesswho folders create "Family" --idempotency-token <unique-token>
+guesswho folders create "Activities" --in <folder-id>
+guesswho folders rename <folder-id> "Clubs"
+guesswho folders move <folder-id> --to <parent-folder-id>
+guesswho groups move <group-id> --to <folder-id>
+guesswho folders members <folder-id> --limit 50
+guesswho folders delete <folder-id>
+```
+
+Get folder ids from `folders list`, and group ids from `contacts list-groups`.
+A folder id stays the same on every device. Group ids are for the current device.
+Both lists include `parentFolderId`; no parent means the top level.
+
+Omit `--to` on either move command to move to the top level. Omit `--in` when
+creating a folder to create it at the top level. Deleting a folder moves its
+folders and groups up one level; it does not delete groups or contacts.
+
+`folders members` includes contacts from groups in nested folders, each once.
+Check `partial` and `unloadedGroupIds`: when `partial` is true, some groups
+could not be loaded. Retry the read before treating the result as complete.
+Use each page's `nextCursor` for the next page of the same folder. If a cursor
+is rejected because the contacts or groups changed, start again without it.
+Members belong to groups; a folder id cannot be used with a group command or
+with `contacts list --group-id`.
+
+Every folder write and `groups move` accepts `--idempotency-token`. Reuse the
+same token when retrying the same change; a retried folder create returns the
+same folder. If a tool is unavailable in your version, update GuessWho.
+
 ## What data GuessWho holds
 
 | Data | Command group | Notes |
@@ -133,6 +166,7 @@ the command exits with code `10` and changes nothing.
 | Custom fields | `contacts set-custom-field` / `list-custom-fields` | Named values: text, multiline note, date, checkbox, or url (a web address). |
 | Organizations | `organizations` | A contact whose kind is `organization`. Lists members and departments. |
 | Groups | `groups`, `contacts list-groups` | Named sets of contacts. |
+| Folders | `folders` | Folders organize groups and nested folders. |
 | Events | `events` | Calendar events, with tags you can add. |
 | Guides & places | `guides`, `places` | Imported Apple Maps guides and their places. |
 | Links | `links` | Connections between two records (contact, event, or place). |

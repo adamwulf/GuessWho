@@ -39,6 +39,8 @@ public enum WireRequest: Codable, Sendable {
     case contactsListNotes(helperId: String, messageId: String, contactId: String, limit: Int?, cursor: String?)
     case contactsListCustomFields(helperId: String, messageId: String, contactId: String, limit: Int?, cursor: String?)
     case contactsListGroups(helperId: String, messageId: String, limit: Int?, cursor: String?)
+    case foldersList(helperId: String, messageId: String, limit: Int?, cursor: String?)
+    case foldersListMembers(helperId: String, messageId: String, folderId: String, limit: Int?, cursor: String?)
     case organizationsListMembers(helperId: String, messageId: String, organizationId: String, limit: Int?, cursor: String?)
     case organizationsListDepartments(helperId: String, messageId: String, organizationId: String, limit: Int?, cursor: String?)
     case organizationsListDepartmentMembers(helperId: String, messageId: String, organizationId: String, department: String, limit: Int?, cursor: String?)
@@ -96,6 +98,11 @@ public enum WireRequest: Codable, Sendable {
     case favoritesSet(helperId: String, messageId: String, kind: WireFavoriteKind, id: String, favorite: Bool, idempotencyToken: String?)
     case favoritesReorder(helperId: String, messageId: String, favorites: [WireFavoriteIdentity], idempotencyToken: String?)
     case organizationsRenameDepartment(helperId: String, messageId: String, organizationId: String, oldName: String, newName: String, idempotencyToken: String?)
+    case foldersCreate(helperId: String, messageId: String, name: String, parentFolderId: String?, idempotencyToken: String?)
+    case foldersRename(helperId: String, messageId: String, folderId: String, name: String, idempotencyToken: String?)
+    case foldersMove(helperId: String, messageId: String, folderId: String, parentFolderId: String?, idempotencyToken: String?)
+    case foldersDelete(helperId: String, messageId: String, folderId: String, idempotencyToken: String?)
+    case groupsMove(helperId: String, messageId: String, groupId: String, parentFolderId: String?, idempotencyToken: String?)
     case groupsCreate(helperId: String, messageId: String, name: String, idempotencyToken: String?)
     case groupsRename(helperId: String, messageId: String, groupId: String, name: String, idempotencyToken: String?)
     case groupsDelete(helperId: String, messageId: String, groupId: String, idempotencyToken: String?)
@@ -164,6 +171,13 @@ public enum WireRequest: Codable, Sendable {
         case .favoritesSet: return .favoritesSet
         case .favoritesReorder: return .favoritesReorder
         case .organizationsRenameDepartment: return .organizationsRenameDepartment
+        case .foldersList: return .foldersList
+        case .foldersListMembers: return .foldersListMembers
+        case .foldersCreate: return .foldersCreate
+        case .foldersRename: return .foldersRename
+        case .foldersMove: return .foldersMove
+        case .foldersDelete: return .foldersDelete
+        case .groupsMove: return .groupsMove
         case .groupsCreate: return .groupsCreate
         case .groupsRename: return .groupsRename
         case .groupsDelete: return .groupsDelete
@@ -213,6 +227,11 @@ public enum WireRequest: Codable, Sendable {
              .favoritesSet(_, _, _, _, _, let token),
              .favoritesReorder(_, _, _, let token),
              .organizationsRenameDepartment(_, _, _, _, _, let token),
+             .foldersCreate(_, _, _, _, let token),
+             .foldersRename(_, _, _, _, let token),
+             .foldersMove(_, _, _, _, let token),
+             .foldersDelete(_, _, _, let token),
+             .groupsMove(_, _, _, _, let token),
              .groupsCreate(_, _, _, let token),
              .groupsRename(_, _, _, _, let token),
              .groupsDelete(_, _, _, let token),
@@ -289,6 +308,13 @@ extension WireRequest: MCPRequestProtocol {
              .favoritesSet(let helperId, _, _, _, _, _),
              .favoritesReorder(let helperId, _, _, _),
              .organizationsRenameDepartment(let helperId, _, _, _, _, _),
+             .foldersList(let helperId, _, _, _),
+             .foldersListMembers(let helperId, _, _, _, _),
+             .foldersCreate(let helperId, _, _, _, _),
+             .foldersRename(let helperId, _, _, _, _),
+             .foldersMove(let helperId, _, _, _, _),
+             .foldersDelete(let helperId, _, _, _),
+             .groupsMove(let helperId, _, _, _, _),
              .groupsCreate(let helperId, _, _, _),
              .groupsRename(let helperId, _, _, _, _),
              .groupsDelete(let helperId, _, _, _),
@@ -361,6 +387,13 @@ extension WireRequest: MCPRequestProtocol {
              .favoritesSet(_, let messageId, _, _, _, _),
              .favoritesReorder(_, let messageId, _, _),
              .organizationsRenameDepartment(_, let messageId, _, _, _, _),
+             .foldersList(_, let messageId, _, _),
+             .foldersListMembers(_, let messageId, _, _, _),
+             .foldersCreate(_, let messageId, _, _, _),
+             .foldersRename(_, let messageId, _, _, _),
+             .foldersMove(_, let messageId, _, _, _),
+             .foldersDelete(_, let messageId, _, _),
+             .groupsMove(_, let messageId, _, _, _),
              .groupsCreate(_, let messageId, _, _),
              .groupsRename(_, let messageId, _, _, _),
              .groupsDelete(_, let messageId, _, _),
@@ -691,6 +724,46 @@ extension WireRequest: MCPRequestProtocol {
                 oldName: try args.requiredString("oldName"),
                 newName: try args.requiredString("newName"),
                 idempotencyToken: try args.optionalString("idempotencyToken"))
+        case .foldersList:
+            return .foldersList(
+                helperId: helperId, messageId: messageId,
+                limit: try args.optionalInt("limit"),
+                cursor: try args.optionalString("cursor"))
+        case .foldersListMembers:
+            return .foldersListMembers(
+                helperId: helperId, messageId: messageId,
+                folderId: try args.requiredString("folderId"),
+                limit: try args.optionalInt("limit"),
+                cursor: try args.optionalString("cursor"))
+        case .foldersCreate:
+            return .foldersCreate(
+                helperId: helperId, messageId: messageId,
+                name: try args.requiredString("name"),
+                parentFolderId: try args.optionalString("parentFolderId"),
+                idempotencyToken: try args.optionalString("idempotencyToken"))
+        case .foldersRename:
+            return .foldersRename(
+                helperId: helperId, messageId: messageId,
+                folderId: try args.requiredString("folderId"),
+                name: try args.requiredString("name"),
+                idempotencyToken: try args.optionalString("idempotencyToken"))
+        case .foldersMove:
+            return .foldersMove(
+                helperId: helperId, messageId: messageId,
+                folderId: try args.requiredString("folderId"),
+                parentFolderId: try args.optionalString("parentFolderId"),
+                idempotencyToken: try args.optionalString("idempotencyToken"))
+        case .foldersDelete:
+            return .foldersDelete(
+                helperId: helperId, messageId: messageId,
+                folderId: try args.requiredString("folderId"),
+                idempotencyToken: try args.optionalString("idempotencyToken"))
+        case .groupsMove:
+            return .groupsMove(
+                helperId: helperId, messageId: messageId,
+                groupId: try args.requiredString("groupId"),
+                parentFolderId: try args.optionalString("parentFolderId"),
+                idempotencyToken: try args.optionalString("idempotencyToken"))
         case .groupsCreate:
             return .groupsCreate(
                 helperId: helperId, messageId: messageId,
@@ -798,7 +871,7 @@ public enum WireRequestError: Error, CustomStringConvertible {
     public var description: String {
         switch self {
         case .unknownTool(let name):
-            return "There is no tool named \(name). List tools to see what is available."
+            return "The tool \(name) is unavailable in this version. Update GuessWho and list tools to see what is available."
         case .missingArgument(let tool, let name):
             return "\(tool) requires the \(name) argument."
         case .invalidArgument(let tool, let name, let expected):

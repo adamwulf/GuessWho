@@ -54,6 +54,6 @@ final class VocabularyTests: XCTestCase {
         // beneath them: 3 shipped + 20 Phase 2 reads + 17 Phase 3 GuessWho-data
         // writes + 22 Phase 4 Contact Store writes + 1 Phase 5 confirmation-gated
         // delete = 63 (full parity). 2 + 8 + 63 = 73.
-        XCTAssertEqual(CLICommandRegistry.allSubcommandTypes.count, 73)
+        XCTAssertEqual(CLICommandRegistry.allSubcommandTypes.count, 81)
     }
 }

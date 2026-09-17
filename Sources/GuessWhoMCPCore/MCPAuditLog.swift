@@ -22,12 +22,13 @@ public struct MCPAuditEntry: Codable, Equatable, Sendable {
         // recorded AFTER the user approved the in-app confirmation.
         case createContact, editContact, deleteContact
         case renameDepartment
+        case createFolder, renameFolder, moveFolder, deleteFolder, moveGroup
         case createGroup, renameGroup, deleteGroup
         case addGroupMembers, removeGroupMembers
     }
 
     public enum SubjectKind: String, Codable, Sendable {
-        case contact, event, group, guide, place, link, favorites, department
+        case contact, event, group, folder, guide, place, link, favorites, department
     }
 
     /// When the entry was appended (immediately after the engine write

@@ -518,6 +518,11 @@ public enum AgentActivityStrings {
     public static let editedContact = "Edited the contact %@"
     public static let deletedContact = "Deleted the contact %@ (approved by you)"
     public static let renamedDepartment = "Renamed a department in %@"
+    public static let createdFolder = "Created the folder %@"
+    public static let renamedFolder = "Renamed the folder %@"
+    public static let movedFolder = "Moved the folder %@"
+    public static let deletedFolder = "Deleted the folder %@"
+    public static let movedGroup = "Moved the group %@"
     public static let createdGroup = "Created the group %@"
     public static let renamedGroup = "Renamed the group %@"
     public static let deletedGroup = "Deleted the group %@"
@@ -536,6 +541,7 @@ public enum AgentActivityStrings {
             addedTag, editedTag, deletedTag,
             createdGuide, deletedGuide, reorderedPlaces, reorderedFavorites, deletedPlace,
             createdContact, editedContact, deletedContact, renamedDepartment,
+            createdFolder, renamedFolder, movedFolder, deletedFolder, movedGroup,
             createdGroup, renamedGroup, deletedGroup,
             addedGroupMembers, removedGroupMembers,
             unknownSubject,

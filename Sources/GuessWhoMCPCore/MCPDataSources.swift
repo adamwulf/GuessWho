@@ -28,6 +28,15 @@ public protocol MCPContactSource: AnyObject {
     func isFavorite(_ id: ContactID) -> Bool
     /// Refreshes and returns the user's contact groups.
     func fetchGroups() async -> [ContactGroup]
+    var groupFolderTree: GroupFolderTree { get }
+    var memberRevisions: GroupMemberSnapshot.Revisions { get }
+    func memberSnapshot(for scope: GroupMemberScope) async -> GroupMemberSnapshot
+    func createGroupFolder(name: String, inFolder parentFolderID: String?, id: UUID) async throws -> String
+    func renameGroupFolder(id: String, to name: String) async throws
+    func moveGroupFolder(id: String, toFolder parentFolderID: String?) async throws
+    func deleteGroupFolder(id: String) async throws
+    func moveGroup(_ group: ContactGroup, toFolder parentFolderID: String?) async throws
+    func retryGroupPlacementCleanup(_ pending: PendingGroupPlacementCleanup) async throws
     func members(ofGroup groupLocalID: String) async -> [Contact]
     /// Derived organization membership and department reads. These are the
     /// repository's canonical name-matching rules; the dispatcher must not

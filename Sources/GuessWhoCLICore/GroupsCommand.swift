@@ -8,10 +8,10 @@ import MCP
 public struct GroupsCommand: AsyncParsableCommand {
     public static let configuration = CommandConfiguration(
         commandName: "groups",
-        abstract: "Read the groups a contact belongs to, and create, rename, delete, and change the membership and favorite flag of groups.",
+        abstract: "Read the groups a contact belongs to, and create, rename, move, delete, and change the membership and favorite flag of groups.",
         subcommands: [
             GroupsListForContact.self,
-            GroupsCreate.self, GroupsRename.self, GroupsDelete.self,
+            GroupsCreate.self, GroupsRename.self, GroupsDelete.self, GroupsMove.self,
             GroupsAddMembers.self, GroupsRemoveMembers.self, GroupsSetFavorite.self,
         ]
     )
@@ -221,6 +221,31 @@ public struct GroupsSetFavorite: CLIToolCommand {
             "groupId": .string(groupId),
             "favorite": .bool(favorite),
         ]
+        if let idempotencyToken { bag["idempotencyToken"] = .string(idempotencyToken) }
+        return bag
+    }
+}
+
+public struct GroupsMove: CLIToolCommand {
+    public static let tool: MCPTool = .groupsMove
+    public static let configuration = CommandConfiguration(
+        commandName: "move",
+        abstract: "Move a group into a folder, or to the top level.")
+
+    @Argument(help: "Group id, from contacts list-groups.")
+    public var groupId: String
+
+    @Option(name: .customLong("to"), help: "Destination folder id. Omit for the top level.")
+    public var parentFolderId: String?
+
+    @Option(help: "Token that makes a retried change apply only once.")
+    public var idempotencyToken: String?
+
+    public init() {}
+
+    public func argumentBag() throws -> [String: Value] {
+        var bag: [String: Value] = ["groupId": .string(groupId)]
+        if let parentFolderId { bag["parentFolderId"] = .string(parentFolderId) }
         if let idempotencyToken { bag["idempotencyToken"] = .string(idempotencyToken) }
         return bag
     }

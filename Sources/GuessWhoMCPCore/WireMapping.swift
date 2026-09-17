@@ -206,8 +206,8 @@ enum WireMapping {
             participants: participants)
     }
 
-    static func group(_ group: ContactGroup, id: String, isFavorite: Bool) -> WireGroup {
-        WireGroup(id: id, name: group.name, isFavorite: isFavorite)
+    static func group(_ group: ContactGroup, id: String, isFavorite: Bool, parentFolderId: String? = nil) -> WireGroup {
+        WireGroup(id: id, name: group.name, isFavorite: isFavorite, parentFolderId: parentFolderId)
     }
 
     // MARK: - Events

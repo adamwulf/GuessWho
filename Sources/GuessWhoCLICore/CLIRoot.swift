@@ -28,7 +28,7 @@ public struct GuessWhoCLIRoot: AsyncParsableCommand {
             Run.self, Probe.self,
             ContactsCommand.self, OrganizationsCommand.self, GroupsCommand.self,
             EventsCommand.self, GuidesCommand.self, PlacesCommand.self,
-            LinksCommand.self, FavoritesCommand.self,
+            LinksCommand.self, FavoritesCommand.self, FoldersCommand.self,
         ]
     )
 

@@ -99,6 +99,8 @@ public enum CLICommandRegistry {
         // Phase 4 writes — organizations.
         OrganizationsRenameDepartment.self,
         // Phase 4 writes — groups.
+        FoldersList.self, FoldersMembers.self, FoldersCreate.self,
+        FoldersRename.self, FoldersMove.self, FoldersDelete.self, GroupsMove.self,
         GroupsCreate.self,
         GroupsRename.self,
         GroupsDelete.self,
@@ -120,8 +122,10 @@ public enum CLICommandRegistry {
 
     /// The §2 derivation rule as code: the tool name's text before the first
     /// underscore is the noun group; the rest becomes the hyphenated verb.
-    /// `contacts_get_photo` → `contacts get-photo`.
+    /// `contacts_get_photo` → `contacts get-photo`. Folder members use the
+    /// shorter `folders members` command.
     public static func derivedPath(for tool: MCPTool) -> String {
+        if tool == .foldersListMembers { return "folders members" }
         let raw = tool.rawValue
         guard let underscore = raw.firstIndex(of: "_") else { return raw }
         let noun = String(raw[..<underscore])
