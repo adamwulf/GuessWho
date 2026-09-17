@@ -14,6 +14,8 @@ Status: implementation in progress on `agent/supgroups`, 2026-09-17. Delivery st
 
 **Built.** Step 0, commits `1b97f2c` + `b9e9451`, two review rounds, approved. `swift test --no-parallel`: 582 XCTest + 1090 swift-testing, all passing; Mac Catalyst build green. Not yet hand-checked on two real iCloud devices — the useful check is golden case 1 with the second device's app already running: the favorite must resolve without a relaunch.
 
+Step 1 groundwork: hardening items 1–3 below are built, in `Tests/GuessWhoSyncTests/SidecarStoreCompatibilityTests.swift`, BEFORE the new kind. `SidecarKind` is now `CaseIterable` and owns the one kind ↔ directory-name mapping (`directoryName`, `init?(directoryName:)`); the store's listings and the watcher's path mapping both derive from it, so no hand-maintained kind list remains. Adding `.groupFolder` must add its line to the test's frozen `shippedDirectoryNames` table. Items 4–6, the folder kind, and the placement cell are not started.
+
 **Still open (none blocks step 1).**
 
 - Folder single-click vs. double-click arbitration on Catalyst needs Adam's hand check on real hardware; prototype it at the start of step 4.

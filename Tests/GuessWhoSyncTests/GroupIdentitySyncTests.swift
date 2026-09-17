@@ -408,6 +408,12 @@ final class WriteCountingSidecarStore: SidecarStoreProtocol {
         return writeCounts[key, default: 0]
     }
 
+    /// Envelope writes to every key together.
+    var totalWriteCount: Int {
+        lock.lock(); defer { lock.unlock() }
+        return writeCounts.values.reduce(0, +)
+    }
+
     func read(_ key: SidecarKey) throws -> SidecarEnvelope? { try inner.read(key) }
     func allKeys() throws -> [SidecarKey] { try inner.allKeys() }
     func write(_ envelope: SidecarEnvelope, at key: SidecarKey) throws {
