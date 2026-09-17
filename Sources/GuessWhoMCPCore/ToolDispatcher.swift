@@ -4043,40 +4043,56 @@ public actor ToolDispatcher {
         }
 
         let fetched = await links.links(at: endpoint)
-        var rows: [(link: Link, farKind: String, farID: String)] = []
+        var rows: [(link: Link, repKind: String, repID: String, participants: [WireLinkParticipant]?)] = []
         for link in fetched where link.deletedAt == nil {
-            // A grouped connection joins three or more records, so listing it
-            // from `endpoint` (the near record) yields ONE row per far
-            // participant: no participant is dropped, and the near record is
-            // never echoed back as its own connection. `otherEndpoints(from:)`
-            // returns every endpoint except the near one, in order — for an
-            // ordinary two-record connection that is exactly one far endpoint,
-            // so the row count and shape are unchanged from the binary case.
+            // A connection may join three or more records. There is still ONE
+            // row per connection (no repeated ids, no change to paging): every
+            // far record — each endpoint except the near one, in order — is
+            // resolved, dropping any that no longer resolve to a live record
+            // (the same DELIBERATE divergence as the linked-contact list: an
+            // agent can't act on a far with no id to read).
+            var fars: [(kind: SidecarKind, wireKind: String, id: String)] = []
             for far in link.otherEndpoints(from: endpoint) {
-                // Same DELIBERATE divergence as the linked-contact list: a far
-                // endpoint that doesn't resolve to a live record is DROPPED —
-                // an agent can't act on a row with no id to read.
                 guard let resolved = await resolveFarEndpoint(far) else { continue }
-                rows.append((link, resolved.kind, resolved.id))
+                fars.append((far.kind, resolved.kind, resolved.id))
             }
+            // A connection with no resolvable far record is dropped entirely.
+            guard let representative = fars.min(by: {
+                Self.representativeRank($0.kind) < Self.representativeRank($1.kind)
+            }) else { continue }
+            // `participants` lists every far record (representative included)
+            // ONLY for a grouped connection; a two-record connection omits it,
+            // keeping the payload byte-identical to the pre-grouping wire.
+            let participants: [WireLinkParticipant]? = fars.count > 1
+                ? fars.map { WireLinkParticipant(kind: $0.wireKind, otherId: $0.id) }
+                : nil
+            rows.append((link, representative.wireKind, representative.id, participants))
         }
-        // Deterministic order so the offset cursor stays stable across pages:
-        // primary by the connection's createdAt, then by far kind and id so a
-        // grouped connection's expanded rows keep a fixed relative order.
-        rows.sort {
-            if $0.link.createdAt != $1.link.createdAt {
-                return $0.link.createdAt < $1.link.createdAt
-            }
-            if $0.farKind != $1.farKind { return $0.farKind < $1.farKind }
-            return $0.farID < $1.farID
-        }
+        // Unchanged pagination: one row per connection, ordered by createdAt.
+        rows.sort { $0.link.createdAt < $1.link.createdAt }
         let (slice, nextCursor) = page.slice(rows)
         let items = slice.compactMap {
-            WireMapping.link($0.link, otherKind: $0.farKind, otherID: $0.farID)
+            WireMapping.link(
+                $0.link, otherKind: $0.repKind, otherID: $0.repID,
+                participants: $0.participants)
         }
         return .linkPage(
             helperId: helperId, messageId: messageId,
             page: WirePage(items: items, nextCursor: nextCursor))
+    }
+
+    /// Priority for choosing a grouped connection's representative far record,
+    /// mirroring the repository's classification: event (0) beats place (1)
+    /// beats contact (2). `min` keeps the FIRST minimal element, so within one
+    /// kind the earliest endpoint (endpoint order) wins. Non-endpoint kinds
+    /// never reach here — a far that doesn't resolve is dropped upstream.
+    private static func representativeRank(_ kind: SidecarKind) -> Int {
+        switch kind {
+        case .event: return 0
+        case .place: return 1
+        case .contact: return 2
+        case .guide, .group, .link: return 3
+        }
     }
 
     /// The wire (kind, id) of a link's far endpoint, or nil when it no

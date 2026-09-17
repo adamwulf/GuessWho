@@ -184,16 +184,24 @@ enum WireMapping {
     }
 
     /// One generic connection row (links_list / links_create), described
-    /// from the near record's side: `otherKind`/`otherID` are the FAR
-    /// endpoint's wire kind and id, pre-resolved by the dispatcher.
-    static func link(_ link: Link, otherKind: String, otherID: String) -> WireLink? {
+    /// from the near record's side: `otherKind`/`otherID` are the
+    /// representative FAR endpoint's wire kind and id, pre-resolved by the
+    /// dispatcher. `participants` carries every far endpoint of a grouped
+    /// connection (the representative included); it is `nil` for an ordinary
+    /// two-record connection so the encoded payload omits the key and stays
+    /// byte-identical to the pre-grouping wire.
+    static func link(
+        _ link: Link, otherKind: String, otherID: String,
+        participants: [WireLinkParticipant]? = nil
+    ) -> WireLink? {
         guard link.deletedAt == nil else { return nil }
         return WireLink(
             id: link.id.uuidString.lowercased(),
             kind: otherKind,
             otherId: otherID,
             note: blankToNil(link.note),
-            createdAt: timestamp(link.createdAt))
+            createdAt: timestamp(link.createdAt),
+            participants: participants)
     }
 
     static func group(_ group: ContactGroup, id: String, isFavorite: Bool) -> WireGroup {

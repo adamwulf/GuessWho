@@ -695,38 +695,80 @@ final class LinkToolTests: XCTestCase {
         return (grouped.id.uuidString.lowercased(), jane, gala, place)
     }
 
-    /// Listing a grouped connection from ANY endpoint returns one row per far
-    /// participant — none dropped, the near record never echoed — and from an
-    /// ADDITIONAL endpoint (the place) it still returns BOTH other members,
-    /// where the old binary far-picker returned a single (often wrong) far.
+    /// Listing a grouped connection from ANY endpoint returns exactly ONE row
+    /// (one connection id, never repeated) whose `participants` carry EVERY far
+    /// record — none dropped, the near record never listed — and from an
+    /// ADDITIONAL endpoint (the place) both other members still appear, where
+    /// the old binary far-picker returned a single (often wrong) far. The
+    /// legacy `kind`/`otherId` name the deterministic representative
+    /// (event > place > contact).
     func testGroupedConnectionListsEveryFarParticipantFromEachEndpoint() async {
         let fixture = await linkFixture()
         guard let g = await makeGroupedConnection(fixture)
         else { return XCTFail("could not build grouped connection") }
 
-        func farSet(_ id: String, _ kind: String) async -> Set<[String]> {
+        // The one row for the grouped connection, plus its participants as a
+        // set of [kind, otherId] pairs.
+        func groupedRow(_ id: String, _ kind: String) async -> (WireLink, Set<[String]>)? {
             guard let rows = await list(fixture, id: id, kind: kind) else {
                 XCTFail("links_list failed for \(kind) \(id)")
-                return []
+                return nil
             }
-            XCTAssertTrue(
-                rows.allSatisfy { $0.id == g.groupedId },
-                "every expanded row belongs to the one grouped connection")
-            return Set(rows.map { [$0.kind, $0.otherId] })
+            XCTAssertEqual(rows.count, 1, "one row per connection, never repeated ids")
+            guard let row = rows.first, row.id == g.groupedId else {
+                XCTFail("the single row must be the grouped connection")
+                return nil
+            }
+            guard let participants = row.participants else {
+                XCTFail("a grouped connection must carry participants")
+                return nil
+            }
+            return (row, Set(participants.map { [$0.kind, $0.otherId] }))
         }
 
-        // From the contact endpoint: the event and the place, never itself.
-        let fromJane = await farSet(g.jane, "person")
-        XCTAssertEqual(fromJane, [["event", g.gala], ["place", g.place]])
+        // From the contact endpoint: participants are the event and the place;
+        // the representative is the event (event > place > contact).
+        guard let (janeRow, janeFars) = await groupedRow(g.jane, "person")
+        else { return }
+        XCTAssertEqual(janeFars, [["event", g.gala], ["place", g.place]])
+        XCTAssertEqual([janeRow.kind, janeRow.otherId], ["event", g.gala])
 
-        // From the event endpoint: the contact and the place.
-        let fromGala = await farSet(g.gala, "event")
-        XCTAssertEqual(fromGala, [["person", g.jane], ["place", g.place]])
+        // From the event endpoint: participants are the contact and the place;
+        // the representative is the place (place > contact).
+        guard let (galaRow, galaFars) = await groupedRow(g.gala, "event")
+        else { return }
+        XCTAssertEqual(galaFars, [["person", g.jane], ["place", g.place]])
+        XCTAssertEqual([galaRow.kind, galaRow.otherId], ["place", g.place])
 
-        // From the place — an ADDITIONAL endpoint: both the contact AND the
-        // event. This is the exact case the old picker got wrong.
-        let fromPlace = await farSet(g.place, "place")
-        XCTAssertEqual(fromPlace, [["person", g.jane], ["event", g.gala]])
+        // From the place — an ADDITIONAL endpoint: participants are the contact
+        // AND the event (the case the old picker got wrong); representative is
+        // the event.
+        guard let (placeRow, placeFars) = await groupedRow(g.place, "place")
+        else { return }
+        XCTAssertEqual(placeFars, [["person", g.jane], ["event", g.gala]])
+        XCTAssertEqual([placeRow.kind, placeRow.otherId], ["event", g.gala])
+    }
+
+    /// A two-record connection carries NO `participants` (nil), and the encoded
+    /// payload omits the key entirely — the pre-grouping wire, byte-for-byte.
+    func testTwoRecordConnectionOmitsParticipants() async {
+        let fixture = await linkFixture()
+        guard let jane = await contactID(fixture, query: "jane", name: "Jane Doe"),
+              let gala = await eventID(fixture, title: "Museum Gala")
+        else { return XCTFail("missing fixture records") }
+        guard case .link(_, _, let echo)? = await create(
+            fixture, fromId: jane, fromKind: "person", toId: gala, toKind: "event")
+        else { return XCTFail("create failed") }
+
+        guard let row = (await list(fixture, id: jane, kind: "person"))?.first else {
+            return XCTFail("links_list failed")
+        }
+        XCTAssertEqual(row.id, echo.id)
+        XCTAssertNil(row.participants, "a single-far connection omits participants")
+
+        // The encoded row must not carry the key at all.
+        let json = String(decoding: (try? JSONEncoder().encode(row)) ?? Data(), as: UTF8.self)
+        XCTAssertFalse(json.contains("participants"), "the key is omitted, not null")
     }
 
     /// Deleting a grouped connection removes it from EVERY participant's list,
@@ -755,7 +797,7 @@ final class LinkToolTests: XCTestCase {
         XCTAssertEqual(tombstone?.note, "Trip crew")
 
         // Restorable from Recently Deleted, and back on every participant's
-        // list (two far rows each) once revived.
+        // list (one row for the whole connection each) once revived.
         let service = await MainActor.run {
             RecentlyDeletedService(
                 audit: fixture.audit, contacts: fixture.contacts, events: fixture.events)
@@ -766,8 +808,8 @@ final class LinkToolTests: XCTestCase {
         XCTAssertTrue(row.canRestore)
         XCTAssertTrue(await service.restore(row))
 
-        XCTAssertEqual(await list(fixture, id: g.jane, kind: "person")?.count, 2)
-        XCTAssertEqual(await list(fixture, id: g.gala, kind: "event")?.count, 2)
-        XCTAssertEqual(await list(fixture, id: g.place, kind: "place")?.count, 2)
+        XCTAssertEqual(await list(fixture, id: g.jane, kind: "person")?.map(\.id), [g.groupedId])
+        XCTAssertEqual(await list(fixture, id: g.gala, kind: "event")?.map(\.id), [g.groupedId])
+        XCTAssertEqual(await list(fixture, id: g.place, kind: "place")?.map(\.id), [g.groupedId])
     }
 }
