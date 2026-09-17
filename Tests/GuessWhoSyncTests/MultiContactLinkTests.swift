@@ -576,4 +576,98 @@ struct MultiContactLinkRepositoryTests {
         #expect(othersOfA.compactMap { $0?.localID } == ["b"])
         #expect(othersOfA.contains { $0 == nil })
     }
+
+    // MARK: - Self-link (Case-D collapse) stays visible and editable
+
+    @Test
+    func selfLinkFromCaseDCollapseStaysVisibleAndEditable() async throws {
+        // A binary contact link whose two endpoints collapse to ONE canonical id
+        // under Case D becomes a self-link W<->W. It must remain visible and
+        // editable on the surviving contact's card — NOT silently dropped and
+        // NOT auto-tombstoned — exactly as a binary self-link rendered before
+        // multi-endpoint links existed.
+        let center = NotificationCenter()
+        let loser = "00000000-0000-0000-0000-000000000002"
+        let winner = "00000000-0000-0000-0000-000000000001"
+        let collapsing = Contact(localID: "w", givenName: "W", urlAddresses: [
+            LabeledValue(label: "GuessWho", value: "guesswho://contact/" + loser),
+            LabeledValue(label: "GuessWho", value: "guesswho://contact/" + winner),
+        ])
+        let contacts = InMemoryContactStore(contacts: [collapsing])
+        let sync = GuessWhoSync(
+            contacts: contacts,
+            events: InMemoryEventStore(),
+            sidecars: InMemorySidecarStore(),
+            deviceID: "device-A",
+            notificationCenter: center
+        )
+        let repository = ContactsRepository(contacts: contacts, sync: sync, notificationCenter: center)
+
+        // Link the two soon-to-collapse ids, then collapse them.
+        let link = try sync.addLink(
+            from: SidecarKey(kind: .contact, id: loser),
+            to: SidecarKey(kind: .contact, id: winner),
+            note: "same person"
+        )
+        _ = try await sync.reconcileContactIdentities()
+
+        let rewritten = try #require(try sync.link(id: link.id))
+        let winnerKey = SidecarKey(kind: .contact, id: winner)
+        #expect(rewritten.endpointA == winnerKey)
+        #expect(rewritten.endpointB == winnerKey)
+
+        await repository.reload()
+        let w = try #require(repository.contact(localID: "w")?.contactID)
+
+        // Visible as a contact link on the surviving card, in exactly one bucket.
+        #expect(await repository.links(for: w).map(\.id) == [link.id])
+        let detail = await repository.contactDetailLinks(for: w)
+        #expect(detail.contactLinks.map(\.id) == [link.id])
+        #expect(detail.eventLinks.isEmpty)
+        #expect(detail.placeLinks.isEmpty)
+
+        // The projected far contact resolves to the surviving contact itself.
+        #expect(repository.linkedContact(of: rewritten, for: w)?.localID == "w")
+        #expect(repository.linkedContacts(of: rewritten, for: w).compactMap { $0?.localID } == ["w"])
+
+        // Still editable; the note write is visible and the link is not deleted.
+        try repository.setLinkNote(id: link.id, note: "edited")
+        let afterEdit = try #require(await repository.links(for: w).first)
+        #expect(afterEdit.note == "edited")
+        #expect(afterEdit.deletedAt == nil)
+    }
+
+    // MARK: - Early all-source rejection does not mint
+
+    @Test
+    func allSourceSelectionRejectedBeforeMintingSource() async throws {
+        // Source "d" is unreconciled (no GuessWho URL). Linking it to a
+        // selection that is only itself must reject WITHOUT minting an identity
+        // onto it — otherwise a stray GuessWho URL lands on a contact the user
+        // never actually linked.
+        let center = NotificationCenter()
+        let contacts = InMemoryContactStore(contacts: [
+            Contact(localID: "d", givenName: "D", urlAddresses: []),
+        ])
+        let sync = GuessWhoSync(
+            contacts: contacts,
+            events: InMemoryEventStore(),
+            sidecars: InMemorySidecarStore(),
+            deviceID: "device-A",
+            notificationCenter: center
+        )
+        let repository = ContactsRepository(contacts: contacts, sync: sync, notificationCenter: center)
+        await repository.reload()
+        let d = try #require(repository.contact(localID: "d")?.contactID)
+        #expect(d.guessWhoID == nil)  // starts unreconciled
+
+        await #expect(throws: EmptyLinkSelectionError.self) {
+            _ = try await repository.addLink(from: d, to: [d], note: "self")
+        }
+
+        // Never minted: the contact still carries no GuessWho identity.
+        await repository.reload()
+        let dAfter = try #require(repository.contact(localID: "d")?.contactID)
+        #expect(dAfter.guessWhoID == nil)
+    }
 }

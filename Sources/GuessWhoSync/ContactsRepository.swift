@@ -1978,8 +1978,8 @@ public final class ContactsRepository: NSObject {
         guard let guessWhoID = id.guessWhoID else { return nil }
         let endpoint = SidecarKey(kind: .contact, id: guessWhoID)
         guard link.endpoints.contains(endpoint) else { return nil }
-        return link.otherEndpoints(from: endpoint)
-            .first { $0.kind == .contact }
+        return Self.projectedContactEndpoints(of: link, from: endpoint)
+            .first
             .flatMap { contact(guessWhoID: $0.id) }
     }
 
@@ -1999,8 +1999,8 @@ public final class ContactsRepository: NSObject {
     /// the FIRST contact participant — prefer `linkedContacts(of:at:)`.
     public func linkedContact(of link: Link, at endpoint: SidecarKey) -> Contact? {
         guard link.endpoints.contains(endpoint) else { return nil }
-        return link.otherEndpoints(from: endpoint)
-            .first { $0.kind == .contact }
+        return Self.projectedContactEndpoints(of: link, from: endpoint)
+            .first
             .flatMap { contact(guessWhoID: $0.id) }
     }
 
@@ -2030,8 +2030,7 @@ public final class ContactsRepository: NSObject {
     /// Returns `[]` when `endpoint` is not a participant of `link`.
     public func linkedContacts(of link: Link, at endpoint: SidecarKey) -> [Contact?] {
         guard link.endpoints.contains(endpoint) else { return [] }
-        return link.otherEndpoints(from: endpoint)
-            .filter { $0.kind == .contact }
+        return Self.projectedContactEndpoints(of: link, from: endpoint)
             .map { contact(guessWhoID: $0.id) }
     }
 
@@ -2903,14 +2902,22 @@ public final class ContactsRepository: NSObject {
     @discardableResult
     public func addLink(from a: ContactID, to others: [ContactID], note: String) async throws -> Link {
         guard let sync else { throw SidecarUnavailableError() }
-        guard !others.isEmpty else { throw EmptyLinkSelectionError() }
+        // Drop the source token and duplicate tokens up front (ContactID
+        // equality) so an empty or all-source selection is rejected BEFORE we
+        // mint any identity — minting `a` only to then throw would leave a
+        // stray GuessWho URL on a contact the user never linked. A second,
+        // CANONICAL dedup still runs after resolve below, to catch two distinct
+        // tokens that resolve to the same GuessWho UUID.
+        let distinctOthers = Self.distinctContactIDs(others, excluding: [a])
+        guard !distinctOthers.isEmpty else { throw EmptyLinkSelectionError() }
+
         var mintedLocalIDs: Set<String> = []
         let aMinted = a.guessWhoID == nil
         let aID = try await resolveOrMintGuessWhoID(for: a)
         if aMinted { mintedLocalIDs.insert(a.localID) }
         // Resolve/mint every additional participant BEFORE the one write, then
-        // dedup and drop any that equal the source.
-        let resolved = try await resolvedContactEndpoints(for: others, excluding: [aID])
+        // canonical-dedup on the resolved UUID and drop any equal to the source.
+        let resolved = try await resolvedContactEndpoints(for: distinctOthers, excluding: [aID])
         guard !resolved.endpoints.isEmpty else { throw EmptyLinkSelectionError() }
         for lid in resolved.mintedLocalIDs { mintedLocalIDs.insert(lid) }
         let link = try sync.addLink(
@@ -3023,6 +3030,24 @@ public final class ContactsRepository: NSObject {
     /// localIDs of contacts that minted a fresh identity (so the caller refreshes
     /// their cache entries after the write). Every identity is resolved BEFORE
     /// the caller performs its single link write.
+    /// `ids` with the `excluded` tokens removed and duplicate tokens collapsed,
+    /// preserving first-appearance order. Keyed on `ContactID` equality (its
+    /// effective identity), this is the CHEAP, pre-mint filter — it lets an
+    /// empty/all-source selection be rejected before any identity is minted.
+    /// A second canonical dedup on the resolved GuessWho UUID still follows,
+    /// since two distinct tokens can resolve to the same contact.
+    private static func distinctContactIDs(
+        _ ids: [ContactID],
+        excluding excluded: Set<ContactID>
+    ) -> [ContactID] {
+        var seen = excluded
+        var result: [ContactID] = []
+        for id in ids where seen.insert(id).inserted {
+            result.append(id)
+        }
+        return result
+    }
+
     private func resolvedContactEndpoints(
         for ids: [ContactID],
         excluding excluded: Set<String> = []
@@ -3088,14 +3113,44 @@ public final class ContactsRepository: NSObject {
     /// event/place link (several people sharing one note) is an event/place link
     /// for EVERY participant and never also duplicates as a contact row. `.other`
     /// covers a link whose only far endpoints are none of these kinds.
+    ///
+    /// This `event > place > contact` precedence is the canonical one. The
+    /// CLI/MCP link renderer picks a link's far endpoint with its own binary
+    /// logic (`GuessWhoMCPCore/ToolDispatcher.resolveFarEndpoint` /
+    /// `linkWireDescriptor`); if that surface ever adopts a representative-kind
+    /// ranking for multi-endpoint links, it MUST mirror this ordering so both
+    /// surfaces agree on which section a grouped link belongs to.
     enum LinkClass { case event, place, contact, other }
 
     static func linkClass(of link: Link, from endpoint: SidecarKey) -> LinkClass {
         let others = link.otherEndpoints(from: endpoint)
+        // Self-link: the near endpoint is the ONLY participant (e.g. a binary
+        // contact link whose two endpoints collapsed to one canonical id under
+        // Case D). Keep it in the near entity's OWN section so the shared note
+        // stays visible/editable instead of vanishing — we never auto-tombstone
+        // it. A non-contact self-link has no card section, hence `.other`.
+        if others.isEmpty { return endpoint.kind == .contact ? .contact : .other }
         if others.contains(where: { $0.kind == .event }) { return .event }
         if others.contains(where: { $0.kind == .place }) { return .place }
         if others.contains(where: { $0.kind == .contact }) { return .contact }
         return .other
+    }
+
+    /// The contact endpoints of `link` to PROJECT relative to `endpoint`,
+    /// strictly excluding `endpoint` — EXCEPT a self-link (the near endpoint is
+    /// the only participant), where the near endpoint itself IS the projected
+    /// contact. That lone fallback preserves the pre-multi-endpoint behavior of
+    /// a binary self-link (before, a self-link's "far" end was the endpoint
+    /// itself), so a shared note on a Case-D-collapsed link stays visible and
+    /// editable. It does NOT change `Link.otherEndpoints`, which stays strict
+    /// (it never echoes the near endpoint) — the self-fallback lives only in
+    /// these repository projections.
+    static func projectedContactEndpoints(of link: Link, from endpoint: SidecarKey) -> [SidecarKey] {
+        let others = link.otherEndpoints(from: endpoint)
+        if others.isEmpty {
+            return endpoint.kind == .contact ? [endpoint] : []
+        }
+        return others.filter { $0.kind == .contact }
     }
 
     /// People rows addressed by `ContactID`, sectioned A–Z. Mirrors
