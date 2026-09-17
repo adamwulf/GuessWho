@@ -226,10 +226,10 @@ struct ContactsRepositoryGroupFavoritesTests {
             memberHash: initialFingerprint.memberHash,
             hashedMemberCount: 0,
             localID: group.localID)
-        // loadGroups() refreshes the fingerprint ONLY for identities that back a
-        // live favorite; an orphan (un-favorited) record is left untouched so it
-        // never churns iCloud. In real use an identity is always minted through a
-        // favorite, so favorite this one to represent that.
+        // Favorited, as an identity minted through a favorite is. The favorite is
+        // not what makes loadGroups() refresh it — see
+        // `loadGroupsRefreshesIdentityNoFavoriteRefersTo` for the same pass
+        // without one.
         try fixture.favorites.set(kind: .group, id: identity.id, favorite: true, now: Date())
 
         try await fixture.contacts.addMember(contactLocalID: member.localID, toGroup: group.localID)
@@ -265,7 +265,7 @@ struct ContactsRepositoryGroupFavoritesTests {
     }
 
     @Test @MainActor
-    func loadGroupsLeavesOrphanIdentityUntouched() async throws {
+    func loadGroupsRefreshesIdentityNoFavoriteRefersTo() async throws {
         let member = contact(localID: "contact-1", guessWhoID: "11111111-1111-1111-8111-111111111111")
         let fixture = try makeFixture(contacts: [member])
         defer { cleanup(fixture.root) }
@@ -273,7 +273,7 @@ struct ContactsRepositoryGroupFavoritesTests {
         await fixture.repository.reload()
         await fixture.repository.loadGroups()
         let initialFingerprint = GroupIdentity.fingerprint(forGuessWhoIDs: [])
-        // Minted but never favorited → an orphan record (as after an un-favorite).
+        // Minted but never favorited (as after an un-favorite).
         let identity = try fixture.sync.mintGroupIdentity(
             name: group.name,
             account: nil,
@@ -285,12 +285,45 @@ struct ContactsRepositoryGroupFavoritesTests {
         try await fixture.contacts.addMember(contactLocalID: member.localID, toGroup: group.localID)
         await fixture.repository.loadGroups()
 
-        // loadGroups() must NOT refresh an orphan: its fingerprint stays at the
-        // minted (empty) values, so an un-favorited record never churns iCloud.
+        // Group identity is its own layer: loadGroups() resolves and refreshes
+        // EVERY stored identity, whatever refers to it. This reverses the earlier
+        // favorites-only rule, which kept a peer device from ever resolving an
+        // identity it held no favorite for.
         let stored = try #require(try fixture.sync.groupIdentity(id: identity.id))
-        #expect(stored.memberCount == 0)
-        #expect(stored.memberHash == initialFingerprint.memberHash)
-        #expect(stored.hashedMemberCount == 0)
+        let expected = GroupIdentity.fingerprint(forGuessWhoIDs: ["11111111-1111-1111-8111-111111111111"])
+        #expect(stored.memberCount == 1)
+        #expect(stored.memberHash == expected.memberHash)
+        #expect(stored.hashedMemberCount == 1)
+        // Resolving it never makes the group a favorite.
+        #expect(fixture.repository.isGroupFavorite(group) == false)
+    }
+
+    @Test @MainActor
+    func loadGroupsWithUnchangedIdentityWritesNothing() async throws {
+        let fixture = try makeFixture()
+        defer { cleanup(fixture.root) }
+        let group = try await fixture.contacts.createGroup(name: "Steady")
+        await fixture.repository.loadGroups()
+        let fingerprint = GroupIdentity.fingerprint(forGuessWhoIDs: [])
+        let identity = try fixture.sync.mintGroupIdentity(
+            name: group.name,
+            account: nil,
+            memberCount: 0,
+            memberHash: fingerprint.memberHash,
+            hashedMemberCount: 0,
+            localID: group.localID)
+        let key = SidecarKey(kind: .group, id: identity.id)
+        let before = try #require(try fixture.sidecars.read(key))
+
+        // Resolving every identity on every load must not become steady-state
+        // iCloud churn: an identity whose name, membership, and pin are all
+        // current is not rewritten, so its stamp does not move.
+        await fixture.repository.loadGroups()
+        await fixture.repository.loadGroups()
+
+        let after = try #require(try fixture.sidecars.read(key))
+        let cellKey = GuessWhoSync.groupIdentityCellKey
+        #expect(after.fields[cellKey]?.modifiedAt == before.fields[cellKey]?.modifiedAt)
     }
 
     private struct Fixture {

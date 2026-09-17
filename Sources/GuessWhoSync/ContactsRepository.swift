@@ -418,7 +418,7 @@ public final class ContactsRepository: NSObject {
         if generation == refreshGeneration {
             await refreshFullSidecarProjectionCaches(
                 generation: generation,
-                refreshGroupIdentities: fetchedContacts
+                groupIdentities: fetchedContacts ? .resolveAndRefreshAll : .none
             )
         } else if fetchedContacts {
             // Preserve the independent group-identity refresh even when a
@@ -514,7 +514,7 @@ public final class ContactsRepository: NSObject {
     /// that source's derived cache(s) become empty.
     private func refreshFullSidecarProjectionCaches(
         generation: Int,
-        refreshGroupIdentities: Bool = false
+        groupIdentities pass: GroupIdentityPass = .none
     ) async {
         guard let sync else {
             contactTimestampsByID = [:]
@@ -526,12 +526,21 @@ public final class ContactsRepository: NSObject {
         guard generation == refreshGeneration else {
             // Before B2-5, group identities refreshed before the projection
             // scans and therefore still ran when a notification arrived during
-            // a scan. Preserve that concurrency behavior; only the superseded
-            // path needs a replacement enumeration.
-            if refreshGroupIdentities { await refreshAllGroupIdentities() }
+            // a scan. Preserve that concurrency behavior for the contact
+            // reload; only the superseded path needs a replacement enumeration.
+            // A superseded WATCHER pass gets no replacement here. A newer
+            // sidecar refresh inherits this one's change set through
+            // `inFlightSidecarChangeSet`, so it resolves the same keys. A
+            // `reload()` runs the full pass itself when its Contacts fetch
+            // succeeds; when that fetch fails, resolution waits for the next
+            // `.group` delivery or `loadGroups()`.
+            if pass == .resolveAndRefreshAll { await refreshAllGroupIdentities() }
             return
         }
-        if refreshGroupIdentities {
+        switch pass {
+        case .none:
+            break
+        case .resolveAndRefreshAll:
             // `loadGroups()` and the contact reload race independently at app
             // start. If groups landed first, refresh their identity
             // fingerprints now that the contact -> GuessWho-ID cache is full;
@@ -544,6 +553,13 @@ public final class ContactsRepository: NSObject {
             } else {
                 await refreshAllGroupIdentities()
             }
+            guard generation == refreshGeneration else { return }
+        case .resolveAll:
+            await refreshAllGroupIdentities(
+                groupKeys: projection?.groupKeys, refreshFingerprints: false)
+            guard generation == refreshGeneration else { return }
+        case .resolve(let keys):
+            await refreshAllGroupIdentities(groupKeys: keys, refreshFingerprints: false)
             guard generation == refreshGeneration else { return }
         }
         contactTimestampsByID = projection?.timestamps ?? [:]
@@ -2234,7 +2250,18 @@ public final class ContactsRepository: NSObject {
         // new one; unrelated identities remain untouched.
         groupIdentityIDByLocalID = groupIdentityIDByLocalID.filter { $0.value != identityID }
         resolvedGroupsByIdentityID[identityID] = group
-        groupIdentityIDByLocalID[group.localID.lowercased()] = identityID
+        // A group normally has ONE identity. Two devices that each first-touch
+        // the same never-identified group before they sync can leave two, and
+        // both then resolve to this group. Every device must pick the same one
+        // after sync, so the reverse pointer keeps the SMALLEST identity UUID no
+        // matter which order the identities resolved in — the same choice
+        // `existingGroupIdentity`'s ascending scan makes. Nothing is deleted or
+        // merged; the other identity still resolves forward to this group.
+        let localKey = group.localID.lowercased()
+        if let current = groupIdentityIDByLocalID[localKey], current < identityID {
+            return
+        }
+        groupIdentityIDByLocalID[localKey] = identityID
     }
 
     private func clearCachedResolution(forIdentityID rawIdentityID: String) {
@@ -2252,12 +2279,14 @@ public final class ContactsRepository: NSObject {
     /// large group list.
     ///
     /// The reverse pointer is warmed by `loadGroups()` adoption
-    /// (`refreshAllGroupIdentities`) before the list renders, so a favorited,
-    /// resolved group hits here. A miss therefore means "not an adopted favorite
-    /// on this device" — the correct answer for a non-favorited row (the common
-    /// case) and a brief pre-adoption unfilled star otherwise, which the
-    /// post-`loadGroups()` reload corrects. The async write path
-    /// (`existingGroupIdentity`) keeps the disk fallback for correctness.
+    /// (`refreshAllGroupIdentities`) before the list renders, so a resolved
+    /// group hits here. A hit says only that the group HAS a durable identity,
+    /// never that it is favorited — callers ask the favorites store about the
+    /// returned UUID. A miss means "no adopted identity on this device" — the
+    /// correct answer for a never-identified row (the common case) and a brief
+    /// pre-adoption unfilled star otherwise, which the post-`loadGroups()`
+    /// reload corrects. The async write path (`existingGroupIdentity`) keeps
+    /// the disk fallback for correctness.
     private func groupIdentityID(for group: ContactGroup) -> String? {
         groupIdentityIDByLocalID[group.localID.lowercased()]
     }
@@ -2367,12 +2396,25 @@ public final class ContactsRepository: NSObject {
         return chosen
     }
 
-    /// Re-resolve every stored identity against the current group cache, then
-    /// refresh the live scalar fingerprint. Best-effort by design: Contacts or
-    /// iCloud failures never prevent the group list itself from loading.
+    /// Re-resolve stored identities against the current group cache, then
+    /// (unless `refreshFingerprints` is false) refresh each live scalar
+    /// fingerprint. Best-effort by design: Contacts or iCloud failures never
+    /// prevent the group list itself from loading.
+    ///
+    /// EVERY stored identity resolves, whatever refers to it. Group identity is
+    /// its own layer: a favorite is one consumer and other durable references
+    /// to a group are equally valid, so resolution must not ask which consumer
+    /// minted the record. A peer device's identity therefore resolves (and pins
+    /// this device's slot) here even when this device holds no favorite for it.
+    ///
+    /// `groupKeys` scopes the pass to those `.group` keys (nil = every stored
+    /// identity). `refreshFingerprints: false` is the watcher-delivery form: it
+    /// only resolves, which for an already-pinned live identity is a sidecar
+    /// read with no Contacts fetch and no write — see `GroupIdentityPass`.
     private func refreshAllGroupIdentities(
         resetCache: Bool = false,
-        groupKeys: [SidecarKey]? = nil
+        groupKeys: [SidecarKey]? = nil,
+        refreshFingerprints: Bool = true
     ) async {
         guard let sync else {
             if resetCache {
@@ -2385,6 +2427,14 @@ public final class ContactsRepository: NSObject {
             resolvedGroupsByIdentityID = [:]
             groupIdentityIDByLocalID = [:]
         }
+        // Resolution compares each identity with the `groups` cache, and treats
+        // a pinned local id that is absent from it as a DEAD slot to prune. That
+        // verdict is only sound once a complete group fetch has been published:
+        // before it, `groups` is empty, every pin looks dead, and a pass would
+        // prune (and write) good pins that `loadGroups()` then has to re-adopt.
+        // The contact reload and watcher deliveries can both get here first at
+        // launch; `loadGroups()` performs the pass once the cache is real.
+        guard hasAuthoritativeGroups else { return }
         do {
             let identities: [GroupIdentity]
             if let groupKeys {
@@ -2393,16 +2443,10 @@ public final class ContactsRepository: NSObject {
                 identities = try sync.allGroupIdentities()
             }
             for identity in identities.sorted(by: { $0.id < $1.id }) {
-                // Only resolve + refresh identities that still back a live
-                // favorite. An orphan identity — its group was un-favorited but
-                // the sidecar lingers for reuse on re-favorite — needs neither a
-                // reverse-pointer entry (it is not favorited, so `isGroupFavorite`
-                // must read false) nor a fingerprint rewrite; refreshing it would
-                // churn iCloud for data no surface shows.
-                guard (try? favorites?.isFavorite(kind: .group, id: identity.id)) == true else {
+                guard let live = try await resolveGroupIdentity(id: identity.id) else {
                     continue
                 }
-                if let live = try await resolveGroupIdentity(id: identity.id) {
+                if refreshFingerprints {
                     await refreshGroupIdentity(identityID: identity.id, group: live)
                 }
             }
@@ -3774,9 +3818,9 @@ public final class ContactsRepository: NSObject {
     /// does not project (an event/guide/place edit): a scoped change naming NONE
     /// of these is irrelevant and must not mint a generation or cancel a
     /// pending/in-flight refresh it cannot affect. `.contact` and `.link` drive
-    /// the scoped projection reads; `.group` (a favorite-identity record) has no
-    /// scoped projection and escalates to the full sidecar-derived refresh in
-    /// `refreshFromSidecarChange`. A coarse kind-directory delivery has nil
+    /// the scoped projection reads; `.group` (a group-identity record) has no
+    /// scoped projection: it resolves the named identities and escalates to the
+    /// full sidecar-derived refresh in `refreshFromSidecarChange`. A coarse kind-directory delivery has nil
     /// keys but known `changedKinds`; only globally unknown kinds are always
     /// relevant. Mirrors `EventsRepository.handledKinds`.
     private static let handledSidecarKinds: Set<SidecarKind> = [.contact, .link, .group]
@@ -3854,18 +3898,34 @@ public final class ContactsRepository: NSObject {
     /// projection (the bulk timestamp cache that drives time-ordered sorts
     /// and bucket sections) and post a presentation-only reload
     /// (`contactDataChanged: false`, so the app's decoded-photo cache
-    /// survives). READ-ONLY over sidecars — this path must never write, or a
-    /// watcher post would re-trigger itself in a loop.
+    /// survives).
+    ///
+    /// READ-ONLY over sidecars, with ONE bounded exception. A write from this
+    /// path makes the watcher post again, so an unconditional write would loop.
+    /// The exception is group-identity resolution for a delivery that may name
+    /// a `.group` sidecar: a peer device's identity arrives with no pin for
+    /// this device, and resolving it writes this device's pin (or prunes this
+    /// device's dead pin). That write settles instead of looping: its own echo
+    /// re-resolves through the now-live pin, which `resolveGroupIdentity`
+    /// returns before any write, and `writeGroupIdentity` skips a record that
+    /// equals what is on disk. The pass never refreshes fingerprints, so an
+    /// already-pinned identity costs one sidecar read and no Contacts fetch.
     private func refreshFromSidecarChange(_ changeSet: SidecarChangeSet, generation: Int) async {
         guard let changedKeys = changeSet.changedKeys else {
-            await performFullSidecarProjectionRefresh(generation: generation)
+            // No exact keys. Known kinds that exclude `.group` cannot carry an
+            // identity; a coarse `.group` directory item or a globally unknown
+            // batch (nil kinds) can, and names no key to scope to.
+            let mayNameGroup = changeSet.changedKinds?.contains(.group) ?? true
+            await performFullSidecarProjectionRefresh(
+                generation: generation,
+                groupIdentities: mayNameGroup ? .resolveAll : .none)
             return
         }
 
         let contactKeys = Set(changedKeys.filter { $0.kind == .contact })
         let linksChanged = changedKeys.contains { $0.kind == .link }
         // FIX D: among the kinds with no scoped projection on this path, ONLY
-        // `.group` (a favorite-identity record, which feeds group resolution)
+        // `.group` (a group-identity record, which feeds group resolution)
         // affects the contacts projection, so it alone escalates to the full
         // sidecar-derived refresh — which subsumes any `.contact` / `.link`
         // keys present alongside it. Every OTHER unscopable kind (`.guide`,
@@ -3889,9 +3949,15 @@ public final class ContactsRepository: NSObject {
 
         // A `.group` change (possibly mixed with `.contact` / `.link`) has no
         // scoped projection; the full sidecar-derived refresh subsumes any
-        // scopable keys alongside it and posts on its own.
+        // scopable keys alongside it and posts on its own. The named identities
+        // resolve first, so the reload it posts already sees a peer device's
+        // newly arrived identity as this device's live group.
+        // (`refreshAllGroupIdentities` orders the pass by identity UUID itself.)
         if groupChanged {
-            await performFullSidecarProjectionRefresh(generation: generation)
+            let groupKeys = Array(changedKeys.filter { $0.kind == .group })
+            await performFullSidecarProjectionRefresh(
+                generation: generation,
+                groupIdentities: .resolve(keys: groupKeys))
             return
         }
 
@@ -3921,8 +3987,27 @@ public final class ContactsRepository: NSObject {
     /// `.group`-change fallback (FIX D). The cache replace and post are gated on
     /// `generation`, so a newer refresh that began meanwhile is never
     /// overwritten by this one.
-    private func performFullSidecarProjectionRefresh(generation: Int) async {
-        await refreshFullSidecarProjectionCaches(generation: generation)
+    /// How much group-identity work one sidecar projection refresh performs.
+    private enum GroupIdentityPass: Equatable {
+        /// No `.group` sidecar can have changed (e.g. a coarse `.contact`
+        /// delivery): touch no identity.
+        case none
+        /// Watcher delivery naming exact `.group` keys: resolve just those.
+        case resolve(keys: [SidecarKey])
+        /// Watcher delivery whose scope may include `.group` but names no key
+        /// (a coarse kind-directory item, or a globally unknown batch): resolve
+        /// every stored identity.
+        case resolveAll
+        /// Contact reload: resolve every identity AND refresh its fingerprint,
+        /// now that the contact -> GuessWho-ID cache is full.
+        case resolveAndRefreshAll
+    }
+
+    private func performFullSidecarProjectionRefresh(
+        generation: Int,
+        groupIdentities pass: GroupIdentityPass
+    ) async {
+        await refreshFullSidecarProjectionCaches(generation: generation, groupIdentities: pass)
         guard generation == refreshGeneration else { return }
         isLoading = false
         postDidReload(contactDataChanged: false)
