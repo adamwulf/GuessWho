@@ -1,6 +1,6 @@
 # Group folders
 
-Status: proposed implementation plan, 2026-09-17. This is a new design; `nested-groups.md` remains unchanged as the earlier alternative. Nothing in either plan has been implemented.
+Status: proposed implementation plan, 2026-09-17. This is the selected design for organizing groups. It has not been implemented.
 
 ## Behavior
 
@@ -121,7 +121,7 @@ Keep existing group CLI/MCP commands and wire IDs compatible. Add folder list/cr
 2. **Tree and commands:** pure projection, serialized moves, deletion redirects, scoped refresh. Test cycles, redirect cycles, concurrent moves/deletes, timestamp ties in both merge orders, malformed data, root clears, and 1,000-depth input. Shuffling the same valid inputs yields the same forest.
 3. **Aggregate members:** error-aware reads, deduplication/provenance, revisions, partial results. Test overlapping memberships, unreconciled contacts, reconciliation/contact edits during loading with unchanged memberships and older fetches finishing last, uncached members, nested folders, collapsed branches, unresolved groups, permission failures, external changes, stale completion, sort/filter cursor changes, and empty/search states.
 4. **UI:** creation, mixed tree, shared member view, folder click arbitration, counts, disclosure, menus, drag/drop. Test identical alphabetical comparison at root and nested levels (including mixed folders/groups and equal names), failed placement after group creation, leaf-only Add to Group, root escape, selection restoration, and deletion while viewing members. Verify gestures on real Catalyst/iOS surfaces and assistive technology.
-5. **Automation and docs:** transport/parser/paging tests, source-comment updates (including the current one-cell group-sidecar description), current behavior documentation, and independent review. Keep the original proposal for comparison.
+5. **Automation and docs:** transport/parser/paging tests, source-comment updates (including the current one-cell group-sidecar description), current behavior documentation, and independent review.
 
 Likely files: `SidecarKind.swift`, `SidecarKey.swift`, `FileSystemSidecarStore.swift`, `SidecarFileWatcher.swift`, new folder storage/tree types, `GuessWhoSync+Groups.swift`, `ContactsRepository.swift`, test stores, `GroupsListViewController.swift`, `GroupMembersListViewController.swift`, `GroupContextMenu.swift`, `AddToGroupMenu.swift`, `GuessWhoSceneDelegate.swift`, and CLI/MCP schemas/dispatchers. Extract shared member presentation rather than copy the existing controller wholesale.
 
