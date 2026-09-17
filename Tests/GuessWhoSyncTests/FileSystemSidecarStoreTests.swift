@@ -55,6 +55,7 @@ struct FileSystemSidecarStoreTests {
         case .guide: directoryName = "guides"
         case .place: directoryName = "places"
         case .group: directoryName = "groups"
+        case .groupFolder: directoryName = "group-folders"
         }
         let directory = root.appendingPathComponent(directoryName)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

@@ -274,6 +274,7 @@ struct SidecarKindCoverageTests {
         .guide: "guides",
         .place: "places",
         .group: "groups",
+        .groupFolder: "group-folders",
     ]
 
     @Test

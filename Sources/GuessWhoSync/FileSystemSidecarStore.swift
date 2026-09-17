@@ -690,7 +690,7 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
 
     private func safeFilename(for key: SidecarKey) -> String {
         switch key.kind {
-        case .contact, .link, .event, .guide, .place, .group:
+        case .contact, .link, .event, .guide, .place, .group, .groupFolder:
             // All sidecar kinds are UUID-keyed and canonicalized to lowercase at
             // every boundary so case-folding filesystems (iCloud Drive on APFS)
             // can't desync the on-disk name from the in-memory key. (A UUID
@@ -736,7 +736,7 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
 
             let basename = (realName as NSString).deletingPathExtension
             switch kind {
-            case .contact, .link, .guide, .place, .group:
+            case .contact, .link, .guide, .place, .group, .groupFolder:
                 result.append(SidecarKey(kind: kind, id: basename.lowercased()))
             case .event:
                 let decoded = basename.removingPercentEncoding ?? basename

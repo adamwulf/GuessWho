@@ -6,11 +6,18 @@ public enum SidecarKind: String, Sendable, Codable, CaseIterable {
     case link
     case guide
     case place
-    /// A favorited Contacts group's durable cross-device identity record
-    /// (`GroupIdentity`). Keyed by a minted UUID, like every other kind here
-    /// except `.link`; the favorite references that UUID rather than the
-    /// device-local `CNGroup.identifier`. See `plans/group-favorite-identity.md`.
+    /// A Contacts group's durable cross-device identity record
+    /// (`GroupIdentity`), plus the group's folder placement in a neighboring
+    /// cell. Keyed by a minted UUID, like every other kind here except `.link`;
+    /// favorites and folder placement reference that UUID rather than the
+    /// device-local `CNGroup.identifier`. See `plans/group-favorite-identity.md`
+    /// and `plans/group-folders.md`.
     case group
+    /// A folder that organizes groups (and other folders). Keyed by a minted
+    /// UUID. Folders exist only here — Contacts has no such concept — so the
+    /// envelope IS the folder: its name, its parent folder, and its deletion
+    /// marker are separate cells. See `plans/group-folders.md`.
+    case groupFolder
 }
 
 extension SidecarKind {
@@ -30,6 +37,7 @@ extension SidecarKind {
         case .guide: "guides"
         case .place: "places"
         case .group: "groups"
+        case .groupFolder: "group-folders"
         }
     }
 
