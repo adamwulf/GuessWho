@@ -204,6 +204,22 @@ public final class ContactsRepository: NSObject {
     /// Newest-request-wins for hierarchy reads, like `groupLoadRequestGeneration`.
     @ObservationIgnored private var hierarchyLoadGeneration = 0
 
+    /// Advances whenever group MEMBERSHIP may have changed: a membership write
+    /// that landed here, or any change Contacts reports from outside (which
+    /// cannot be told apart from a membership change). See `GroupMemberSnapshot`.
+    @ObservationIgnored public private(set) var groupMembershipRevision = 0
+
+    /// Advances every time the `contacts` array is replaced — an edit, a reload,
+    /// a reconciliation, an external change — whether or not any membership
+    /// moved. A member list built from contacts fetched before such a change may
+    /// be showing stale rows or stale identities.
+    @ObservationIgnored public private(set) var contactDataRevision = 0
+
+    /// Group fetches a folder's member read keeps in flight at once. Enough to
+    /// overlap the Contacts round trips; small enough that a folder of a hundred
+    /// groups does not open a hundred at once.
+    private static let memberFetchConcurrency = 4
+
     private static let groupHierarchyLog = Logger(label: "sync.group-hierarchy")
 
     /// Group-specific load failure for the Groups screen. Kept separate from
@@ -939,6 +955,9 @@ public final class ContactsRepository: NSObject {
             let changedIDs = written.map {
                 contact(localID: $0.localID)?.contactID ?? $0.contactID
             }
+            // Before the post, so an observer that reloads in response reads
+            // against the revision that already includes this write.
+            groupMembershipRevision &+= 1
             notificationCenter.post(
                 name: .contactsRepositoryGroupMembershipDidChange,
                 object: self,
@@ -2867,6 +2886,142 @@ public final class ContactsRepository: NSObject {
         }
     }
 
+    // MARK: - Group and folder members
+
+    /// The repository state a member read is valid against, as of now.
+    public var memberRevisions: GroupMemberSnapshot.Revisions {
+        GroupMemberSnapshot.Revisions(
+            hierarchy: groupHierarchyRevision,
+            membership: groupMembershipRevision,
+            contactData: contactDataRevision)
+    }
+
+    /// Whether nothing `snapshot` depends on moved while it was being read. A
+    /// caller checks this after the await and before publishing; a snapshot that
+    /// spans a change is discarded and read again, never shown.
+    public func isCurrent(_ snapshot: GroupMemberSnapshot) -> Bool {
+        snapshot.revisions == memberRevisions
+    }
+
+    /// The members of a group, or of every group beneath a folder.
+    ///
+    /// Error-aware, unlike `members(ofGroup:)`: a group whose fetch fails is
+    /// reported in `failedGroups`, never folded in as "no members", so a partial
+    /// union can be labeled as partial. Never throws and never mints: it is a
+    /// pure read.
+    ///
+    /// A folder covers every descendant group, whatever a list shows expanded.
+    /// Each group is fetched ONCE, a bounded number at a time. The results are
+    /// then combined in TREE order, not completion order, so the same inputs
+    /// always give the same snapshot. One person reached through several groups
+    /// is first normalized by the Contacts handle the fetches share — for this
+    /// request only; it is never a key the caller sees — to the repository's
+    /// CURRENT record for that handle, so every row carries the identity the
+    /// rest of the app uses. When two fetches disagree about a contact this
+    /// repository does not cache, the record is re-read rather than letting
+    /// whichever fetch finished last decide. The union is then taken by
+    /// `ContactID`. Contacts are never merged by name or email.
+    public func memberSnapshot(for scope: GroupMemberScope) async -> GroupMemberSnapshot {
+        let revisions = memberRevisions
+        let scopeGroups: [ContactGroup]
+        switch scope {
+        case .group(let group):
+            scopeGroups = [group]
+        case .folder(let id):
+            scopeGroups = groupFolderTree
+                .descendantGroupLocalIDs(ofFolder: id.lowercased())
+                .compactMap { group(localID: $0) }
+        }
+
+        let fetched = await fetchMembers(of: scopeGroups)
+
+        var order: [String] = []
+        var versions: [String: [Contact]] = [:]
+        var contributing: [String: [ContactGroup]] = [:]
+        var failedGroups: [ContactGroup] = []
+        for (group, result) in zip(scopeGroups, fetched) {
+            guard case .success(let members) = result else {
+                failedGroups.append(group)
+                continue
+            }
+            for member in members {
+                if versions[member.localID] == nil { order.append(member.localID) }
+                versions[member.localID, default: []].append(member)
+                if contributing[member.localID]?.last != group {
+                    contributing[member.localID, default: []].append(group)
+                }
+            }
+        }
+
+        var contacts: [Contact] = []
+        var contributingGroups: [ContactID: [ContactGroup]] = [:]
+        for localID in order {
+            guard let fetchedVersions = versions[localID], let first = fetchedVersions.first else {
+                continue
+            }
+            let current: Contact
+            if let cached = contactsByLocalID[localID] {
+                current = cached
+            } else if fetchedVersions.allSatisfy({ $0.contactID == first.contactID }) {
+                current = first
+            } else {
+                // Two fetches saw this contact on either side of an identity
+                // change. Ask again instead of picking one of them.
+                current = (try? await contactsStore.fetch(localID: localID)) ?? first
+            }
+            let id = current.contactID
+            let groupsForContact = contributing[localID] ?? []
+            if contributingGroups[id] == nil {
+                contacts.append(current)
+                contributingGroups[id] = groupsForContact
+            } else {
+                for group in groupsForContact where contributingGroups[id]?.contains(group) == false {
+                    contributingGroups[id]?.append(group)
+                }
+            }
+        }
+
+        return GroupMemberSnapshot(
+            scope: scope,
+            groups: scopeGroups,
+            contacts: contacts,
+            contributingGroups: contributingGroups,
+            failedGroups: failedGroups,
+            revisions: revisions)
+    }
+
+    /// Fetch each group's members, at most `memberFetchConcurrency` at a time,
+    /// returning the results in the order of `groups`.
+    private func fetchMembers(of groups: [ContactGroup]) async -> [Result<[Contact], Error>] {
+        let store = contactsStore
+        var results = [Result<[Contact], Error>?](repeating: nil, count: groups.count)
+        await withTaskGroup(of: (Int, Result<[Contact], Error>).self) { taskGroup in
+            var next = 0
+            func addNext() {
+                guard next < groups.count else { return }
+                let index = next
+                let localID = groups[index].localID
+                next += 1
+                taskGroup.addTask {
+                    do {
+                        return (index, .success(try await store.fetchMembers(ofGroup: localID)))
+                    } catch {
+                        return (index, .failure(error))
+                    }
+                }
+            }
+            for _ in 0..<min(Self.memberFetchConcurrency, groups.count) { addNext() }
+            for await (index, result) in taskGroup {
+                results[index] = result
+                addNext()
+            }
+        }
+        // Every added task reports, so no slot stays nil. Should one ever, it is
+        // a FAILED fetch — an empty success would pass a missing group off as a
+        // group with no members.
+        return results.map { $0 ?? .failure(CancellationError()) }
+    }
+
     /// Project persisted favorites into app-facing rows without exposing contact
     /// favorite UUIDs. Contact favorites resolve through this repository's
     /// GuessWhoID index; event favorites use the supplied resolver until the
@@ -4069,6 +4224,7 @@ public final class ContactsRepository: NSObject {
     /// reproduces the stale one.
     private func setContacts(_ newValue: [Contact]) {
         contacts = newValue
+        contactDataRevision &+= 1
 
         var byLocalID: [String: Contact] = [:]
         var byGuessWhoID: [String: String] = [:]
@@ -4148,6 +4304,11 @@ public final class ContactsRepository: NSObject {
         let requiresFullReload = note.userInfo?[GuessWhoContactsDidChangeKey.requiresFullReload] as? Bool ?? false
         Task { @MainActor [weak self] in
             guard let self else { return }
+            // Contacts changed underneath. The change set delivered here names
+            // contact records (`.updated` / `.deleted`) and carries nothing about
+            // group membership, so whether membership moved cannot be known from
+            // here; a member list has to assume it may have.
+            self.groupMembershipRevision &+= 1
             if requiresFullReload {
                 await self.reload()
             } else if let changeSet {
