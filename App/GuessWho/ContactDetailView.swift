@@ -97,6 +97,7 @@ struct ContactDetailView: View {
     // which is also what Catalyst gets today.
     @Environment(\.pushContactReference) private var pushContactReference
     @Environment(\.pushEventReference) private var pushEventReference
+    @Environment(\.pushPlaceReference) private var pushPlaceReference
     @Environment(\.pushDepartmentReference) private var pushDepartmentReference
     @Environment(\.pushPhantomOrganizationReference) private var pushPhantomOrganizationReference
     @Environment(\.pushGroupReference) private var pushGroupReference
@@ -144,6 +145,13 @@ struct ContactDetailView: View {
     @State private var fieldsStore: FieldsStore?
     @State private var linksStore: ContactLinksStore?
     @State private var eventLinks: [ContactLink] = []
+    // User-curated contact↔place links that also carry this contact (a grouped
+    // place link classifies to the place bucket, so the shared note surfaces here
+    // once and never duplicates into the People sections). `linkedPlaces` caches
+    // the resolved `MapsPlace` display objects, keyed by place UUID — there is no
+    // synchronous place lookup, so a load reads them via `SyncService`.
+    @State private var placeLinks: [ContactLink] = []
+    @State private var linkedPlaces: [String: MapsPlace] = [:]
     // Forces linked-event rows to resolve their cached projections again after
     // the post-paint refresh completes. The refresh writes through the sync
     // engine but does not otherwise mutate observable view state.
@@ -290,6 +298,10 @@ struct ContactDetailView: View {
 
     private var linkedEventItems: [ContactLink] {
         eventLinks.sorted { $0.createdAt < $1.createdAt }
+    }
+
+    private var linkedPlaceItems: [ContactLink] {
+        placeLinks.sorted { $0.createdAt < $1.createdAt }
     }
 
     /// The "Linked Events" link pointing at `event`, if any. Drives the
@@ -544,6 +556,7 @@ struct ContactDetailView: View {
                 linkedContactsSection
                 linkedOrganizationsSection
                 linkedEventsSection
+                linkedPlacesSection
 
                 if debugModeEnabled {
                     debugSection(contact)
@@ -2097,6 +2110,13 @@ struct ContactDetailView: View {
                     delete: { removeEventLink($0) }) { linkedEventRow($0) }
     }
 
+    @ViewBuilder
+    private var linkedPlacesSection: some View {
+        // Place links delete via removePlaceLink (NOT deleteLink).
+        linkSection(title: "Linked Places", links: linkedPlaceItems,
+                    delete: { removePlaceLink($0) }) { linkedPlaceRow($0) }
+    }
+
     /// Shared section shell for a list of `ContactLink`s with a row builder and
     /// swipe-to-delete. Delete differs by kind (contact/org links use
     /// `deleteLink`, event links use `removeEventLink`). Hidden when empty.
@@ -2145,12 +2165,14 @@ struct ContactDetailView: View {
             .disabled(linksStore == nil)
             .sheet(isPresented: $showingAddLinkSheet) {
                 if let linksStore {
-                    // The picker hands back the far endpoint's ContactID; the
-                    // store's async addLink resolves-or-mints BOTH endpoints.
-                    // The store is @Observable, so adding the link re-renders the
-                    // connection rows, each resolving its other endpoint.
-                    AddLinkSheet(currentContactID: id, kind: .person) { otherID, note in
-                        Task { await linksStore.addLink(to: otherID, note: note) }
+                    // The picker hands back the far endpoints' ContactIDs; the
+                    // store's async addLink resolves-or-mints every endpoint and
+                    // writes ONE grouped link. The store is @Observable, so adding
+                    // it re-renders the connection rows, each resolving its
+                    // participants. Return whether the write succeeded so the
+                    // sheet retains its draft on failure.
+                    AddLinkSheet(currentContactID: id, kind: .person) { otherIDs, note in
+                        await linksStore.addLink(to: otherIDs, note: note) != nil
                     }
                 }
             }
@@ -2168,8 +2190,8 @@ struct ContactDetailView: View {
             .disabled(linksStore == nil)
             .sheet(isPresented: $showingAddOrgLinkSheet) {
                 if let linksStore {
-                    AddLinkSheet(currentContactID: id, kind: .organization) { otherID, note in
-                        Task { await linksStore.addLink(to: otherID, note: note) }
+                    AddLinkSheet(currentContactID: id, kind: .organization) { otherIDs, note in
+                        await linksStore.addLink(to: otherIDs, note: note) != nil
                     }
                 }
             }
@@ -2326,20 +2348,21 @@ struct ContactDetailView: View {
 
     @ViewBuilder
     private func connectionRow(_ link: ContactLink) -> some View {
-        if let contact, link.direction(for: contact.contactID) != nil {
-            LinkRow(
-                link: link,
-                otherContact: repository.linkedContact(of: link, for: loadedContactID ?? id),
-                isEditing: editingLinkID == link.id,
-                draftNote: $draftLinkNote,
-                noteFocus: $noteFocus,
-                focusValue: .linkRow(link.id),
-                onBeginEdit: { beginLinkEdit(link) },
-                onCommit: { commitLinkEditIfChanged() },
-                onCancel: { cancelLinkEdit() },
-                onDelete: { deleteLink(link.id) }
-            )
-        }
+        // The link's far participants (one for a plain link, several for a
+        // grouped link sharing this note). `linkedContacts(of:for:)` excludes the
+        // opened contact and preserves unresolved slots as nil.
+        LinkRow(
+            link: link,
+            otherContacts: repository.linkedContacts(of: link, for: loadedContactID ?? id),
+            isEditing: editingLinkID == link.id,
+            draftNote: $draftLinkNote,
+            noteFocus: $noteFocus,
+            focusValue: .linkRow(link.id),
+            onBeginEdit: { beginLinkEdit(link) },
+            onCommit: { commitLinkEditIfChanged() },
+            onCancel: { cancelLinkEdit() },
+            onDelete: { deleteLink(link.id) }
+        )
     }
 
     @ViewBuilder
@@ -2354,6 +2377,11 @@ struct ContactDetailView: View {
         // event)".
         let eventUUID = repository.eventEndpointUUID(of: link, for: loadedContactID ?? id)
         let event = eventUUID.flatMap { service.event(uuid: $0) }
+        // Other contacts sharing this event link's note (empty for a plain
+        // contact↔event link, so the single-participant row is unchanged). Shown
+        // below the event so a grouped link surfaces the event AND the other
+        // people while keeping the one shared note on this one row.
+        let participants = repository.linkedContacts(of: link, for: loadedContactID ?? id)
         let isEditing = editingLinkID == link.id
         ActivityRowLayout(systemImage: "calendar") {
             VStack(alignment: .leading, spacing: 4) {
@@ -2369,6 +2397,10 @@ struct ContactDetailView: View {
                 } else {
                     Text("(Unknown event)")
                         .foregroundStyle(.secondary)
+                }
+
+                if !participants.isEmpty {
+                    LinkParticipantNames(contacts: participants)
                 }
 
                 if isEditing {
@@ -2416,6 +2448,90 @@ struct ContactDetailView: View {
                 removeEventLink(link.id)
             }
         }
+    }
+
+    @ViewBuilder
+    private func linkedPlaceRow(_ link: ContactLink) -> some View {
+        // Resolve the link's PLACE endpoint through the repository (nil only for a
+        // malformed/unreconciled link) and read its display object from the cache
+        // filled during the load. Mirrors `linkedEventRow`, swapping event→place.
+        let placeUUID = repository.linkedPlaceUUID(of: link, for: loadedContactID ?? id)
+        let place = placeUUID.flatMap { linkedPlaces[$0] }
+        // Other contacts sharing this place link's note (empty for a plain
+        // contact↔place link, so a single-participant row is unchanged).
+        let participants = repository.linkedContacts(of: link, for: loadedContactID ?? id)
+        let isEditing = editingLinkID == link.id
+        ActivityRowLayout(systemImage: "mappin.and.ellipse") {
+            VStack(alignment: .leading, spacing: 4) {
+                if let place {
+                    Button {
+                        pushPlaceReference(PlaceReference(place: place))
+                    } label: {
+                        Text(placeName(place))
+                            .font(.body)
+                            .foregroundStyle(.tint)
+                    }
+                    .buttonStyle(.plain)
+                } else {
+                    Text("(Unknown place)")
+                        .foregroundStyle(.secondary)
+                }
+
+                if !participants.isEmpty {
+                    LinkParticipantNames(contacts: participants)
+                }
+
+                if isEditing {
+                    VStack(alignment: .leading, spacing: 6) {
+                        TextField("", text: $draftLinkNote, axis: .vertical)
+                            .focused($noteFocus, equals: .linkRow(link.id))
+                        HStack(spacing: 12) {
+                            Spacer()
+                            Button("Cancel", role: .cancel) { cancelLinkEdit() }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                            Button("Done") { commitLinkEditIfChanged() }
+                                .buttonStyle(.borderedProminent)
+                                .controlSize(.small)
+                        }
+                    }
+                } else {
+                    Button {
+                        beginLinkEdit(link)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 4) {
+                            if !link.note.isEmpty {
+                                Text(link.note)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .contextMenu {
+            Button {
+                beginLinkEdit(link)
+            } label: {
+                Label("Edit Note", systemImage: "pencil")
+            }
+            Button("Delete", role: .destructive) {
+                removePlaceLink(link.id)
+            }
+        }
+    }
+
+    /// The place's display name for a linked-place row, mirroring the place
+    /// detail's title fallback: name, then address, then a generic "Place".
+    private func placeName(_ place: MapsPlace) -> String {
+        let name = place.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !name.isEmpty { return name }
+        if let address = place.address?.trimmingCharacters(in: .whitespacesAndNewlines), !address.isEmpty {
+            return address
+        }
+        return "Place"
     }
 
     private func showNewNoteEditor() {
@@ -2482,8 +2598,11 @@ struct ContactDetailView: View {
         let myLoadID = loadGeneration.begin()
         do {
             // The write resolves-or-mints the CONTACT endpoint's GuessWho UUID,
-            // so a never-touched contact can link an event.
-            _ = try await repository.addEventLink(for: id, eventUUID: eventUUID, note: note)
+            // so a never-touched contact can link an event. This is the card
+            // owner linking itself to an event — a single-participant use of the
+            // grouped write (the array form is used so it works whether or not a
+            // singular create overload exists).
+            _ = try await repository.addEventLink(for: [id], eventUUID: eventUUID, note: note)
         } catch {
             service.recordError("add contact-event link failed: \(error.localizedDescription)")
         }
@@ -2559,6 +2678,46 @@ struct ContactDetailView: View {
             guard loadGeneration.isCurrent(myLoadID) else { return }
             eventLinks = links
         }
+    }
+
+    /// Remove a contact↔place link and re-read the place-link set. Mirrors
+    /// `removeEventLink`: it joins the shared newest-wins gate synchronously at
+    /// tap time so an older full load can't restore the just-removed link, and
+    /// clears any in-progress note edit first (a `setLinkNote` on a soft-deleted
+    /// link would undelete it).
+    private func removePlaceLink(_ id: UUID) {
+        let myLoadID = loadGeneration.begin()
+        if editingLinkID == id {
+            editingLinkID = nil
+            draftLinkNote = ""
+            editLinkStartSnapshot = ""
+            if case .linkRow(let focused) = noteFocus, focused == id {
+                noteFocus = nil
+            }
+        }
+        do {
+            try repository.removeLink(id: id)
+        } catch {
+            service.recordError("remove place link failed: \(error.localizedDescription)")
+        }
+        Task {
+            let cid = loadedContactID ?? self.id
+            let links = await repository.placeLinks(for: cid)
+            let places = await resolveLinkedPlaces(links, for: cid)
+            guard loadGeneration.isCurrent(myLoadID) else { return }
+            placeLinks = links
+            linkedPlaces = places
+        }
+    }
+
+    /// Resolve the far PLACE endpoint UUIDs of `links` to their `MapsPlace`
+    /// display objects. There is no synchronous place lookup, so the row cache
+    /// (`linkedPlaces`) is filled here via `SyncService`. Returns an empty map
+    /// when there are no place links.
+    private func resolveLinkedPlaces(_ links: [ContactLink], for id: ContactID) async -> [String: MapsPlace] {
+        let uuids = Set(links.compactMap { repository.linkedPlaceUUID(of: $0, for: id) })
+        guard !uuids.isEmpty else { return [:] }
+        return await service.sidecarPlaces(uuids: uuids) ?? [:]
     }
 
     // MARK: - Loading & reconcile
@@ -2671,6 +2830,8 @@ struct ContactDetailView: View {
             fieldsStore = linkResult.stores.fields
             linksStore = linkResult.stores.links
             eventLinks = linkResult.eventLinks
+            placeLinks = linkResult.placeLinks
+            linkedPlaces = linkResult.linkedPlaces
             DetailLoadSignpost.end("contact_core_ready", coreSignpostID, "published")
             Self.loadLog.info("contact core ready", [
                 "loadID": timingID.uuidString,
@@ -2751,6 +2912,8 @@ struct ContactDetailView: View {
             fieldsStore = nil
             linksStore = nil
             eventLinks = []
+            placeLinks = []
+            linkedPlaces = [:]
             recentEvents = []
             memberGroups = []
             addressGuides = [:]
@@ -2836,10 +2999,12 @@ struct ContactDetailView: View {
     ) async -> (
         stores: SidecarStoresSnapshot,
         eventLinks: [ContactLink],
-        eventUUIDs: [String]
+        eventUUIDs: [String],
+        placeLinks: [ContactLink],
+        linkedPlaces: [String: MapsPlace]
     ) {
         let linkID = loaded.contactID
-        // ONE link-corpus walk for both link kinds.
+        // ONE link-corpus walk for all three link kinds (contact/event/place).
         let fused = await DetailLoadSignpost.measure("contact_event_links") {
             await repository.contactDetailLinks(for: linkID)
         }
@@ -2853,7 +3018,11 @@ struct ContactDetailView: View {
         let eventUUIDs = fused.eventLinks.compactMap {
             repository.eventEndpointUUID(of: $0, for: linkID)
         }
-        return (stores, fused.eventLinks, eventUUIDs)
+        // Resolve the linked places' display objects (no synchronous lookup).
+        let linkedPlaces = await DetailLoadSignpost.measure("contact_place_links") {
+            await resolveLinkedPlaces(fused.placeLinks, for: linkID)
+        }
+        return (stores, fused.eventLinks, eventUUIDs, fused.placeLinks, linkedPlaces)
     }
 
     /// Fetch up to 10 EventKit events matched to this contact — either the
@@ -3058,6 +3227,24 @@ struct ContactDetailView: View {
                 }
             } catch {
                 service.recordError("set event-link note failed: \(error.localizedDescription)")
+            }
+        } else if placeLinks.contains(where: { $0.id == id }) {
+            // Place-link note edit — same shared write (keyed on the link's own
+            // UUID) and the same newest-wins gate as the event branch, then
+            // re-reads the place links and re-resolves their display objects.
+            let myLoadID = loadGeneration.begin()
+            do {
+                try repository.setLinkNote(id: id, note: proposed)
+                Task {
+                    let cid = loadedContactID ?? self.id
+                    let links = await repository.placeLinks(for: cid)
+                    let places = await resolveLinkedPlaces(links, for: cid)
+                    guard loadGeneration.isCurrent(myLoadID) else { return }
+                    placeLinks = links
+                    linkedPlaces = places
+                }
+            } catch {
+                service.recordError("set place-link note failed: \(error.localizedDescription)")
             }
         }
     }

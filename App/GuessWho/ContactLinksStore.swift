@@ -72,11 +72,15 @@ final class ContactLinksStore {
         id = contact.contactID
     }
 
+    /// Write ONE link joining this contact to every `others` participant with a
+    /// single shared note. The repository dedups, excludes the source, and
+    /// resolves-or-mints every endpoint, so a grouped selection still produces a
+    /// single `Link`. Returns the created link, or `nil` on failure.
     @discardableResult
-    func addLink(to other: ContactID, note: String) async -> Link? {
+    func addLink(to others: [ContactID], note: String) async -> Link? {
         let result: Link?
         do {
-            result = try await repository.addLink(from: id, to: other, note: note)
+            result = try await repository.addLink(from: id, to: others, note: note)
         } catch {
             result = nil
         }
