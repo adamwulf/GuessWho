@@ -1,6 +1,26 @@
 # Group folders
 
-Status: proposed implementation plan, 2026-09-17. This is the selected design for organizing groups. It has not been implemented.
+Status: implementation in progress on `agent/supgroups`, 2026-09-17. Delivery step 0 (group identity sync) is built and review-clean; steps 1–5 are not started. Not on `main`. This file is also the working memory for the effort: decisions Adam has made, and questions still open, are recorded in the next section so a later session does not re-ask or re-litigate them.
+
+## Decisions and status
+
+**Locked by Adam, 2026-09-17.**
+
+- *Identity is orthogonal to placement.* Whether a group is in a folder must not affect how a device resolves that group's identity. A group has ONE identity per device, shared by favorites and folders; never re-mint. Favoriting a group and then placing it leaves it favorited AND in the folder — placement does not change favorites.
+- *Use the simplest resolution* — the existing one. Only the three golden cases in “Group identity sync” are promised. Concurrent-change mismatches (one device favorites a group while another renames it; two devices first-touch the same group before they sync) are explicitly acceptable to get wrong. Do not add machinery for them.
+- *Rejected:* an earlier draft's placement-only “trusted binding” layer (binding cell, provenance, Resolve picker, “Group unavailable on this device” rows, Remove from Folder repair). It made a second device show one unavailable row per placed group, needing manual repair, to guard a risk favorites already accept. Do not reintroduce it.
+- *Old builds may refresh on folder writes.* An old build cannot map a `group-folders/` path, so each burst of folder writes reaches it as an unknown-scope delivery: one debounced, read-only full reload per repository (contacts, events, guides) and one full conflict scan. Accepted because it happens ONCE per burst — no repository writes on that path, so nothing loops — and changes nothing on screen. Step 1 must keep that true and prove it with a test.
+- *Old-version fixtures:* the approach in “Hardening the compatibility tests” below is accepted as sufficient.
+
+**Built.** Step 0, commits `1b97f2c` + `b9e9451`, two review rounds, approved. `swift test --no-parallel`: 582 XCTest + 1090 swift-testing, all passing; Mac Catalyst build green. Not yet hand-checked on two real iCloud devices — the useful check is golden case 1 with the second device's app already running: the favorite must resolve without a relaunch.
+
+**Still open (none blocks step 1).**
+
+- Folder single-click vs. double-click arbitration on Catalyst needs Adam's hand check on real hardware; prototype it at the start of step 4.
+- Add to Group: `AddToGroupMenu` is a `UIMenu` today. Proposed: folders become submenus and only leaf groups are selectable, rather than a separate picker sheet.
+- Sidebar favorites: proposed to stay flat under Groups; clicking one expands its ancestor folders and selects the row.
+- Whether the CLI/MCP folder tools (step 5) ship with this effort or later.
+- Cost of resolve-all with many placed groups: one membership fetch per identity per group load, and an unknown-scope delivery reads each group sidecar twice on the main actor. Measure before adding laziness.
 
 ## Behavior
 
@@ -67,6 +87,17 @@ The envelope codec drops structurally malformed cells and reports `cellsDroppedO
 For placement and folder-deletion writes, choose a timestamp strictly later than all relevant observed assignments at persisted millisecond precision; round-trip it before saving. Use `deviceID/operationUUID` as the opaque writer token for these new cells so independent same-device writes at equal times still have a tie-break. A retried logical write reuses its stamped cell. No-op moves do not write. This avoids changing general merge semantics; valid-writer convergence excludes corrupted cells with identical stamps/tokens but different payloads. Reject timestamp overflow. “Oldest” below means stored assignment order, subject to clock skew.
 
 Extend `SidecarKind`, `SidecarKey` switches, filesystem creation/listing/scoped scans, conflict reconciliation, watcher mappings, in-memory stores, and exhaustive consumers. Group placement is an additive neighboring cell. A new folder kind also needs **old-version fixtures** proving old apps leave its directory/files intact during scans, maintenance, and unrelated writes; cell forward compatibility alone does not establish this. Older versions show their existing flat groups. Do not bump envelope schema for additive cells or expose folder kinds through existing contact-link/favorite APIs accidentally.[^2][^5]
+
+### Hardening the compatibility tests
+
+The tests cannot run an old binary, so they prove the property the old binary depends on: every store operation names its directories explicitly, so a directory it does not know is never listed, read, written, or removed. Build these in step 1, in this order; the first three land BEFORE the new kind so that adding it is what they catch.
+
+1. **Whole-root digest.** A test helper that snapshots the sidecar root as `[relative path: bytes]`. Every compatibility test asserts that everything outside the one key it wrote is byte-identical afterwards — not only the unknown directory. Run it around each store entry point with an unknown kind directory present (envelopes, a blob `.dat`, and `.icloud` placeholders inside it): `allKeys`, the corpus walks, `prefetchAllDownloads`, `keysWithUnresolvedConflicts`, conflict reconciliation, and unrelated reads, writes, and deletes. The directory name is one no build knows (`future-kind/`), so the same test keeps protecting the NEXT new kind after `group-folders/` becomes known.
+2. **Kind-coverage tripwire.** The per-kind directory lists are maintained by hand in places that the compiler does not check: two `[.contact, .event, .link, .guide, .place, .group]` arrays (`prefetchAllDownloads` and the scoped `listKeys(ofKinds:)`) and the six `allKeys()` lines in `FileSystemSidecarStore`, and the `String` switch with a `default` in `SidecarFileWatcher`. (The exhaustive `switch`es over `SidecarKind` ARE compiler-checked and need no tripwire.) Make `SidecarKind` `CaseIterable`, derive those lists from `allCases`, and add a test that, for EVERY case, writes a key and requires that `allKeys()` returns it, the scoped listing returns it, the watcher maps its file path back to the same key and its directory path back to the same kind, `prefetchAllDownloads` visits it, and the in-memory store round-trips it. Adding `.groupFolder` and forgetting one site then fails a test instead of silently dropping folders from a scan.
+3. **Unknown scope refreshes once.** Deliver a change whose path maps to no kind and require exactly one reload per repository and ZERO sidecar writes, then deliver it again and require the same. This is the accepted old-build behavior as a test, and it guards the watcher path's read-only rule (whose one bounded exception is identity pins).
+4. **Golden wire fixtures.** Commit real files under `Tests/.../Fixtures/`: a folder envelope, and a group envelope carrying `groupIdentity` + `parentFolder` + a cell with an unknown inner type. Two checks: today's decoder reads them to the expected values, and today's encoder reproduces them byte-for-byte. Fixtures are append-only — a later format change adds a new file and never edits an old one — so an accidental change to what ships on the wire fails here.
+5. *Optional, strongest:* a standalone SwiftPM package outside `swift test` that depends on this repository at the last SHIPPED revision, runs that real old engine (scan, maintenance, unrelated writes) over a fixture root containing `group-folders/`, and lets the current tree verify the root digest. Proves the claim with old code instead of by argument; costs a second package build and repository access from CI. Do this only if 1–4 leave doubt.
+6. *Optional:* a seeded property test that generates envelopes with random unknown cells and unknown inner keys, applies each cell writer to a neighboring cell, and requires the unknown content back unchanged (within the documented `Double` limit).
 
 ### Group placement rides on group identity
 
