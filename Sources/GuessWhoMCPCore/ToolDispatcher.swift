@@ -4045,14 +4045,31 @@ public actor ToolDispatcher {
         let fetched = await links.links(at: endpoint)
         var rows: [(link: Link, farKind: String, farID: String)] = []
         for link in fetched where link.deletedAt == nil {
-            let far = link.endpointA == endpoint ? link.endpointB : link.endpointA
-            // Same DELIBERATE divergence as the linked-contact list: a link
-            // whose far endpoint doesn't resolve to a live record is
-            // DROPPED — an agent can't act on a row with no id to read.
-            guard let resolved = await resolveFarEndpoint(far) else { continue }
-            rows.append((link, resolved.kind, resolved.id))
+            // A grouped connection joins three or more records, so listing it
+            // from `endpoint` (the near record) yields ONE row per far
+            // participant: no participant is dropped, and the near record is
+            // never echoed back as its own connection. `otherEndpoints(from:)`
+            // returns every endpoint except the near one, in order — for an
+            // ordinary two-record connection that is exactly one far endpoint,
+            // so the row count and shape are unchanged from the binary case.
+            for far in link.otherEndpoints(from: endpoint) {
+                // Same DELIBERATE divergence as the linked-contact list: a far
+                // endpoint that doesn't resolve to a live record is DROPPED —
+                // an agent can't act on a row with no id to read.
+                guard let resolved = await resolveFarEndpoint(far) else { continue }
+                rows.append((link, resolved.kind, resolved.id))
+            }
         }
-        rows.sort { $0.link.createdAt < $1.link.createdAt }
+        // Deterministic order so the offset cursor stays stable across pages:
+        // primary by the connection's createdAt, then by far kind and id so a
+        // grouped connection's expanded rows keep a fixed relative order.
+        rows.sort {
+            if $0.link.createdAt != $1.link.createdAt {
+                return $0.link.createdAt < $1.link.createdAt
+            }
+            if $0.farKind != $1.farKind { return $0.farKind < $1.farKind }
+            return $0.farID < $1.farID
+        }
         let (slice, nextCursor) = page.slice(rows)
         let items = slice.compactMap {
             WireMapping.link($0.link, otherKind: $0.farKind, otherID: $0.farID)
@@ -4362,8 +4379,14 @@ public actor ToolDispatcher {
                 return nil
             }
         }
-        if let nearName = await name(link.endpointA) { return nearName }
-        return await name(link.endpointB)
+        // A grouped connection has more than two endpoints; scan them all in
+        // order (endpointA, endpointB, then any additional endpoints) and
+        // return the first that resolves to a display name, so the audit row
+        // is still named when the leading endpoints no longer resolve.
+        for endpoint in link.endpoints {
+            if let resolved = await name(endpoint) { return resolved }
+        }
+        return nil
     }
 
     // MARK: - Write helpers
