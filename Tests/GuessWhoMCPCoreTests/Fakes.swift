@@ -339,13 +339,15 @@ final class LegacyScriptedContactSource: MCPContactSource {
         groups[index] = ContactGroup(localID: group.localID, name: name)
     }
 
-    func deleteGroup(_ group: ContactGroup) async throws {
+    @discardableResult
+    func deleteGroup(_ group: ContactGroup) async throws -> PendingGroupPlacementCleanup? {
         if let groupWriteError { throw groupWriteError }
         guard groups.contains(where: { $0.localID == group.localID }) else {
             throw ContactStoreError.groupNotFound(localID: group.localID)
         }
         groups.removeAll { $0.localID == group.localID }
         membersByGroup[group.localID] = nil
+        return nil
     }
 
     func addContacts(_ requested: [Contact], toGroup group: ContactGroup) async throws {

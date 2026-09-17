@@ -80,7 +80,10 @@ public protocol MCPContactSource: AnyObject {
     @discardableResult
     func createGroup(name: String) async throws -> ContactGroup
     func renameGroup(_ group: ContactGroup, to name: String) async throws
-    func deleteGroup(_ group: ContactGroup) async throws
+    /// A throw means the group was not deleted. A non-nil result means it WAS
+    /// deleted and clearing its folder placement is still owed.
+    @discardableResult
+    func deleteGroup(_ group: ContactGroup) async throws -> PendingGroupPlacementCleanup?
     func addContacts(_ contacts: [Contact], toGroup group: ContactGroup) async throws
     func removeContacts(_ contacts: [Contact], fromGroup group: ContactGroup) async throws
     @discardableResult

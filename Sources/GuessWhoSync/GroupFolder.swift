@@ -40,6 +40,31 @@ public enum GroupHierarchyError: Error, Equatable, Sendable {
     case wouldCreateCycle
 }
 
+/// A group was created in Contacts but could not then be placed in its folder.
+/// The group EXISTS — it is reachable at top level — so the recovery is to retry
+/// the placement with `group`, never to create again, which would leave a
+/// duplicate group behind.
+public struct GroupPlacementFailedError: Error {
+    public let group: ContactGroup
+    public let underlying: Error
+
+    public init(group: ContactGroup, underlying: Error) {
+        self.group = group
+        self.underlying = underlying
+    }
+}
+
+/// Folder-placement cleanup still owed for a group whose Contacts record is
+/// already deleted. Deleting a group clears its placement so a later group with
+/// the same name cannot inherit it; when that clear fails the deletion itself
+/// has still succeeded, and this value is what lets the caller retry the clear
+/// WITHOUT deleting anything again. Opaque on purpose: it carries durable group
+/// identity ids, which never leave the package.
+public struct PendingGroupPlacementCleanup: Sendable, Equatable {
+    let identityIDs: [String]
+    let observedStamps: [Date]
+}
+
 /// One stored parent assignment: a decoded `parentFolder` cell.
 public struct FolderPlacement: Sendable, Hashable {
     /// The parent folder's id (canonical lowercase UUID), or nil for an
