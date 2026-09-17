@@ -49,7 +49,7 @@ it's almost certainly wrong. Rephrase in terms of the user's mental model
 - `Sources/GuessWhoSync/` — the storage + sync engine (Swift Package).
   Sidecar storage, EventKit/Contacts adapters, model types (`Event`,
   `Contact`, `ContactLink`, `ContactNote`, `EventTag`, `SidecarKey`,
-  `MapsGuide`, `MapsPlace`).
+  `MapsGuide`, `MapsPlace`, `GroupIdentity`, `GroupFolderTree`).
 - `App/GuessWho/` — the app target. SwiftUI + UIKit (Catalyst 3-column
   shell, iPhone tab-bar shell). Detail views, list view controllers,
   scene delegate.
@@ -84,6 +84,15 @@ touching that subsystem:
 - [`docs/maps-guides.md`](docs/maps-guides.md) — the Apple Maps guide
   import: the share-link/protobuf format, guide/place sidecars, MapKit
   place-ID resolution, and the Guides tab's entry points.
+- [`docs/group-folders.md`](docs/group-folders.md) — folders that organize
+  groups: the stored parent assignments, the pure `GroupFolderTree`
+  projection (deletion redirects, cycle suppression), the repository commands,
+  a folder's combined member list, why group identity is independent of
+  placement, and what an older build does with the new directory. Read before
+  touching the Groups list, group identity, or the group hierarchy.
+- [`docs/sidecar-compatibility.md`](docs/sidecar-compatibility.md) — the
+  forward-compatibility contract for synced envelopes: what an older build
+  preserves, and the rules a storage change must keep.
 - [`docs/autocomplete.md`](docs/autocomplete.md) — text-field autocomplete:
   how a field opts in (`.autocomplete(text:candidates:)` +
   `.autocompleteMenuHost()`), the shared filter, the candidate lists, and

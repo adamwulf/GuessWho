@@ -1,5 +1,18 @@
 # Plan: durable cross-device identity for group favorites
 
+> **Update, 2026-09-17 — group folders.** The resolution algorithm in this plan
+> is unchanged, but three statements below no longer hold, because a group's
+> identity now also carries its folder placement. (1) A record is minted on the
+> first favorite **or the first folder placement**, not only for a favorited
+> group. (2) **Every** stored identity resolves on every device, not only
+> identities that back a favorite; an identity that nothing refers to any more
+> is resolved and refreshed too. (3) Resolution also runs when a `.group` file
+> arrives while the app is running, and it waits for a complete group fetch
+> before treating a pinned id as dead. See
+> [`docs/group-folders.md`](../docs/group-folders.md#group-identity-is-its-own-layer)
+> for current behavior and [`group-folders.md`](group-folders.md) for the
+> decisions.
+
 ## Status (2026-08-14)
 
 Approved, ready to build. This plan replaces the current group-favorite key

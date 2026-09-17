@@ -1,15 +1,18 @@
 import CryptoKit
 import Foundation
 
-/// A durable, cross-device identity record for a favorited Contacts group.
+/// A durable, cross-device identity record for a Contacts group.
 ///
 /// A `CNGroup.identifier` is device-local — the same group carries a different
 /// identifier on each device after iCloud/CardDAV sync, exactly like
-/// `Contact.localID` (`docs/contact-identity.md`). So a group favorite cannot
+/// `Contact.localID` (`docs/contact-identity.md`). So nothing durable can
 /// reference the raw group identifier and expect it to resolve on another
-/// device. Instead every favorited group gets a `GroupIdentity` with a minted,
-/// cross-device-stable UUID; the favorite references THAT UUID, the same way
-/// contact/event/guide/place favorites reference a UUID.
+/// device. Instead a group gets ONE `GroupIdentity`, with a minted,
+/// cross-device-stable UUID, the first time something durable refers to it: a
+/// favorite references THAT UUID, the same way contact/event/guide/place
+/// favorites reference a UUID, and a group's folder placement is a cell on that
+/// same record's envelope (`docs/group-folders.md`). Both consumers share the
+/// record; neither changes how it resolves.
 ///
 /// The record carries the group's normalized name, an optional account hint, a
 /// best-effort `memberCount` and `memberHash` (a fingerprint over the members'
