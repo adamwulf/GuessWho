@@ -3,9 +3,8 @@ import GuessWhoSync
 
 /// UIKit list of the members of one Contacts.app group — or of a FOLDER, which
 /// shows everyone in every group beneath it, at any depth, each person once.
-/// Pushed when a row is
-/// tapped in `GroupsListViewController` — on iPhone onto the Groups tab's nav
-/// stack, on Catalyst onto the supplementary column's nav. Renders members
+/// Opened when a row is tapped in `GroupsListViewController` — on iPhone onto
+/// the Groups tab's nav stack, on Catalyst in the secondary column. Renders members
 /// EXACTLY like `ContactsListViewController`: A–Z sectioning, the same two-line
 /// `ContactCell` (icon + bold-family-name + caption subtitle), lazy photo
 /// loading + prefetch via `ContactPhotoLoader`, and a search bar that filters
@@ -30,7 +29,7 @@ import GuessWhoSync
 /// belong to a group.
 final class GroupMembersListViewController: UIViewController {
     /// Closure-based selection callback so the SceneDelegate can mount/push a
-    /// `ContactDetailView` (push on iPhone, replace-secondary on Catalyst)
+    /// `ContactDetailView` onto the member list's navigation stack
     /// without us holding a reference to the nav stack or the split.
     var didSelectContact: (Contact) -> Void = { _ in }
     var didSelectContacts: ([Contact]) -> Void = { _ in }

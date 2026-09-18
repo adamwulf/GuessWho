@@ -33,7 +33,7 @@ final class GroupsListViewController: UIViewController {
     typealias Item = GroupFolderTree.NodeID
 
     /// Closure-based selection callbacks so the SceneDelegate can push (iPhone)
-    /// or push-onto-supplementary (Catalyst) a `GroupMembersListViewController`
+    /// or replace-secondary (Catalyst) with a `GroupMembersListViewController`
     /// without us holding a reference to the nav stack or the split.
     var didSelectGroup: (ContactGroup) -> Void = { _ in }
     var didSelectFolder: (_ folderID: String) -> Void = { _ in }
@@ -606,13 +606,13 @@ extension GroupsListViewController: UITableViewDelegate {
         pendingSelection.cancel()
         switch item {
         case .group(let localID):
+            clickArbiter.cancel()
             guard let group = repository.group(localID: localID) else { return }
             didSelectGroup(group)
         case .folder(let folderID):
             #if targetEnvironment(macCatalyst)
-            // Held for the double-click interval: opening a folder pushes the
-            // member list over this tree, so a double click has to be ruled out
-            // FIRST. See `GroupFolderClickArbiter`.
+            // Hold navigation for the double-click interval so expanding or
+            // collapsing a folder leaves the detail pane alone.
             clickArbiter.singleClick { [weak self] in
                 guard let self, self.repository.groupFolderTree.folders[folderID] != nil else { return }
                 self.didSelectFolder(folderID)
