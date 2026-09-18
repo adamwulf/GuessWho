@@ -48,8 +48,9 @@ public struct GroupMemberSnapshot: Sendable {
     public let contacts: [Contact]
     /// For each member, the groups in scope it belongs to, in tree order.
     public let contributingGroups: [ContactID: [ContactGroup]]
-    /// Groups in scope whose members could NOT be fetched. Non-empty means
-    /// `contacts` is a partial result.
+    /// Groups in scope whose members could not be fully fetched or whose
+    /// conflicting contact identities could not be resolved. Non-empty means
+    /// `contacts` is a partial result. Always in scope/tree order.
     public let failedGroups: [ContactGroup]
     public let revisions: Revisions
 

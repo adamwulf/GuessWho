@@ -185,6 +185,42 @@ struct GroupFolderRepositoryTests {
 
     // MARK: - Commands
 
+    @Test(arguments: [true, false])
+    func moveRevalidatesDestinationAfterIdentityFetch(adoptingIdentity: Bool) async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let contacts = ScriptedMembersContactStore()
+        let sidecars = InMemorySidecarStore()
+        let sync = GuessWhoSync(
+            contacts: contacts, events: InMemoryEventStore(), sidecars: sidecars, deviceID: "device-A")
+        let repo = ContactsRepository(
+            contacts: contacts, sync: sync, favorites: FavoritesStore(root: root),
+            notificationCenter: NotificationCenter())
+        let group = try await contacts.seedGroup(name: "Work")
+        await repo.loadGroups()
+        let folder = try await repo.createGroupFolder(name: "Destination", inFolder: nil)
+        if adoptingIdentity {
+            // Arrive after loadGroups, so move must adopt it across an await.
+            _ = try sync.mintGroupIdentity(
+                name: group.name, memberCount: 0,
+                memberHash: GroupIdentity.fingerprint(forGuessWhoIDs: []).memberHash,
+                hashedMemberCount: 0, localID: "remote-group")
+        }
+        await contacts.gateFingerprint(group)
+        let move = Task { try await repo.moveGroup(group, toFolder: folder) }
+        await contacts.waitUntilGated(group)
+        // A peer deletes the destination while Contacts is resolving identity.
+        // No watcher delivery: the command must re-read the durable hierarchy.
+        try sync.markGroupFolderDeleted(id: folder, promotedToFolderID: nil)
+        await contacts.release(group)
+
+        await #expect(throws: GroupHierarchyError.folderDeleted(folder)) {
+            try await move.value
+        }
+        #expect(try await sync.groupHierarchyRecords().groupPlacements.isEmpty)
+        #expect(repo.groupFolderTree.groups[group.localID]?.parentFolderID == nil)
+    }
+
     @Test
     func folderMovesCarryTheSubtreeAndRefuseCycles() async throws {
         let world = try makeWorld()

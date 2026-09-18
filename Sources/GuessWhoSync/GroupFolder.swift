@@ -203,6 +203,8 @@ enum GroupHierarchyCells {
         // folder with no trustworthy name.
         guard cell.deletedAt == nil,
               case .object(let inner) = cell.value,
+              inner[SidecarField.innerFieldKey] == .string(folderNameKey),
+              inner[SidecarField.innerTypeKey] == .string(SidecarFieldType.note.rawValue),
               case .string(let raw) = inner[SidecarField.innerValueKey] ?? .null,
               let name = canonicalName(raw)
         else { return .malformed }
@@ -211,14 +213,17 @@ enum GroupHierarchyCells {
 
     static func decodePlacement(in envelope: SidecarEnvelope) -> Decoded<FolderPlacement> {
         guard let cell = envelope.fields[parentFolderKey] else { return .absent }
-        // A tombstoned placement is a stamped top-level assignment, whatever
-        // value it still carries.
+        guard case .object(let inner) = cell.value,
+              inner[SidecarField.innerFieldKey] == .string(parentFolderKey),
+              inner[SidecarField.innerTypeKey] == .string(folderReferenceType)
+        else { return .malformed }
+        // A known tombstoned placement is a stamped top-level assignment.
+        // Unknown metadata stays opaque even when tombstoned.
         if cell.deletedAt != nil {
             return .value(FolderPlacement(
                 parentFolderID: nil, modifiedAt: cell.modifiedAt, modifiedBy: cell.modifiedBy))
         }
-        guard case .object(let inner) = cell.value,
-              let payload = inner[SidecarField.innerValueKey]
+        guard let payload = inner[SidecarField.innerValueKey]
         else { return .malformed }
         switch payload {
         case .null:
@@ -238,6 +243,8 @@ enum GroupHierarchyCells {
         // Presence is what deletes the folder, and the marker is never removed:
         // a tombstone on it is not an undelete, so `deletedAt` is ignored.
         guard case .object(let inner) = cell.value,
+              inner[SidecarField.innerFieldKey] == .string(folderDeletedKey),
+              inner[SidecarField.innerTypeKey] == .string(folderDeletionType),
               case .object(let payload) = inner[SidecarField.innerValueKey] ?? .null,
               let promotedTo = payload[promotedToKey]
         else { return .malformed }
@@ -273,7 +280,9 @@ enum GroupHierarchyCells {
         switch decodeName(in: envelope) {
         case .value(let value):
             name = value
-        case .absent, .malformed:
+        case .malformed:
+            throw GroupHierarchyError.recordUnavailable(key)
+        case .absent:
             // A deleted folder is only ever followed through its marker, so its
             // name no longer matters. A LIVE folder with no usable name is not
             // a folder this build can show.

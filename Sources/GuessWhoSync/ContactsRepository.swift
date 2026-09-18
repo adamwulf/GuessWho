@@ -2761,6 +2761,11 @@ public final class ContactsRepository: NSObject {
                 return
             }
 
+            // Identity adoption/fingerprinting awaits Contacts. A peer may
+            // delete or invalidate the destination while that read is in flight.
+            // Re-read, then validate and write without another suspension.
+            await self.reloadGroupHierarchy()
+            _ = try self.validatedDestination(parent)
             let key = SidecarKey(kind: .group, id: identity.id)
             guard !self.hierarchyRecords.unavailableKeys.contains(key),
                   !self.hierarchyRecords.unreadableKeys.contains(key) else {
@@ -2894,6 +2899,20 @@ public final class ContactsRepository: NSObject {
 
     // MARK: - Group and folder members
 
+    /// Missing or untrustworthy data is not evidence that a folder was deleted.
+    /// Only a readable deletion marker lets an open member list leave its scope.
+    public func memberScopeAvailability(for scope: GroupMemberScope) -> GroupMemberScopeAvailability {
+        guard case .folder(let rawID) = scope else { return .available }
+        let id = rawID.lowercased()
+        let key = SidecarKey(kind: .groupFolder, id: id)
+        guard !hierarchyRecords.unavailableKeys.contains(key),
+              !hierarchyRecords.unreadableKeys.contains(key) else { return .unavailable }
+        if hierarchyRecords.folders.contains(where: { $0.id == id && $0.isDeleted }) {
+            return .deleted
+        }
+        return groupFolderTree.folders[id] == nil ? .unavailable : .available
+    }
+
     /// The repository state a member read is valid against, as of now.
     public var memberRevisions: GroupMemberSnapshot.Revisions {
         GroupMemberSnapshot.Revisions(
@@ -2944,10 +2963,10 @@ public final class ContactsRepository: NSObject {
         var order: [String] = []
         var versions: [String: [Contact]] = [:]
         var contributing: [String: [ContactGroup]] = [:]
-        var failedGroups: [ContactGroup] = []
+        var failedGroups: Set<ContactGroup> = []
         for (group, result) in zip(scopeGroups, fetched) {
             guard case .success(let members) = result else {
-                failedGroups.append(group)
+                failedGroups.insert(group)
                 continue
             }
             for member in members {
@@ -2973,7 +2992,13 @@ public final class ContactsRepository: NSObject {
             } else {
                 // Two fetches saw this contact on either side of an identity
                 // change. Ask again instead of picking one of them.
-                current = (try? await contactsStore.fetch(localID: localID)) ?? first
+                guard let resolved = try? await contactsStore.fetch(localID: localID) else {
+                    // Neither conflicting version is authoritative. Keep the
+                    // other members, but report every affected group as partial.
+                    failedGroups.formUnion(contributing[localID] ?? [])
+                    continue
+                }
+                current = resolved
             }
             let id = current.contactID
             let groupsForContact = contributing[localID] ?? []
@@ -2992,7 +3017,7 @@ public final class ContactsRepository: NSObject {
             groups: scopeGroups,
             contacts: contacts,
             contributingGroups: contributingGroups,
-            failedGroups: failedGroups,
+            failedGroups: scopeGroups.filter { failedGroups.contains($0) },
             revisions: revisions)
     }
 

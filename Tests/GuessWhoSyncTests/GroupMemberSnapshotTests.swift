@@ -19,6 +19,8 @@ actor ScriptedMembersContactStore: ContactStoreProtocol {
     private(set) var maxInFlight = 0
     private(set) var fetchCounts: [String: Int] = [:]
     private var fetchDelay: Duration?
+    private var failingContactReads = false
+    private var gatedFingerprints: Set<String> = []
 
     init(contacts: [Contact] = []) {
         base = InMemoryContactStore(contacts: contacts)
@@ -37,14 +39,17 @@ actor ScriptedMembersContactStore: ContactStoreProtocol {
     func script(_ members: [Contact], for group: ContactGroup) { scriptedMembers[group.localID] = members }
     func gate(_ group: ContactGroup) { gatedGroups.insert(group.localID) }
     func delayEveryFetch(by delay: Duration) { fetchDelay = delay }
+    func failContactReads() { failingContactReads = true }
+    func gateFingerprint(_ group: ContactGroup) { gatedFingerprints.insert(group.localID) }
 
     func waitUntilGated(_ group: ContactGroup) async {
         guard gates[group.localID] == nil else { return }
         await withCheckedContinuation { gateArrivalWaiters[group.localID, default: []].append($0) }
     }
 
-    func release(_ group: ContactGroup) {
-        gatedGroups.remove(group.localID)
+    func release(_ group: ContactGroup, keepGated: Bool = false) {
+        if !keepGated { gatedGroups.remove(group.localID) }
+        gatedFingerprints.remove(group.localID)
         gates.removeValue(forKey: group.localID)?.resume()
     }
 
@@ -66,7 +71,10 @@ actor ScriptedMembersContactStore: ContactStoreProtocol {
     }
 
     func fetchAll() async throws -> [Contact] { try await base.fetchAll() }
-    func fetch(localID: String) async throws -> Contact? { try await base.fetch(localID: localID) }
+    func fetch(localID: String) async throws -> Contact? {
+        if failingContactReads { throw FetchFailed() }
+        return try await base.fetch(localID: localID)
+    }
     func save(_ contact: Contact) async throws { try await base.save(contact) }
     func delete(localID: String) async throws { try await base.delete(localID: localID) }
     func create(_ contact: Contact) async throws -> Contact { try await base.create(contact) }
@@ -90,7 +98,13 @@ actor ScriptedMembersContactStore: ContactStoreProtocol {
     }
     func deleteGroup(localID: String) async throws { try await base.deleteGroup(localID: localID) }
     func fetchMemberLocalIDs(ofGroup groupLocalID: String) async throws -> [String] {
-        try await base.fetchMemberLocalIDs(ofGroup: groupLocalID)
+        if gatedFingerprints.contains(groupLocalID) {
+            await withCheckedContinuation { continuation in
+                gates[groupLocalID] = continuation
+                gateArrivalWaiters.removeValue(forKey: groupLocalID)?.forEach { $0.resume() }
+            }
+        }
+        return try await base.fetchMemberLocalIDs(ofGroup: groupLocalID)
     }
     func fetchGroupMemberships(contactLocalID: String) async throws -> [ContactGroup] {
         try await base.fetchGroupMemberships(contactLocalID: contactLocalID)
@@ -325,6 +339,39 @@ struct GroupMemberSnapshotTests {
     }
 
     // MARK: - Cost
+
+    @Test(arguments: [true, false])
+    func conflictingIdentitiesWithFailedRefetchAreReportedAsPartial(throwsOnRead: Bool) async throws {
+        let fixture = try makeFixture(contacts: [])
+        defer { fixture.cleanup() }
+        let repo = fixture.repository
+        let alpha = try await fixture.store.seedGroup(name: "Alpha")
+        let beta = try await fixture.store.seedGroup(name: "Beta")
+        await repo.loadGroups()
+        let folder = try await repo.createGroupFolder(name: "Folder", inFolder: nil)
+        try await repo.moveGroup(alpha, toFolder: folder)
+        try await repo.moveGroup(beta, toFolder: folder)
+        await fixture.store.script([person("ann")], for: alpha)
+        await fixture.store.script([person("ann", guessWhoID: annID)], for: beta)
+        // With no cached or stored contact, the authoritative read either
+        // returns nil or throws. Neither permits choosing a stale identity.
+        if throwsOnRead { await fixture.store.failContactReads() }
+
+        let snapshot = await repo.memberSnapshot(for: .folder(id: folder))
+
+        #expect(snapshot.contacts.isEmpty)
+        #expect(snapshot.contributingGroups.isEmpty)
+        #expect(snapshot.failedGroups == [alpha, beta])
+        #expect(snapshot.isPartial)
+        #expect(snapshot.emptiness == .unavailable)
+
+        // Good members remain visible even when another member is unresolved.
+        await fixture.store.script([person("ann"), person("bob")], for: alpha)
+        let partial = await repo.memberSnapshot(for: .folder(id: folder))
+        #expect(partial.contacts.map(\.localID) == ["bob"])
+        #expect(partial.failedGroups == [alpha, beta])
+        #expect(partial.isPartial)
+    }
 
     @Test
     func eachGroupIsFetchedOnceWithBoundedConcurrency() async throws {

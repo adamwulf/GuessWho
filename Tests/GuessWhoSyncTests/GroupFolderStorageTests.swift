@@ -398,6 +398,72 @@ struct GroupFolderStorageTests {
 
     // MARK: - Lossy envelopes
 
+    @Test(arguments: ["folderName", "parentFolder", "folderDeleted"], ["field", "type"])
+    func unknownReservedMetadataCannotBeReadOrOverwritten(cellKey: String, metadataKey: String) throws {
+        let store = InMemorySidecarStore()
+        let sync = makeSync(sidecars: store)
+        let folder = try sync.createGroupFolder(name: "Family", parentFolderID: otherFolder)
+        let key = folderKey(folder.id)
+        let original = try #require(try store.read(key))
+        var fields = original.fields
+        if cellKey == "folderDeleted" {
+            fields[cellKey] = SidecarCell(
+                value: GroupHierarchyCells.deletionValue(promotedToFolderID: otherFolder, createdAt: Date()),
+                modifiedAt: Date(), modifiedBy: "device-Z")
+        }
+        let cell = try #require(fields[cellKey])
+        guard case .object(var inner) = cell.value else {
+            Issue.record("Expected a structured reserved cell")
+            return
+        }
+        // The payload remains valid; only its meaning is unknown to this build.
+        for metadata in [JSONValue.string("from-the-future"), .null] {
+            inner[metadataKey] = metadata
+            for tombstoned in [false, true] {
+                fields[cellKey] = SidecarCell(
+                    value: .object(inner), modifiedAt: cell.modifiedAt,
+                    modifiedBy: cell.modifiedBy, deletedAt: tombstoned ? cell.modifiedAt : nil)
+                let unknown = SidecarEnvelope(entityID: original.entityID, fields: fields)
+                try store.write(unknown, at: key)
+
+                #expect(try sync.groupHierarchyRecords().unavailableKeys == [key])
+                #expect(throws: GroupHierarchyError.recordUnavailable(key)) {
+                    try sync.groupFolderRecord(id: folder.id)
+                }
+                #expect(throws: GroupHierarchyError.recordUnavailable(key)) {
+                    try sync.renameGroupFolder(id: folder.id, to: "Changed")
+                }
+                #expect(throws: GroupHierarchyError.recordUnavailable(key)) {
+                    try sync.setGroupFolderParent(id: folder.id, parentFolderID: nil)
+                }
+                #expect(try SidecarEnvelopeCodec.encode(#require(store.read(key))) == SidecarEnvelopeCodec.encode(unknown))
+            }
+        }
+    }
+
+    @Test(arguments: ["field", "type"])
+    func unknownGroupPlacementMetadataCannotBeOverwritten(metadataKey: String) throws {
+        let store = InMemorySidecarStore()
+        let sync = makeSync(sidecars: store)
+        let identity = try mintIdentity(sync)
+        let key = groupKey(identity.id)
+        try sync.setGroupPlacement(identityID: identity.id, parentFolderID: otherFolder)
+        let original = try #require(try store.read(key))
+        var fields = original.fields
+        let cell = try #require(fields[GroupHierarchyCells.parentFolderKey])
+        guard case .object(var inner) = cell.value else { return }
+        inner[metadataKey] = .string("from-the-future")
+        fields[GroupHierarchyCells.parentFolderKey] = SidecarCell(
+            value: .object(inner), modifiedAt: cell.modifiedAt, modifiedBy: cell.modifiedBy)
+        try store.write(SidecarEnvelope(entityID: original.entityID, fields: fields), at: key)
+
+        #expect(try sync.groupHierarchyRecords().unavailableKeys == [key])
+        #expect(throws: GroupHierarchyError.recordUnavailable(key)) {
+            try sync.setGroupPlacement(identityID: identity.id, parentFolderID: nil)
+        }
+        #expect(try SidecarEnvelopeCodec.encode(#require(store.read(key))) == SidecarEnvelopeCodec.encode(SidecarEnvelope(entityID: original.entityID, fields: fields)))
+    }
+
     /// Raw envelope bytes whose `fields` hold one good name cell and one cell
     /// malformed at the CELL level (a bad `modifiedAt`), which the codec drops.
     private func lossyFolderBytes(id: String) -> Data {

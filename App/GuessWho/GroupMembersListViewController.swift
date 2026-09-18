@@ -86,21 +86,23 @@ final class GroupMembersListViewController: UIViewController {
 
     /// The last snapshot this list accepted. Drives the banner and the empty
     /// state, and tells the reload observer whether the hierarchy moved since.
-    private var loadedSnapshot: GroupMemberSnapshot?
+    private var loadedSnapshot: GroupMemberSnapshot? { memberLoader.snapshot }
+
+    private lazy var memberLoader: GroupMemberListLoader = {
+        let loader = GroupMemberListLoader(scope: scope, repository: repository)
+        loader.onChange = { [weak self] in self?.membersDidChange() }
+        return loader
+    }()
 
     /// True while a load is in flight. The rows on screen may then be out of
     /// date, so the row menu's bulk "Add to Group" is withheld until it lands.
-    private var isLoadingMembers = false
+    private var isLoadingMembers: Bool { memberLoader.status != .loaded }
 
     private let emptyLabel = UILabel()
     private let activityIndicator = UIActivityIndicatorView(style: .medium)
     private let partialBanner = PartialMembersBanner()
 
-    private var hasLoaded = false
     private var didReportDisappearance = false
-
-    /// Guards `loadMembers()` against an out-of-order fetch — see that method.
-    private var membersLoadID = UUID()
 
     private var prefetchTasks: [ContactID: Task<Void, Never>] = [:]
 
@@ -180,7 +182,7 @@ final class GroupMembersListViewController: UIViewController {
         observeRepositoryReloads()
 
         applySnapshot(animated: false)
-        Task { await loadMembers() }
+        loadMembers()
     }
 
     override func viewWillAppear(_ animated: Bool) {
@@ -190,46 +192,28 @@ final class GroupMembersListViewController: UIViewController {
 
     // MARK: - Members fetch
 
-    private func loadMembers() async {
-        // Newest-request-wins: the initial load and a membership-change refresh
-        // can be in flight together, and Contacts can answer them out of order.
-        // Without this, an older member set could land last and drop the contact
-        // that was just added.
-        let myLoadID = UUID()
-        membersLoadID = myLoadID
-        isLoadingMembers = true
+    private func loadMembers() {
+        memberLoader.reload()
+    }
 
-        // A folder's members come from several fetches, which is not a
-        // transaction: a membership write, a contact edit, or a folder move can
-        // land between them. The repository says whether anything the snapshot
-        // depends on moved while it was read; one that spans a change is read
-        // again, never shown. Bounded, so a store that never settles still ends
-        // in the freshest result rather than a spinner.
-        var snapshot = await repository.memberSnapshot(for: scope)
-        var attempts = 1
-        while membersLoadID == myLoadID, !repository.isCurrent(snapshot), attempts < Self.maxLoadAttempts {
-            snapshot = await repository.memberSnapshot(for: scope)
-            attempts += 1
+    private func membersDidChange() {
+        if memberLoader.status == .disappeared {
+            if !didReportDisappearance {
+                didReportDisappearance = true
+                scopeDidDisappear()
+            }
+            return
         }
-        guard membersLoadID == myLoadID else { return }
-
-        // The repository already returns each person once, keyed by the opaque
-        // `ContactID` every other list keys its rows by.
-        var byID: [ContactID: Contact] = [:]
-        for member in snapshot.contacts {
-            byID[member.contactID] = member
+        // The loader replaces this snapshot only after checking revisions and
+        // scope availability. Refreshes and unavailable records retain it.
+        if let snapshot = loadedSnapshot {
+            membersByID = Dictionary(uniqueKeysWithValues: snapshot.contacts.map { ($0.contactID, $0) })
         }
-        membersByID = byID
-        loadedSnapshot = snapshot
-        hasLoaded = true
-        isLoadingMembers = false
         applySnapshot(animated: true)
     }
 
-    private static let maxLoadAttempts = 3
-
     @objc private func retryLoadMembers() {
-        Task { await loadMembers() }
+        loadMembers()
     }
 
     // MARK: - Sort menu
@@ -380,7 +364,7 @@ final class GroupMembersListViewController: UIViewController {
                 guard let self, let changedGroupID, self.covers(groupLocalID: changedGroupID) else {
                     return
                 }
-                Task { await self.loadMembers() }
+                self.loadMembers()
             }
         }
     }
@@ -403,20 +387,8 @@ final class GroupMembersListViewController: UIViewController {
     /// something this list depends on actually moved, so a sort flip or a star
     /// toggle elsewhere does not refetch.
     private func hierarchyOrContactsMayHaveChanged() {
-        if case .folder(let id) = scope, repository.groupFolderTree.folders[id] == nil {
-            // Only once the tree has loaded: an empty tree at launch is not a
-            // deleted folder.
-            if hasLoaded, !didReportDisappearance {
-                didReportDisappearance = true
-                scopeDidDisappear()
-            }
-            return
-        }
         updateTitle()
-        guard let loadedSnapshot, !repository.isCurrent(loadedSnapshot), !isLoadingMembers else {
-            return
-        }
-        Task { await loadMembers() }
+        memberLoader.repositoryDidChange()
     }
 
     private func updateTitle() {
@@ -584,7 +556,8 @@ final class GroupMembersListViewController: UIViewController {
         let presentation = GroupMemberListPresentation.make(
             snapshot: loadedSnapshot,
             visibleRowCount: dataSource.snapshot().numberOfItems,
-            searchQuery: searchQuery)
+            searchQuery: searchQuery,
+            scopeUnavailable: memberLoader.status == .unavailable)
         emptyLabel.text = presentation.emptyMessage
         emptyLabel.isHidden = presentation.emptyMessage == nil
         if presentation.showsSpinner {
@@ -592,6 +565,9 @@ final class GroupMembersListViewController: UIViewController {
         } else {
             activityIndicator.stopAnimating()
         }
+        partialBanner.setMessage(memberLoader.status == .unavailable
+            ? GroupMemberListPresentation.unavailableBannerMessage
+            : GroupMemberListPresentation.partialBannerMessage)
         setPartialBannerVisible(presentation.showsPartialBanner)
     }
 
@@ -659,6 +635,8 @@ private final class PartialMembersBanner: UIView {
             stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -8),
         ])
     }
+
+    func setMessage(_ message: String) { label.text = message }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) {

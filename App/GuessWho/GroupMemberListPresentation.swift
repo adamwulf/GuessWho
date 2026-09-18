@@ -19,12 +19,19 @@ struct GroupMemberListPresentation: Equatable {
     var showsPartialBanner: Bool
 
     static let partialBannerMessage = "Some groups couldn’t be loaded."
+    static let unavailableBannerMessage = "Couldn’t refresh this folder. Members may be out of date."
 
     static func make(
         snapshot: GroupMemberSnapshot?,
         visibleRowCount: Int,
-        searchQuery: String
+        searchQuery: String,
+        scopeUnavailable: Bool = false
     ) -> GroupMemberListPresentation {
+        if scopeUnavailable {
+            return GroupMemberListPresentation(
+                emptyMessage: visibleRowCount == 0 ? "Couldn’t Load Folder" : nil,
+                showsSpinner: false, showsPartialBanner: true)
+        }
         guard let snapshot else {
             return GroupMemberListPresentation(
                 emptyMessage: nil, showsSpinner: visibleRowCount == 0, showsPartialBanner: false)

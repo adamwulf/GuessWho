@@ -62,8 +62,8 @@ drops is handled differently:
 - conflict reconciliation **refuses to fold it**: the resolver throws, so the
   store writes nothing and keeps every version for repair[^12].
 
-A reserved cell that is structurally valid but carries a payload this build
-cannot trust makes the record unavailable too; it is never read as though the
+A reserved cell that is structurally valid but carries an unknown inner field,
+type, or payload makes the record unavailable too; it is never read as though the
 cell were absent[^13]. Every other cell in these envelopes stays opaque and is
 carried through untouched, per the
 [sidecar forward-compatibility contract](sidecar-compatibility.md).
@@ -173,7 +173,9 @@ returns a `GroupMemberSnapshot`[^33]. It never throws and mints nothing.
 - One person reached through several groups is normalized, for that request
   only, by the Contacts handle the fetches share, to the repository's current
   record; when two fetches disagree about a contact the repository does not
-  cache, the record is re-read[^33]. The union is then taken by `ContactID`.
+  cache, the record is re-read. If that read fails or returns no contact, the
+  unresolved member is omitted and its contributing groups are reported as
+  partial, rather than choosing a stale identity[^33]. The union is then taken by `ContactID`.
   Contacts are never merged by name or email. This keeps the
   [identity contract](contact-identity.md): the handle is never a key the app
   sees.
@@ -220,7 +222,11 @@ pure types, tested in the app bundle (`GroupFolderPresentationTests`):
   a "Some groups couldn’t be loaded." banner with Retry for a partial result,
   and a return to the tree when its folder is deleted[^43][^44]. Reloading also
   reconfigures retained rows whose contact contents changed, so edits repaint
-  without replacing their row identities[^43].
+  without replacing their row identities[^43]. The loader preserves the last
+  accepted rows while retrying stale reads, pausing briefly after three stale
+  reads to avoid a tight loop. It checks scope availability after the first
+  load too: only a deletion marker navigates away. An unavailable folder keeps
+  the accepted rows with a warning and Retry until it can be read again[^47].
 - **Add to Group** nests folders as submenus; only groups are choices, and a
   folder with no group beneath it is left out[^45].
 
@@ -273,3 +279,4 @@ onto the tree.
 [^44]: [Member list wording rules](../App/GuessWho/GroupMemberListPresentation.swift:GroupMemberListPresentation.make)
 [^45]: [Add to Group nesting](../App/GuessWho/AddToGroupMenu.swift:AddToGroupMenu.groupElements)
 [^46]: [Folder-member cursor validation](../Sources/GuessWhoMCPCore/ToolDispatcher.swift:ToolDispatcher.foldersListMembers)
+[^47]: [Member load validation and retry](../Sources/GuessWhoSync/GroupMemberListLoader.swift:GroupMemberListLoader)

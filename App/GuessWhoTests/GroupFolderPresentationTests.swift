@@ -389,6 +389,22 @@ struct GroupFolderPresentationTests {
 
     // MARK: - Member list wording
 
+    @Test
+    func unavailableFolderNeverLooksEmptyOrKeepsTheInitialSpinner() {
+        let initial = GroupMemberListPresentation.make(
+            snapshot: nil, visibleRowCount: 0, searchQuery: "", scopeUnavailable: true)
+        #expect(initial.emptyMessage == "Couldn’t Load Folder")
+        #expect(initial.showsSpinner == false)
+        #expect(initial.showsPartialBanner)
+
+        let previous = GroupMemberListPresentation.make(
+            snapshot: snapshot(groups: [], contacts: [Contact(givenName: "Ann")]),
+            visibleRowCount: 1, searchQuery: "", scopeUnavailable: true)
+        #expect(previous.emptyMessage == nil)
+        #expect(previous.showsSpinner == false)
+        #expect(previous.showsPartialBanner)
+    }
+
     private func snapshot(
         groups: [ContactGroup], contacts: [Contact] = [], failed: [ContactGroup] = []
     ) -> GroupMemberSnapshot {
