@@ -4379,7 +4379,7 @@ public actor ToolDispatcher {
         case .event: return 0
         case .place: return 1
         case .contact: return 2
-        case .guide, .group, .link: return 3
+        case .guide, .group, .groupFolder, .link: return 3
         }
     }
 
