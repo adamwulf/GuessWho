@@ -2605,16 +2605,17 @@ public final class ContactsRepository: NSObject {
     /// of the tree because iCloud is slow. When the corpus cannot be enumerated
     /// at all, the previous records stand and only the groups are refreshed.
     /// Read-only over sidecars, so it is safe on the watcher path.
-    private func reloadGroupHierarchy() async {
+    @discardableResult
+    private func reloadGroupHierarchy() async -> Bool {
         guard let sync else {
             rebuildGroupFolderTree()
-            return
+            return false
         }
         hierarchyLoadGeneration &+= 1
         let generation = hierarchyLoadGeneration
         do {
             var records: GroupHierarchyRecords = try await sync.groupHierarchyRecords()
-            guard generation == hierarchyLoadGeneration else { return }
+            guard generation == hierarchyLoadGeneration else { return false }
             for key in records.unreadableKeys {
                 switch key.kind {
                 case .groupFolder:
@@ -2631,12 +2632,24 @@ public final class ContactsRepository: NSObject {
             }
             hierarchyRecords = records
         } catch {
-            guard generation == hierarchyLoadGeneration else { return }
+            guard generation == hierarchyLoadGeneration else { return false }
+            hierarchyRecords.enumerationFailed = true
             Self.groupHierarchyLog.warning(
                 "group hierarchy read failed; keeping the last good records",
                 metadata: ["error": "\(error.localizedDescription)"])
+            rebuildGroupFolderTree()
+            return false
         }
         rebuildGroupFolderTree()
+        return true
+    }
+
+    /// Watchers may keep provisional records for display, but a mutation must
+    /// never validate against them after a failed or superseded corpus read.
+    private func requireFreshGroupHierarchy() async throws {
+        guard await reloadGroupHierarchy() else {
+            throw GroupHierarchyError.hierarchyUnavailable
+        }
     }
 
     /// Rebuild the tree from the records already in hand. No I/O: this is what
@@ -2670,7 +2683,7 @@ public final class ContactsRepository: NSObject {
     ) async throws -> String {
         try await performSerializedGroupMutation {
             guard let sync = self.sync else { throw SidecarUnavailableError() }
-            await self.reloadGroupHierarchy()
+            try await self.requireFreshGroupHierarchy()
             let parent = try self.validatedDestination(parentFolderID)
             let folder = try sync.createGroupFolder(name: name, parentFolderID: parent, id: id)
             await self.reloadGroupHierarchy()
@@ -2683,7 +2696,7 @@ public final class ContactsRepository: NSObject {
     public func renameGroupFolder(id: String, to name: String) async throws {
         try await performSerializedGroupMutation {
             guard let sync = self.sync else { throw SidecarUnavailableError() }
-            await self.reloadGroupHierarchy()
+            try await self.requireFreshGroupHierarchy()
             let folderID = try self.validatedLiveFolder(id)
             guard try sync.renameGroupFolder(id: folderID, to: name) else { return }
             await self.reloadGroupHierarchy()
@@ -2698,7 +2711,7 @@ public final class ContactsRepository: NSObject {
     public func moveGroupFolder(id: String, toFolder parentFolderID: String?) async throws {
         try await performSerializedGroupMutation {
             guard let sync = self.sync else { throw SidecarUnavailableError() }
-            await self.reloadGroupHierarchy()
+            try await self.requireFreshGroupHierarchy()
             let folderID = try self.validatedLiveFolder(id)
             let parent = try self.validatedDestination(parentFolderID)
             if let parent {
@@ -2719,7 +2732,7 @@ public final class ContactsRepository: NSObject {
     public func deleteGroupFolder(id: String) async throws {
         try await performSerializedGroupMutation {
             guard let sync = self.sync else { throw SidecarUnavailableError() }
-            await self.reloadGroupHierarchy()
+            try await self.requireFreshGroupHierarchy()
             let folderID = try self.validatedLiveFolder(id)
             let promotedTo = self.groupFolderTree.folders[folderID]?.parentFolderID
             guard try sync.markGroupFolderDeleted(id: folderID, promotedToFolderID: promotedTo) else {
@@ -2741,7 +2754,7 @@ public final class ContactsRepository: NSObject {
     public func moveGroup(_ group: ContactGroup, toFolder parentFolderID: String?) async throws {
         try await performSerializedGroupMutation {
             guard let sync = self.sync else { throw SidecarUnavailableError() }
-            await self.reloadGroupHierarchy()
+            try await self.requireFreshGroupHierarchy()
             let parent = try self.validatedDestination(parentFolderID)
 
             let identity: GroupIdentity
@@ -2764,7 +2777,7 @@ public final class ContactsRepository: NSObject {
             // Identity adoption/fingerprinting awaits Contacts. A peer may
             // delete or invalidate the destination while that read is in flight.
             // Re-read, then validate and write without another suspension.
-            await self.reloadGroupHierarchy()
+            try await self.requireFreshGroupHierarchy()
             _ = try self.validatedDestination(parent)
             let key = SidecarKey(kind: .group, id: identity.id)
             guard !self.hierarchyRecords.unavailableKeys.contains(key),
@@ -2903,6 +2916,7 @@ public final class ContactsRepository: NSObject {
     /// Only a readable deletion marker lets an open member list leave its scope.
     public func memberScopeAvailability(for scope: GroupMemberScope) -> GroupMemberScopeAvailability {
         guard case .folder(let rawID) = scope else { return .available }
+        guard !hierarchyRecords.enumerationFailed else { return .unavailable }
         let id = rawID.lowercased()
         let key = SidecarKey(kind: .groupFolder, id: id)
         guard !hierarchyRecords.unavailableKeys.contains(key),
@@ -2948,11 +2962,14 @@ public final class ContactsRepository: NSObject {
     /// `ContactID`. Contacts are never merged by name or email.
     public func memberSnapshot(for scope: GroupMemberScope) async -> GroupMemberSnapshot {
         let revisions = memberRevisions
+        let hierarchyIsComplete: Bool
         let scopeGroups: [ContactGroup]
         switch scope {
         case .group(let group):
+            hierarchyIsComplete = true
             scopeGroups = [group]
         case .folder(let id):
+            hierarchyIsComplete = hierarchyRecords.isComplete
             scopeGroups = groupFolderTree
                 .descendantGroupLocalIDs(ofFolder: id.lowercased())
                 .compactMap { group(localID: $0) }
@@ -3018,7 +3035,8 @@ public final class ContactsRepository: NSObject {
             contacts: contacts,
             contributingGroups: contributingGroups,
             failedGroups: scopeGroups.filter { failedGroups.contains($0) },
-            revisions: revisions)
+            revisions: revisions,
+            hierarchyIsComplete: hierarchyIsComplete)
     }
 
     /// Fetch each group's members, at most `memberFetchConcurrency` at a time,

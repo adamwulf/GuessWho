@@ -22,7 +22,7 @@ enum GroupFolderErrorPresentation {
                 return "That folder no longer exists."
             case .wouldCreateCycle:
                 return "A folder can’t be moved into itself or into a folder inside it."
-            case .identityNotFound, .lossyEnvelope, .recordUnavailable:
+            case .identityNotFound, .lossyEnvelope, .recordUnavailable, .hierarchyUnavailable:
                 return "This item’s saved information can’t be read right now. Try again later."
             case .timestampOverflow:
                 return "This change couldn’t be saved. Check this device’s date and time, then try again."

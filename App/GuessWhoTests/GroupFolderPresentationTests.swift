@@ -406,7 +406,8 @@ struct GroupFolderPresentationTests {
     }
 
     private func snapshot(
-        groups: [ContactGroup], contacts: [Contact] = [], failed: [ContactGroup] = []
+        groups: [ContactGroup], contacts: [Contact] = [], failed: [ContactGroup] = [],
+        hierarchyIsComplete: Bool = true
     ) -> GroupMemberSnapshot {
         GroupMemberSnapshot(
             scope: .folder(id: "family"),
@@ -414,7 +415,8 @@ struct GroupFolderPresentationTests {
             contacts: contacts,
             contributingGroups: [:],
             failedGroups: failed,
-            revisions: .init(hierarchy: 0, membership: 0, contactData: 0))
+            revisions: .init(hierarchy: 0, membership: 0, contactData: 0),
+            hierarchyIsComplete: hierarchyIsComplete)
     }
 
     @Test
@@ -430,6 +432,11 @@ struct GroupFolderPresentationTests {
         let noGroups = GroupMemberListPresentation.make(
             snapshot: snapshot(groups: []), visibleRowCount: 0, searchQuery: "")
         #expect(noGroups.emptyMessage == "No Groups in This Folder")
+
+        let unknownGroups = GroupMemberListPresentation.make(
+            snapshot: snapshot(groups: [], hierarchyIsComplete: false), visibleRowCount: 0, searchQuery: "")
+        #expect(unknownGroups.emptyMessage == "Couldn’t Load Members")
+        #expect(unknownGroups.showsPartialBanner)
 
         let noMembers = GroupMemberListPresentation.make(
             snapshot: snapshot(groups: [work]), visibleRowCount: 0, searchQuery: "")

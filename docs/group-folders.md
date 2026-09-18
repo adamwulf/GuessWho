@@ -144,6 +144,8 @@ and expansion[^26]. Collapsing changes only which rows appear — never
 
 All folder commands run on the repository's group-mutation chain. Each re-reads
 the hierarchy, validates against it, and writes with no suspension between[^27].
+Failed or superseded command reads abort the mutation; retained display data
+cannot authorize a write. A later retry must obtain a fresh read[^27].
 
 - A destination must be a live, readable folder[^28].
 - A folder cannot move into its own subtree, and a move is also refused when the
@@ -182,6 +184,9 @@ returns a `GroupMemberSnapshot`[^33]. It never throws and mints nothing.
 - A group whose fetch fails is reported in `failedGroups`; `emptiness` separates
   a folder with no groups, groups with no members, and nothing to show because a
   fetch failed[^35]. A partial result is never labeled as complete.
+- A folder read is also partial when hierarchy enumeration, a placement, or a
+  folder record is unavailable. Missing hierarchy can hide whole groups, so
+  `hierarchyIsComplete` records this even when `failedGroups` is empty[^33][^35].
 - A multi-fetch read is not a transaction. The snapshot records the hierarchy,
   membership, and contact-data revisions it started from, and `isCurrent(_:)`
   says whether any moved[^36]. A caller discards a snapshot that spans a change
@@ -212,7 +217,8 @@ pure types, tested in the app bundle (`GroupFolderPresentationTests`):
   member list over every group beneath it. On Mac Catalyst a folder's single
   click is held for the double-click interval, because opening pushes the member
   list over the tree and a double click (expand or collapse) has to be ruled out
-  first[^40].
+  first[^40]. Returning from members preserves the selected tree row, including
+  the destination used by New Folder and New Group[^37].
 - **Drag and drop** is local and single-item. A folder's center means move
   inside. A gap means out to the top level **only** at the boundary of a
   top-level branch: siblings are alphabetical, so a gap inside a folder would

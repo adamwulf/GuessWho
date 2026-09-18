@@ -1075,7 +1075,7 @@ public actor ToolDispatcher {
         case .identityNotFound:
             code = .notFound
             message = WireErrorMessage.notFoundGroup
-        case .lossyEnvelope, .recordUnavailable, .timestampOverflow:
+        case .lossyEnvelope, .recordUnavailable, .hierarchyUnavailable, .timestampOverflow:
             code = .writeFailed
             message = "The folder or group information can't be read right now. Try again later."
         }

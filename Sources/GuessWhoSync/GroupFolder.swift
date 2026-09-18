@@ -33,6 +33,8 @@ public enum GroupHierarchyError: Error, Equatable, Sendable {
     /// string, a parent that is neither null nor a UUID, …). The record is
     /// unavailable rather than treated as if that cell were absent.
     case recordUnavailable(SidecarKey)
+    /// A mutation could not obtain a fresh hierarchy (failed or superseded read).
+    case hierarchyUnavailable
     /// No timestamp strictly later than the observed assignments can be
     /// represented in the persisted format.
     case timestampOverflow
@@ -132,15 +134,18 @@ public struct GroupHierarchyRecords: Sendable, Equatable {
     /// that carries one. An identity with no `parentFolder` cell is absent.
     public var groupPlacements: [String: FolderPlacement]
     /// Keys excluded from `folders` / `groupPlacements` because their data
-    /// cannot be trusted: a lossy envelope or a malformed reserved cell. The
-    /// tree shows the last good state for these rather than guessing.
+    /// cannot be trusted: a lossy envelope or a malformed reserved cell. These
+    /// records are omitted and the tree is marked incomplete.
     public var unavailableKeys: Set<SidecarKey>
     /// Keys whose read FAILED (not downloaded yet, timed out, …). Their content
     /// is unknown — which is not the same as absent — so a snapshot with any of
     /// these is incomplete and must never be read as "that folder is gone."
     public var unreadableKeys: Set<SidecarKey>
 
-    public var isComplete: Bool { unreadableKeys.isEmpty }
+    /// The latest corpus enumeration failed; retained records are provisional.
+    public var enumerationFailed: Bool = false
+
+    public var isComplete: Bool { !enumerationFailed && unreadableKeys.isEmpty && unavailableKeys.isEmpty }
 
     public init(
         folders: [GroupFolderRecord] = [],

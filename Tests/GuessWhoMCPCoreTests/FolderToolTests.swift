@@ -285,6 +285,29 @@ final class FolderToolTests: XCTestCase {
         XCTAssertEqual(page.items.count, 2)
     }
 
+    func testUnavailablePlacementIsReportedAsPartialOnTheWire() async throws {
+        let f = try await fixture()
+        defer { f.cleanUp() }
+        let (folderID, hidden) = try await folderWithDisjointGroups(f)
+        let identity = try XCTUnwrap(try f.sync.allGroupIdentities().first { $0.name == GroupIdentity.normalizedName(hidden.name) })
+        let key = SidecarKey(kind: .group, id: identity.id)
+        let original = try XCTUnwrap(try f.sidecars.read(key))
+        var fields = original.fields
+        fields["parentFolder"] = SidecarCell(value: .string("future format"), modifiedAt: Date(), modifiedBy: "B")
+        try f.sidecars.write(SidecarEnvelope(entityID: key.id, fields: fields), at: key)
+
+        let partial = try members(await call(f, .foldersListMembers, ["folderId": .string(folderID)]))
+        XCTAssertTrue(partial.partial)
+        XCTAssertEqual(partial.items.count, 2)
+        // The unreadable placement cannot be assigned to this folder reliably.
+        XCTAssertTrue(partial.unloadedGroupIds.isEmpty)
+
+        try f.sidecars.write(original, at: key)
+        let recovered = try members(await call(f, .foldersListMembers, ["folderId": .string(folderID)]))
+        XCTAssertFalse(recovered.partial)
+        XCTAssertEqual(recovered.items.count, 3)
+    }
+
     func testFolderIDsRejectedEverywhereAGroupIsRequired() async throws {
         let f = try await fixture()
         defer { f.cleanUp() }

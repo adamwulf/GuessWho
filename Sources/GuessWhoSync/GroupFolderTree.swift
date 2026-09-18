@@ -114,8 +114,8 @@ public struct GroupFolderTree: Sendable, Equatable {
     /// Sorted children per folder id; top level under `nil`'s stand-in below.
     private var childrenByParent: [String: [NodeID]] = [:]
     public private(set) var rootChildren: [NodeID] = []
-    /// False when some hierarchy record could not be read, so nodes may be
-    /// missing or provisionally placed for that reason alone.
+    /// False when enumeration failed or a hierarchy record cannot be read or
+    /// trusted, so nodes may be missing or provisionally placed for that reason.
     public private(set) var isComplete = true
     /// Records excluded because their data cannot be trusted.
     public private(set) var unavailableKeys: Set<SidecarKey> = []

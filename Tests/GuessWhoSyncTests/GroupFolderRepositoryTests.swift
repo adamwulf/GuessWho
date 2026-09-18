@@ -455,7 +455,7 @@ struct GroupFolderRepositoryTests {
 }
 
 /// Test-only sidecar store whose writes to chosen keys fail.
-final class FailingWriteSidecarStore: SidecarStoreProtocol {
+class FailingWriteSidecarStore: SidecarStoreProtocol {
     struct WriteFailed: Error {}
 
     private let inner: InMemorySidecarStore
@@ -482,4 +482,59 @@ final class FailingWriteSidecarStore: SidecarStoreProtocol {
         try inner.deleteBlob(blobId: blobId, for: key)
     }
     func blobIds(for key: SidecarKey) throws -> [String] { try inner.blobIds(for: key) }
+}
+
+/// Controls corpus enumeration independently of record reads. One read can be
+/// held while a watcher publishes a newer hierarchy, without blocking main.
+final class ScriptedHierarchySidecarStore: FailingWriteSidecarStore {
+    struct EnumerationFailed: Error {}
+    private let lock = NSLock()
+    private var fails = false
+    private var nextGate: ReadGate?
+    var failEnumeration: Bool {
+        get { lock.withLock { fails } }
+        set { lock.withLock { fails = newValue } }
+    }
+    func gateNextEnumeration() -> ReadGate {
+        let gate = ReadGate()
+        lock.withLock { nextGate = gate }
+        return gate
+    }
+    override func allKeys() throws -> [SidecarKey] {
+        let (fail, gate) = lock.withLock {
+            let result = (fails, nextGate)
+            nextGate = nil
+            return result
+        }
+        gate?.enterAndWait()
+        if fail { throw EnumerationFailed() }
+        return try super.allKeys()
+    }
+
+    final class ReadGate {
+        private let lock = NSLock()
+        private let releaseSignal = DispatchSemaphore(value: 0)
+        private var entered = false
+        private var waiter: CheckedContinuation<Void, Never>?
+        func enterAndWait() {
+            let continuation = lock.withLock {
+                entered = true
+                defer { waiter = nil }
+                return waiter
+            }
+            continuation?.resume()
+            releaseSignal.wait()
+        }
+        func waitUntilEntered() async {
+            await withCheckedContinuation { continuation in
+                let alreadyEntered = lock.withLock {
+                    if entered { return true }
+                    waiter = continuation
+                    return false
+                }
+                if alreadyEntered { continuation.resume() }
+            }
+        }
+        func release() { releaseSignal.signal() }
+    }
 }

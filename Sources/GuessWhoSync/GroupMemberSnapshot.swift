@@ -13,9 +13,10 @@ public enum GroupMemberScope: Sendable, Hashable {
 /// say honestly what it is showing.
 ///
 /// A folder's members come from several Contacts fetches, which is a
-/// best-effort read and not a transaction. Two things make that safe to show.
-/// `failedGroups` names any group whose fetch failed, so a partial union is
-/// never presented as the whole answer. `revisions` records the repository
+/// best-effort read and not a transaction. `failedGroups` names any group whose
+/// fetch failed, and `hierarchyIsComplete` says whether unavailable placements
+/// could hide other groups, so a partial union is never presented as the whole
+/// answer. `revisions` records the repository
 /// state the read started from; `ContactsRepository.isCurrent(_:)` tells the
 /// caller whether that state moved while the fetches were in flight, in which
 /// case the snapshot must be discarded and read again rather than published.
@@ -53,6 +54,10 @@ public struct GroupMemberSnapshot: Sendable {
     /// `contacts` is a partial result. Always in scope/tree order.
     public let failedGroups: [ContactGroup]
     public let revisions: Revisions
+    /// False when unavailable hierarchy records may hide descendant groups.
+    /// Their membership cannot always be attributed to a known group, so this
+    /// uncertainty is separate from `failedGroups`.
+    public let hierarchyIsComplete: Bool
 
     public init(
         scope: GroupMemberScope,
@@ -60,7 +65,8 @@ public struct GroupMemberSnapshot: Sendable {
         contacts: [Contact],
         contributingGroups: [ContactID: [ContactGroup]],
         failedGroups: [ContactGroup],
-        revisions: Revisions
+        revisions: Revisions,
+        hierarchyIsComplete: Bool = true
     ) {
         self.scope = scope
         self.groups = groups
@@ -68,11 +74,12 @@ public struct GroupMemberSnapshot: Sendable {
         self.contributingGroups = contributingGroups
         self.failedGroups = failedGroups
         self.revisions = revisions
+        self.hierarchyIsComplete = hierarchyIsComplete
     }
 
     /// True when some group's members are missing from `contacts`. A partial
     /// snapshot must never be labeled with a complete count or as "no members."
-    public var isPartial: Bool { !failedGroups.isEmpty }
+    public var isPartial: Bool { !hierarchyIsComplete || !failedGroups.isEmpty }
 
     /// Why `contacts` is empty, when it is — a list words each case differently.
     public enum Emptiness: Sendable, Equatable {
@@ -89,6 +96,7 @@ public struct GroupMemberSnapshot: Sendable {
 
     public var emptiness: Emptiness {
         if !contacts.isEmpty { return .notEmpty }
+        if isPartial { return .unavailable }
         if groups.isEmpty { return .noGroups }
         return failedGroups.isEmpty ? .noMembers : .unavailable
     }

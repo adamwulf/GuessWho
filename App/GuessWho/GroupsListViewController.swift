@@ -189,10 +189,8 @@ final class GroupsListViewController: UIViewController {
         applyPendingSelection()
     }
 
-    override func viewWillAppear(_ animated: Bool) {
-        super.viewWillAppear(animated)
-        deselectSelectedTableRowOnNavigationReturn(in: tableView, animated: animated)
-    }
+    // Keep selection when returning from members. Besides restoring context,
+    // the selected row determines where the + menu creates a folder or group.
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
@@ -543,10 +541,14 @@ final class GroupsListViewController: UIViewController {
     /// New Folder / New Group. The default destination is the selected folder,
     /// the selected group's folder, or the top level — and each prompt says
     /// which, so the user confirms it rather than discovering it.
-    private func addMenuElements() -> [UIMenuElement] {
+    var creationParentFolderID: String? {
         let selection = tableView.indexPathForSelectedRow.flatMap { dataSource.itemIdentifier(for: $0) }
-        let parent = GroupFolderDestination.defaultParent(
+        return GroupFolderDestination.defaultParent(
             forSelection: selection, in: repository.groupFolderTree)
+    }
+
+    private func addMenuElements() -> [UIMenuElement] {
+        let parent = creationParentFolderID
         return [
             UIAction(title: "New Folder", image: UIImage(systemName: "folder.badge.plus")) { [weak self] _ in
                 self?.groupContextMenu.promptForNewFolder(inFolder: parent)
