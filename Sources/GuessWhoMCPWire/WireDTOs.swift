@@ -596,11 +596,64 @@ public struct WireGroup: Codable, Sendable {
     public let id: String
     public let name: String
     public let isFavorite: Bool
+    public let parentFolderId: String?
 
-    public init(id: String, name: String, isFavorite: Bool) {
+    public init(id: String, name: String, isFavorite: Bool, parentFolderId: String? = nil) {
         self.id = id
         self.name = name
         self.isFavorite = isFavorite
+        self.parentFolderId = parentFolderId
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, isFavorite, parentFolderId
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(name, forKey: .name)
+        try container.encode(isFavorite, forKey: .isFavorite)
+        try container.encode(parentFolderId, forKey: .parentFolderId)
+    }
+}
+
+/// A folder and the folder it is in, or nil for the top level.
+public struct WireFolder: Codable, Sendable {
+    public let id: String
+    public let name: String
+    public let parentFolderId: String?
+
+    public init(id: String, name: String, parentFolderId: String?) {
+        self.id = id
+        self.name = name
+        self.parentFolderId = parentFolderId
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, parentFolderId
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(name, forKey: .name)
+        try container.encode(parentFolderId, forKey: .parentFolderId)
+    }
+}
+
+/// A page of folder members, including any groups that could not be loaded.
+public struct WireFolderMemberPage: Codable, Sendable {
+    public let items: [WireContactSummary]
+    public let nextCursor: String?
+    public let partial: Bool
+    public let unloadedGroupIds: [String]
+
+    public init(items: [WireContactSummary], nextCursor: String?, partial: Bool, unloadedGroupIds: [String]) {
+        self.items = items
+        self.nextCursor = nextCursor
+        self.partial = partial
+        self.unloadedGroupIds = unloadedGroupIds
     }
 }
 

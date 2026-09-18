@@ -109,6 +109,7 @@ actor RecordingContactStore: ContactStoreProtocol {
     private var pendingPhotoReadFailure: Error?
     private var photoWriteReplacementData: Data?
     private var representDeletedPhotoAsEmptyData = false
+    private var memberReadFailures: Set<String> = []
     private var membershipFailureByLocalID: [String: Error] = [:]
     private var authorizationStatusOverride: StoreAuthorizationStatus?
 
@@ -151,6 +152,14 @@ actor RecordingContactStore: ContactStoreProtocol {
     /// production `ContactsRepository`.
     func failMembership(forLocalID localID: String, with error: Error) {
         membershipFailureByLocalID[localID] = error
+    }
+
+    func failMemberRead(forGroup localID: String) {
+        memberReadFailures.insert(localID)
+    }
+
+    func restoreMemberRead(forGroup localID: String) {
+        memberReadFailures.remove(localID)
     }
 
     func clearMembershipFailures() {
@@ -280,7 +289,8 @@ actor RecordingContactStore: ContactStoreProtocol {
     }
 
     func fetchMembers(ofGroup groupLocalID: String) async throws -> [Contact] {
-        try await inner.fetchMembers(ofGroup: groupLocalID)
+        if memberReadFailures.contains(groupLocalID) { throw CocoaError(.fileReadUnknown) }
+        return try await inner.fetchMembers(ofGroup: groupLocalID)
     }
 
     func fetchGroupMemberships(contactLocalID: String) async throws -> [ContactGroup] {

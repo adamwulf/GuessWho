@@ -230,14 +230,15 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
         }
     }
 
+    // Every KNOWN kind's directory, in `SidecarKind.allCases` order, and nothing
+    // else: a directory this build has no kind for (another app version's) is
+    // never listed, so it is never read, merged, or rewritten from here.
     public func allKeys() throws -> [SidecarKey] {
         var result: [SidecarKey] = []
-        result.append(contentsOf: try listKeys(in: root.appendingPathComponent("contacts"), kind: .contact))
-        result.append(contentsOf: try listKeys(in: root.appendingPathComponent("events"), kind: .event))
-        result.append(contentsOf: try listKeys(in: root.appendingPathComponent("links"), kind: .link))
-        result.append(contentsOf: try listKeys(in: root.appendingPathComponent("guides"), kind: .guide))
-        result.append(contentsOf: try listKeys(in: root.appendingPathComponent("places"), kind: .place))
-        result.append(contentsOf: try listKeys(in: root.appendingPathComponent("groups"), kind: .group))
+        for kind in SidecarKind.allCases {
+            result.append(contentsOf: try listKeys(
+                in: root.appendingPathComponent(directoryName(for: kind)), kind: kind))
+        }
         return result
     }
 
@@ -373,8 +374,8 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
     }
 
     /// Best-effort eager prefetch: ask iCloud to download every sidecar file
-    /// that is present only as a not-yet-downloaded placeholder, across all six
-    /// kind directories — envelopes (`.<id>.json.icloud`) and blob payloads
+    /// that is present only as a not-yet-downloaded placeholder, across every
+    /// known kind directory — envelopes (`.<id>.json.icloud`) and blob payloads
     /// (`.<id>.<blobId>.dat.icloud`). Lets a launch-time caller pull the whole
     /// corpus local in one pass instead of waiting for each record to be opened
     /// (a cold container otherwise materializes files one-by-one as the file
@@ -387,8 +388,7 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
     /// uncoordinated directory walk in `listKeys(in:kind:)`.
     public func prefetchAllDownloads() {
         let fm = FileManager.default
-        let kinds: [SidecarKind] = [.contact, .event, .link, .guide, .place, .group]
-        for kind in kinds {
+        for kind in SidecarKind.allCases {
             let directory = root.appendingPathComponent(directoryName(for: kind))
             guard fm.fileExists(atPath: directory.path) else { continue }
             guard let entries = try? fm.contentsOfDirectory(
@@ -685,19 +685,12 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
     }
 
     private func directoryName(for kind: SidecarKind) -> String {
-        switch kind {
-        case .contact: return "contacts"
-        case .event: return "events"
-        case .link: return "links"
-        case .guide: return "guides"
-        case .place: return "places"
-        case .group: return "groups"
-        }
+        kind.directoryName
     }
 
     private func safeFilename(for key: SidecarKey) -> String {
         switch key.kind {
-        case .contact, .link, .event, .guide, .place, .group:
+        case .contact, .link, .event, .guide, .place, .group, .groupFolder:
             // All sidecar kinds are UUID-keyed and canonicalized to lowercase at
             // every boundary so case-folding filesystems (iCloud Drive on APFS)
             // can't desync the on-disk name from the in-memory key. (A UUID
@@ -743,7 +736,7 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
 
             let basename = (realName as NSString).deletingPathExtension
             switch kind {
-            case .contact, .link, .guide, .place, .group:
+            case .contact, .link, .guide, .place, .group, .groupFolder:
                 result.append(SidecarKey(kind: kind, id: basename.lowercased()))
             case .event:
                 let decoded = basename.removingPercentEncoding ?? basename
@@ -753,8 +746,8 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
         return result
     }
 
-    // Preserve allKeys()'s stable kind ordering while avoiding the five
-    // irrelevant directory probes in a one-kind projection. contentsOfDirectory
+    // Preserve allKeys()'s stable kind ordering while avoiding the irrelevant
+    // directory probes in a one-kind projection. contentsOfDirectory
     // already asks for no resource keys, so there is no per-entry attribute
     // work to remove beyond limiting which directories a walk enumerates.
     private func listKeys(
@@ -762,9 +755,8 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
         under root: URL,
         requestDownloads: Bool
     ) throws -> [SidecarKey] {
-        let orderedKinds: [SidecarKind] = [.contact, .event, .link, .guide, .place, .group]
         var result: [SidecarKey] = []
-        for kind in orderedKinds where kinds.contains(kind) {
+        for kind in SidecarKind.allCases where kinds.contains(kind) {
             let directory = root.appendingPathComponent(directoryName(for: kind))
             result.append(contentsOf: try listKeys(
                 in: directory,

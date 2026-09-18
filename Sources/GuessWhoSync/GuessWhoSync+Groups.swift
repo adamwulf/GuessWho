@@ -4,9 +4,12 @@ extension GuessWhoSync {
     // MARK: - Well-known group-identity cell key
 
     /// The single fixed cell key under which a group's whole `GroupIdentity`
-    /// record is stored, JSON-encoded. A group sidecar carries exactly one
-    /// cell (whole-record, whole-file last-writer-wins), so there is no need
-    /// for the per-field cell layout guides/events use.
+    /// record is stored, JSON-encoded: one cell, whole-record
+    /// last-writer-wins, rather than the per-field cell layout guides/events
+    /// use. It is not the envelope's ONLY cell — the group's folder placement
+    /// lives beside it under `GroupHierarchyCells.parentFolderKey` and merges
+    /// independently, so an identity refresh and a move never overwrite each
+    /// other.
     public static let groupIdentityCellKey = "groupIdentity"
 
     // MARK: - Read
@@ -59,6 +62,11 @@ extension GuessWhoSync {
         let key = SidecarKey(kind: .group, id: record.id)
         try withKeyLocked(key) { ctx in
             let existing = try ctx.read()
+            // This write copies the envelope's decoded cell map back. If the
+            // decode DROPPED a malformed cell, that copy would erase it for
+            // good — and the dropped cell could be the group's placement. Refuse
+            // and leave the bytes for repair (`GroupHierarchyError.lossyEnvelope`).
+            try Self.requireLossless(existing, at: key)
             let existingRecord = existing.flatMap { Self.decodeGroupIdentity(from: $0) }
 
             var mergedMap = existingRecord?.deviceLocalIDs ?? [:]
@@ -139,7 +147,9 @@ extension GuessWhoSync {
 
     // MARK: - Private encode / decode
 
-    private static func decodeGroupIdentity(from envelope: SidecarEnvelope) -> GroupIdentity? {
+    /// Shared with the hierarchy read: a placement cannot be attributed when
+    /// the same envelope has no decodable group identity.
+    static func decodeGroupIdentity(from envelope: SidecarEnvelope) -> GroupIdentity? {
         guard let cell = envelope.fields[groupIdentityCellKey],
               cell.deletedAt == nil,
               case .object(let inner) = cell.value,

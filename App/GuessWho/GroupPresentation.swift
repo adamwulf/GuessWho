@@ -31,14 +31,19 @@ enum GroupNamePrompt {
     ///   - actionTitle: Confirm button title, e.g. "Add" / "Rename".
     ///   - initialName: Pre-filled text; nil for a fresh group (which starts the
     ///     confirm action disabled).
+    ///   - message: Optional line under the title — a creation prompt uses it to
+    ///     say where the new item will go.
+    ///   - placeholder: The empty field's hint; folders share this prompt.
     ///   - completion: Receives the NORMALIZED name — never blank.
     static func makeAlert(
         title: String,
         actionTitle: String,
         initialName: String?,
+        message: String? = nil,
+        placeholder: String = "Group Name",
         completion: @escaping (String) -> Void
     ) -> UIAlertController {
-        let alert = UIAlertController(title: title, message: nil, preferredStyle: .alert)
+        let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
         // Built before `addTextField` so the field's editing-changed handler can
         // capture it; UIKit lays text fields out above the actions regardless of
         // the order they are added in.
@@ -49,7 +54,7 @@ enum GroupNamePrompt {
         confirm.isEnabled = GroupNameInput.normalized(initialName) != nil
 
         alert.addTextField { textField in
-            textField.placeholder = "Group Name"
+            textField.placeholder = placeholder
             textField.text = initialName
             textField.clearButtonMode = .whileEditing
             // A `UIAction` rather than target/action: the control owns the

@@ -271,6 +271,10 @@ final class AddToGroupMenu {
         )
     }
 
+    /// The groups, arranged as the Groups list arranges them: a folder is a
+    /// submenu to navigate, and only a GROUP — always a leaf — is a choice. A
+    /// contact is added to a group, never to a folder. A folder with no group
+    /// anywhere beneath it is left out, since it would lead nowhere.
     private func groupElements(for contacts: [Contact]) async -> [UIMenuElement] {
         let groups = await loadedGroups()
         guard !groups.isEmpty else {
@@ -278,11 +282,23 @@ final class AddToGroupMenu {
                 title: repository.groupsError == nil ? "No Groups Yet" : "Couldn’t Load Groups"
             )]
         }
-        return groups.map { group in
-            UIAction(title: group.displayName) { [weak self] _ in
-                self?.add(contacts, to: group)
-            }
-        }
+        // `loadGroups()` above rebuilt the tree from the groups it just read.
+        let byLocalID = Dictionary(groups.map { ($0.localID, $0) }, uniquingKeysWith: { first, _ in first })
+        return GroupFolderTreeFold.fold(
+            repository.groupFolderTree,
+            group: { node -> UIMenuElement? in
+                guard let group = byLocalID[node.localID] else { return nil }
+                return UIAction(title: group.displayName) { [weak self] _ in
+                    self?.add(contacts, to: group)
+                }
+            },
+            folder: { folder, children -> UIMenuElement? in
+                guard !children.isEmpty else { return nil }
+                return UIMenu(
+                    title: GroupFolderDestination.displayName(folder.name),
+                    image: UIImage(systemName: "folder"),
+                    children: children)
+            })
     }
 
     /// The groups to list, re-read from Contacts on every open. Sorted here

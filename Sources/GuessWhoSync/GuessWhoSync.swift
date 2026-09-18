@@ -1341,6 +1341,19 @@ public final class GuessWhoSync: @unchecked Sendable {
                     }
                     if totalCellsDropped > 0 {
                         reasons.append("dropped \(totalCellsDropped) malformed cell(s)")
+                        // For every other kind a dropped cell is treated as
+                        // absent and the fold proceeds. In the group hierarchy
+                        // it could be a folder's deletion marker or a
+                        // placement, and folding without it then marking the
+                        // versions resolved would destroy the only copies. So
+                        // refuse: a throwing resolver makes the store write
+                        // nothing and keep every version, for repair.
+                        switch key.kind {
+                        case .group, .groupFolder:
+                            throw GroupHierarchyError.lossyEnvelope(key)
+                        case .contact, .event, .link, .guide, .place:
+                            break
+                        }
                     }
 
                     // Fold every parseable envelope into one merged result.

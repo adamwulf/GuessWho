@@ -323,6 +323,41 @@ final class LegacyScriptedContactSource: MCPContactSource {
 
     // MARK: Writes
 
+    var groupFolderTree: GroupFolderTree = .empty
+    var memberRevisions: GroupMemberSnapshot.Revisions {
+        .init(hierarchy: 0, membership: 0, contactData: 0)
+    }
+
+    func memberSnapshot(for scope: GroupMemberScope) async -> GroupMemberSnapshot {
+        unexpectedLegacySemanticPath("ContactsRepository.memberSnapshot", returning:
+            GroupMemberSnapshot(scope: scope, groups: [], contacts: [], contributingGroups: [:],
+                                failedGroups: [], revisions: memberRevisions))
+    }
+
+    func createGroupFolder(name: String, inFolder parentFolderID: String?, id: UUID) async throws -> String {
+        try throwUnexpectedLegacySemanticPath("ContactsRepository.createGroupFolder")
+    }
+
+    func renameGroupFolder(id: String, to name: String) async throws {
+        try throwUnexpectedLegacySemanticPath("ContactsRepository.renameGroupFolder")
+    }
+
+    func moveGroupFolder(id: String, toFolder parentFolderID: String?) async throws {
+        try throwUnexpectedLegacySemanticPath("ContactsRepository.moveGroupFolder")
+    }
+
+    func deleteGroupFolder(id: String) async throws {
+        try throwUnexpectedLegacySemanticPath("ContactsRepository.deleteGroupFolder")
+    }
+
+    func moveGroup(_ group: ContactGroup, toFolder parentFolderID: String?) async throws {
+        try throwUnexpectedLegacySemanticPath("ContactsRepository.moveGroup")
+    }
+
+    func retryGroupPlacementCleanup(_ pending: PendingGroupPlacementCleanup) async throws {
+        try throwUnexpectedLegacySemanticPath("ContactsRepository.retryGroupPlacementCleanup")
+    }
+
     func createGroup(name: String) async throws -> ContactGroup {
         if let groupWriteError { throw groupWriteError }
         groupCreateCount += 1
@@ -339,13 +374,15 @@ final class LegacyScriptedContactSource: MCPContactSource {
         groups[index] = ContactGroup(localID: group.localID, name: name)
     }
 
-    func deleteGroup(_ group: ContactGroup) async throws {
+    @discardableResult
+    func deleteGroup(_ group: ContactGroup) async throws -> PendingGroupPlacementCleanup? {
         if let groupWriteError { throw groupWriteError }
         guard groups.contains(where: { $0.localID == group.localID }) else {
             throw ContactStoreError.groupNotFound(localID: group.localID)
         }
         groups.removeAll { $0.localID == group.localID }
         membersByGroup[group.localID] = nil
+        return nil
     }
 
     func addContacts(_ requested: [Contact], toGroup group: ContactGroup) async throws {

@@ -36,7 +36,7 @@ struct SidecarFileWatcherTests {
     }
 
     private func fileURL(for key: SidecarKey, in root: URL) -> URL {
-        root.appendingPathComponent("\(key.kind.rawValue)s")
+        root.appendingPathComponent(key.kind.directoryName)
             .appendingPathComponent("\(key.id).json")
     }
 

@@ -17,6 +17,43 @@ import GuessWhoSync
 @MainActor
 @Suite("Stale search does not survive a list teardown")
 struct StaleSearchTeardownTests {
+    #if !targetEnvironment(macCatalyst)
+    @Test
+    func returningFromFolderMembersPreservesSelectionAndAddMenuDestination() async throws {
+        let root = try makeTempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let service = makeService(root: root, contacts: [])
+        let repository = service.makeContactsRepository()
+        await repository.loadGroups()
+        let folderID = try await repository.createGroupFolder(name: "Family", inFolder: nil)
+        let favorites = FavoritesListStore(service: service)
+        let list = GroupsListViewController(repository: repository, favoritesStore: favorites)
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 400, height: 800))
+        defer { window.isHidden = true }
+        mount(list, in: window)
+        let navigation = try #require(list.navigationController)
+        let table = try #require(list.view.subviews.compactMap { $0 as? UITableView }.first)
+        list.didSelectFolder = { id in
+            navigation.pushViewController(GroupMembersListViewController(
+                scope: .folder(id: id), repository: repository,
+                photoLoader: ContactPhotoLoader(repository: repository), favoritesStore: favorites), animated: false)
+        }
+        let row = IndexPath(row: 0, section: 0)
+        #expect(table.numberOfRows(inSection: 0) == 1)
+        table.selectRow(at: row, animated: false, scrollPosition: .none)
+        table.delegate?.tableView?(table, didSelectRowAt: row)
+        #expect(navigation.topViewController is GroupMembersListViewController)
+        navigation.popViewController(animated: false)
+        window.layoutIfNeeded()
+
+        #expect(navigation.topViewController === list)
+        #expect(table.indexPathForSelectedRow == row)
+        // Both deferred + menu actions use this destination when opened.
+        #expect(list.creationParentFolderID == folderID)
+        #expect(list.navigationItem.rightBarButtonItem?.menu != nil)
+    }
+    #endif
+
     private func makeTempRoot() throws -> URL {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("gw-stale-search-tests-\(UUID().uuidString)", isDirectory: true)

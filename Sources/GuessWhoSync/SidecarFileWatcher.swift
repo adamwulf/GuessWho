@@ -149,7 +149,12 @@ public extension Notification {
 /// same "current" status. So the watcher posts for both, and safety comes
 /// from the subscriber side: every subscriber refresh path is READ-ONLY over
 /// sidecars (no write-back, so no loop) and debounced (so a burst costs one
-/// refresh). If echo refreshes ever prove noisy in practice, the escape
+/// refresh). The one exception is `ContactsRepository`'s group-identity
+/// resolution for a `.group` delivery, whose pin writes (at most a dead-pin
+/// prune followed by an adopting pin, per identity) settle on their own
+/// echo — see `ContactsRepository.refreshFromSidecarChange`. Any new
+/// write-back must prove the same. If echo refreshes ever prove noisy in
+/// practice, the escape
 /// hatch is store-side write journaling (compare changed paths against
 /// recent local writes), not query-side filtering.
 ///
@@ -502,16 +507,12 @@ public final class SidecarFileWatcher: NSObject {
         return Self.sidecarKind(forDirectoryName: itemComponents.last ?? "")
     }
 
+    /// Shares `SidecarKind.directoryName` with `FileSystemSidecarStore`, so a
+    /// path the store writes always maps back to the key it was written under.
+    /// A directory this build has no kind for maps to nil, which makes its
+    /// whole batch globally unknown in `queryDidUpdate`.
     private static func sidecarKind(forDirectoryName name: String) -> SidecarKind? {
-        switch name {
-        case "contacts": .contact
-        case "events": .event
-        case "links": .link
-        case "guides": .guide
-        case "places": .place
-        case "groups": .group
-        default: nil
-        }
+        SidecarKind(directoryName: name)
     }
 
     /// Internal so tests can drive the production debounce without requiring

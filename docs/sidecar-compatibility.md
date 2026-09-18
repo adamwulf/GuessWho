@@ -144,6 +144,52 @@ list a caller sees. They remove the field from view, never from the envelope.
    above already make older peers safe: they preserve and round-trip the new
    cell and simply do not display it.
 
+## Adding a new KIND (a new directory)
+
+The guarantee above is about cells inside an envelope a build already reads. A
+new `SidecarKind` is a different question: it adds a **directory** older builds
+have never heard of, and cell-level forward compatibility says nothing about
+whether they leave that directory alone. They do, and it rests on one property:
+
+> Every store operation reaches a kind's directory through
+> `SidecarKind.directoryName`, iterating `SidecarKind.allCases`[^7][^8]. A
+> directory a build has no kind for is never listed — so it is never read,
+> merged, rewritten, prefetched, or removed by that build.
+
+The file watcher maps such a path back through the same mapping and finds no
+kind[^9], which makes that batch globally unknown: each repository does one
+debounced, **read-only** reload. Because nothing on that path writes, nothing
+echoes back through the watcher, so an older build pays one reload per burst of
+newer-kind writes and nothing more.
+
+Rules for the next new kind:
+
+- Add the `case` and its `directoryName`; the compiler enumerates the
+  exhaustive `switch`es. Do not add a hand-written list of kinds anywhere — the
+  listing, the scoped listing, and the prefetch derive from `allCases`.
+- Add the kind's line to the frozen `shippedDirectoryNames` table in
+  `SidecarStoreCompatibilityTests`. A directory name is a synced on-disk
+  contract: once a build ships it, never rename it.
+- Keep any new subscriber refresh path read-only, or prove — with a test that
+  counts writes across the echo — that its writes settle. The one existing
+  exception is `ContactsRepository`'s group-identity resolution[^10].
+- If the kind has cells whose loss would be destructive (a deletion marker, a
+  parent assignment), treat an envelope that decoded with dropped cells as
+  untrustworthy rather than as "those cells are absent". See
+  [`group-folders.md`](group-folders.md#untrustworthy-data).
+
+`SidecarStoreCompatibilityTests` proves the property on the current build with
+a directory name **no** build knows (`future-kind`), which is the same code path
+an older build takes for a directory a newer build introduced — and keeps
+protecting the next new kind after this one ships. It asserts, against a digest
+of every file under the root, that read-only operations change nothing and that
+each mutation changes exactly the one file it names.
+
+[^7]: [The one kind-to-directory mapping](../Sources/GuessWhoSync/SidecarKind.swift:SidecarKind.directoryName)
+[^8]: [Enumeration lists known kinds only](../Sources/GuessWhoSync/FileSystemSidecarStore.swift:FileSystemSidecarStore.allKeys)
+[^9]: [Watcher directory-name mapping](../Sources/GuessWhoSync/SidecarFileWatcher.swift:SidecarFileWatcher.sidecarKind)
+[^10]: [The watcher path's one bounded write exception](../Sources/GuessWhoSync/ContactsRepository.swift:ContactsRepository.refreshFromSidecarChange)
+
 ## Regression coverage
 
 `Tests/GuessWhoSyncTests/SidecarForwardCompatTests.swift` proves the guarantee

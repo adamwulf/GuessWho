@@ -6,9 +6,10 @@ import Foundation
 /// by Contacts at create time.
 ///
 /// That handle is device-local (a different value on each device after sync),
-/// so it can't identify a group across devices. A *favorited* group's durable,
-/// cross-device identity lives in a separate `GroupIdentity` sidecar record
-/// keyed by a minted UUID — see `plans/group-favorite-identity.md`. The
+/// so it can't identify a group across devices. A group that has been favorited
+/// or placed in a folder gets a durable, cross-device identity in a separate
+/// `GroupIdentity` sidecar record keyed by a minted UUID — see
+/// `plans/group-favorite-identity.md` and `plans/group-folders.md`. The
 /// `localID` here is only the transient Contacts-framework lookup token.
 public struct ContactGroup: Sendable, Hashable, Codable {
     /// Stable-on-this-device identifier issued by Contacts (`CNGroup.identifier`).

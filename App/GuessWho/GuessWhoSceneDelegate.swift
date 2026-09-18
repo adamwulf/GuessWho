@@ -726,7 +726,12 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         // `showContactDetail` — the established Catalyst pattern.
         let nav = UINavigationController(rootViewController: list)
         list.didSelectGroup = { [weak self, weak nav] group in
-            self?.showGroupMembers(group: group, on: nav, appDelegate: appDelegate)
+            self?.showGroupMembers(scope: .group(group), on: nav, appDelegate: appDelegate)
+        }
+        // A folder opens the SAME member list, showing everyone in every group
+        // beneath it. No extra column: it pushes exactly where a group does.
+        list.didSelectFolder = { [weak self, weak nav] folderID in
+            self?.showGroupMembers(scope: .folder(id: folderID), on: nav, appDelegate: appDelegate)
         }
         split.setViewController(nav, for: .supplementary)
         installDetailPlaceholder(in: split, for: .groups)
@@ -741,9 +746,19 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         on nav: UINavigationController?,
         appDelegate: GuessWhoAppDelegate
     ) {
+        showGroupMembers(scope: .group(group), on: nav, appDelegate: appDelegate)
+    }
+
+    /// The scope-taking form: a group, or a folder (everyone in every group
+    /// beneath it).
+    private func showGroupMembers(
+        scope: GroupMemberScope,
+        on nav: UINavigationController?,
+        appDelegate: GuessWhoAppDelegate
+    ) {
         guard let nav else { return }
         let members = GroupMembersListViewController(
-            group: group,
+            scope: scope,
             repository: appDelegate.contactsRepository,
             photoLoader: appDelegate.contactPhotoLoader,
             favoritesStore: appDelegate.favoritesStore
@@ -753,6 +768,9 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         }
         members.didSelectContacts = { [weak self] contacts in
             self?.showContactDetailStack(contacts: contacts, appDelegate: appDelegate)
+        }
+        members.scopeDidDisappear = { [weak nav, weak members] in
+            Self.popBack(from: members, on: nav)
         }
         nav.pushViewController(members, animated: true)
     }
@@ -1662,6 +1680,10 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         list.didSelectGroup = { [weak self] group in
             self?.pushGroupMembers(group: group, on: list.navigationController, appDelegate: appDelegate)
         }
+        list.didSelectFolder = { [weak self] folderID in
+            self?.pushGroupMembers(
+                scope: .folder(id: folderID), on: list.navigationController, appDelegate: appDelegate)
+        }
         let nav = UINavigationController(rootViewController: list)
         nav.tabBarItem = UITabBarItem(
             title: SidebarTab.groups.title,
@@ -1679,9 +1701,19 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         on nav: UINavigationController?,
         appDelegate: GuessWhoAppDelegate
     ) {
+        pushGroupMembers(scope: .group(group), on: nav, appDelegate: appDelegate)
+    }
+
+    /// The scope-taking form: a group, or a folder (everyone in every group
+    /// beneath it).
+    private func pushGroupMembers(
+        scope: GroupMemberScope,
+        on nav: UINavigationController?,
+        appDelegate: GuessWhoAppDelegate
+    ) {
         guard let nav else { return }
         let members = GroupMembersListViewController(
-            group: group,
+            scope: scope,
             repository: appDelegate.contactsRepository,
             photoLoader: appDelegate.contactPhotoLoader,
             favoritesStore: appDelegate.favoritesStore
@@ -1692,7 +1724,19 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         members.didSelectContacts = { [weak self, weak nav] contacts in
             self?.pushContactDetailStack(contacts: contacts, on: nav, appDelegate: appDelegate)
         }
+        members.scopeDidDisappear = { [weak nav, weak members] in
+            Self.popBack(from: members, on: nav)
+        }
         nav.pushViewController(members, animated: true)
+    }
+
+    /// The folder a member list was showing is gone: return to the list it was
+    /// opened from. A no-op when the member list is no longer on the stack.
+    /// Shared by the Catalyst supplementary column and the iPhone Groups tab.
+    private static func popBack(from members: UIViewController?, on nav: UINavigationController?) {
+        guard let nav, let members,
+              let index = nav.viewControllers.firstIndex(of: members), index > 0 else { return }
+        nav.popToViewController(nav.viewControllers[index - 1], animated: true)
     }
 
     /// Reference-taking overload used by the in-detail Groups section. Reuses

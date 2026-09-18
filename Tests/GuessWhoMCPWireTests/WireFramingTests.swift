@@ -452,9 +452,9 @@ final class WireRequestCreateTests: XCTestCase {
     func testToolInventoryCountAndReadWriteSplit() {
         // The 56-tool generic-favorites baseline plus one group read and
         // six group writes.
-        XCTAssertEqual(MCPTool.allCases.count, 63)
-        XCTAssertEqual(MCPTool.allCases.filter { !$0.isWrite }.count, 22)
-        XCTAssertEqual(MCPTool.allCases.filter { $0.isWrite }.count, 41)
+        XCTAssertEqual(MCPTool.allCases.count, 70)
+        XCTAssertEqual(MCPTool.allCases.filter { !$0.isWrite }.count, 24)
+        XCTAssertEqual(MCPTool.allCases.filter { $0.isWrite }.count, 46)
     }
 
     func testGenericFavoriteRequestsParseCompositeIdentities() throws {

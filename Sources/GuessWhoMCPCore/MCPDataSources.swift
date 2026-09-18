@@ -28,6 +28,15 @@ public protocol MCPContactSource: AnyObject {
     func isFavorite(_ id: ContactID) -> Bool
     /// Refreshes and returns the user's contact groups.
     func fetchGroups() async -> [ContactGroup]
+    var groupFolderTree: GroupFolderTree { get }
+    var memberRevisions: GroupMemberSnapshot.Revisions { get }
+    func memberSnapshot(for scope: GroupMemberScope) async -> GroupMemberSnapshot
+    func createGroupFolder(name: String, inFolder parentFolderID: String?, id: UUID) async throws -> String
+    func renameGroupFolder(id: String, to name: String) async throws
+    func moveGroupFolder(id: String, toFolder parentFolderID: String?) async throws
+    func deleteGroupFolder(id: String) async throws
+    func moveGroup(_ group: ContactGroup, toFolder parentFolderID: String?) async throws
+    func retryGroupPlacementCleanup(_ pending: PendingGroupPlacementCleanup) async throws
     func members(ofGroup groupLocalID: String) async -> [Contact]
     /// Derived organization membership and department reads. These are the
     /// repository's canonical name-matching rules; the dispatcher must not
@@ -80,7 +89,10 @@ public protocol MCPContactSource: AnyObject {
     @discardableResult
     func createGroup(name: String) async throws -> ContactGroup
     func renameGroup(_ group: ContactGroup, to name: String) async throws
-    func deleteGroup(_ group: ContactGroup) async throws
+    /// A throw means the group was not deleted. A non-nil result means it WAS
+    /// deleted and clearing its folder placement is still owed.
+    @discardableResult
+    func deleteGroup(_ group: ContactGroup) async throws -> PendingGroupPlacementCleanup?
     func addContacts(_ contacts: [Contact], toGroup group: ContactGroup) async throws
     func removeContacts(_ contacts: [Contact], fromGroup group: ContactGroup) async throws
     @discardableResult

@@ -183,6 +183,45 @@ public final class ContactsRepository: NSObject {
 
     private static let groupIdentityLog = Logger(label: "sync.group-identity")
 
+    /// The Groups list as a tree: folders, the groups inside them, and the
+    /// groups at top level. An immutable snapshot — a list applies it and calls
+    /// the folder commands below; it never reads hierarchy files itself. Built
+    /// from `groups`, the resolved group identities, and the stored parent
+    /// assignments; replaced (never mutated) when any of those change.
+    public private(set) var groupFolderTree: GroupFolderTree = .empty
+
+    /// Advances every time `groupFolderTree` is replaced by a DIFFERENT tree. A
+    /// surface showing a folder's members captures it to tell whether the set
+    /// of groups under that folder may have moved.
+    public private(set) var groupHierarchyRevision = 0
+
+    /// The hierarchy records the current tree was built from. Kept so a group
+    /// rename or a newly resolved identity can rebuild the tree without
+    /// re-reading storage, and so a record that cannot be read right now keeps
+    /// its last good value instead of vanishing from the tree.
+    @ObservationIgnored private var hierarchyRecords = GroupHierarchyRecords()
+
+    /// Newest-request-wins for hierarchy reads, like `groupLoadRequestGeneration`.
+    @ObservationIgnored private var hierarchyLoadGeneration = 0
+
+    /// Advances whenever group MEMBERSHIP may have changed: a membership write
+    /// that landed here, or any change Contacts reports from outside (which
+    /// cannot be told apart from a membership change). See `GroupMemberSnapshot`.
+    @ObservationIgnored public private(set) var groupMembershipRevision = 0
+
+    /// Advances every time the `contacts` array is replaced — an edit, a reload,
+    /// a reconciliation, an external change — whether or not any membership
+    /// moved. A member list built from contacts fetched before such a change may
+    /// be showing stale rows or stale identities.
+    @ObservationIgnored public private(set) var contactDataRevision = 0
+
+    /// Group fetches a folder's member read keeps in flight at once. Enough to
+    /// overlap the Contacts round trips; small enough that a folder of a hundred
+    /// groups does not open a hundred at once.
+    private static let memberFetchConcurrency = 4
+
+    private static let groupHierarchyLog = Logger(label: "sync.group-hierarchy")
+
     /// Group-specific load failure for the Groups screen. Kept separate from
     /// the repository-wide `lastError` so an unrelated contact refresh cannot
     /// erase or replace the actionable Groups empty state.
@@ -418,7 +457,7 @@ public final class ContactsRepository: NSObject {
         if generation == refreshGeneration {
             await refreshFullSidecarProjectionCaches(
                 generation: generation,
-                refreshGroupIdentities: fetchedContacts
+                groupIdentities: fetchedContacts ? .resolveAndRefreshAll : .none
             )
         } else if fetchedContacts {
             // Preserve the independent group-identity refresh even when a
@@ -514,7 +553,7 @@ public final class ContactsRepository: NSObject {
     /// that source's derived cache(s) become empty.
     private func refreshFullSidecarProjectionCaches(
         generation: Int,
-        refreshGroupIdentities: Bool = false
+        groupIdentities pass: GroupIdentityPass = .none
     ) async {
         guard let sync else {
             contactTimestampsByID = [:]
@@ -526,12 +565,24 @@ public final class ContactsRepository: NSObject {
         guard generation == refreshGeneration else {
             // Before B2-5, group identities refreshed before the projection
             // scans and therefore still ran when a notification arrived during
-            // a scan. Preserve that concurrency behavior; only the superseded
-            // path needs a replacement enumeration.
-            if refreshGroupIdentities { await refreshAllGroupIdentities() }
+            // a scan. Preserve that concurrency behavior for the contact
+            // reload; only the superseded path needs a replacement enumeration.
+            // A superseded WATCHER pass gets no replacement here. A newer
+            // sidecar refresh inherits this one's change set through
+            // `inFlightSidecarChangeSet`, so it resolves the same keys. A
+            // `reload()` runs the full pass itself when its Contacts fetch
+            // succeeds; when that fetch fails, resolution waits for the next
+            // `.group` delivery or `loadGroups()`.
+            if pass == .resolveAndRefreshAll { await refreshAllGroupIdentities() }
             return
         }
-        if refreshGroupIdentities {
+        switch pass {
+        case .none:
+            break
+        case .hierarchyOnly:
+            await reloadGroupHierarchy()
+            guard generation == refreshGeneration else { return }
+        case .resolveAndRefreshAll:
             // `loadGroups()` and the contact reload race independently at app
             // start. If groups landed first, refresh their identity
             // fingerprints now that the contact -> GuessWho-ID cache is full;
@@ -544,6 +595,21 @@ public final class ContactsRepository: NSObject {
             } else {
                 await refreshAllGroupIdentities()
             }
+            guard generation == refreshGeneration else { return }
+        case .resolveAll:
+            await refreshAllGroupIdentities(
+                groupKeys: projection?.groupKeys, refreshFingerprints: false)
+            guard generation == refreshGeneration else { return }
+            // A delivery that may name a `.group` sidecar may carry a placement
+            // too (it shares the identity's envelope), and an unknown-scope one
+            // may carry a folder. Re-read the hierarchy AFTER resolution, so a
+            // newly arrived placement and its group appear together.
+            await reloadGroupHierarchy()
+            guard generation == refreshGeneration else { return }
+        case .resolve(let keys):
+            await refreshAllGroupIdentities(groupKeys: keys, refreshFingerprints: false)
+            guard generation == refreshGeneration else { return }
+            await reloadGroupHierarchy()
             guard generation == refreshGeneration else { return }
         }
         contactTimestampsByID = projection?.timestamps ?? [:]
@@ -583,6 +649,9 @@ public final class ContactsRepository: NSObject {
             groupsError = nil
             hasAuthoritativeGroups = true
             await refreshAllGroupIdentities(resetCache: true)
+            // The tree needs the groups AND their resolved identities, so it is
+            // read once both are current.
+            await reloadGroupHierarchy()
         } catch {
             guard loadGeneration == groupLoadRequestGeneration,
                   mutationGeneration == groupMutationGeneration else { return }
@@ -604,6 +673,7 @@ public final class ContactsRepository: NSObject {
                 self.groups.removeAll { $0.localID == group.localID }
                 self.groups.append(group)
                 self.sortGroups()
+                self.rebuildGroupFolderTree()
                 self.postDidReload(contactDataChanged: false)
             }
             return group
@@ -622,6 +692,7 @@ public final class ContactsRepository: NSObject {
                     self.groups[index] = ContactGroup(localID: group.localID, name: name)
                 }
                 self.sortGroups()
+                self.rebuildGroupFolderTree()
                 self.postDidReload(contactDataChanged: false)
             }
             if let renamed = self.group(localID: group.localID) {
@@ -631,13 +702,36 @@ public final class ContactsRepository: NSObject {
     }
 
     /// Deletes a Contacts group. Deleting a group does not delete its contacts.
-    public func deleteGroup(_ group: ContactGroup) async throws {
+    ///
+    /// A throw means the group was NOT deleted. Once Contacts has deleted it,
+    /// the group's folder placement is cleared too, so a later group with the
+    /// same name cannot adopt the old identity and appear in the old folder.
+    /// That clear is a separate write and can fail on its own: the deletion has
+    /// still succeeded, so instead of throwing this returns the cleanup that is
+    /// still owed, for `retryGroupPlacementCleanup(_:)`. nil means nothing is
+    /// owed. The group's durable identity record is deliberately left in place,
+    /// as it is for a favorite.
+    @discardableResult
+    public func deleteGroup(_ group: ContactGroup) async throws -> PendingGroupPlacementCleanup? {
         try await performSerializedGroupMutation {
+            // Captured BEFORE the delete: afterwards no identity resolves to the
+            // group, and the ones to clear could not be found.
+            let cleanup = self.placementCleanup(for: group)
             try await self.contactsStore.deleteGroup(localID: group.localID)
             self.groupMutationGeneration &+= 1
             if !(await self.recoverAuthoritativeGroupsAfterMutationIfNeeded()) {
                 self.groups.removeAll { $0.localID == group.localID }
+                self.rebuildGroupFolderTree()
                 self.postDidReload(contactDataChanged: false)
+            }
+            do {
+                try await self.clearPlacements(cleanup)
+                return nil
+            } catch {
+                Self.groupHierarchyLog.warning(
+                    "placement cleanup after group deletion failed",
+                    metadata: ["error": "\(error.localizedDescription)"])
+                return cleanup
             }
         }
     }
@@ -861,6 +955,9 @@ public final class ContactsRepository: NSObject {
             let changedIDs = written.map {
                 contact(localID: $0.localID)?.contactID ?? $0.contactID
             }
+            // Before the post, so an observer that reloads in response reads
+            // against the revision that already includes this write.
+            groupMembershipRevision &+= 1
             notificationCenter.post(
                 name: .contactsRepositoryGroupMembershipDidChange,
                 object: self,
@@ -920,6 +1017,7 @@ public final class ContactsRepository: NSObject {
             groupsError = nil
             hasAuthoritativeGroups = true
             await refreshAllGroupIdentities(resetCache: true)
+            await reloadGroupHierarchy()
             postDidReload(contactDataChanged: false)
         } catch {
             guard loadGeneration == groupLoadRequestGeneration,
@@ -2097,6 +2195,7 @@ public final class ContactsRepository: NSObject {
                     localID: group.localID
                 )
                 self.cache(group: group, forIdentityID: identity.id)
+                self.rebuildGroupFolderTree()
             } else {
                 // No durable identity exists, so this live group cannot own a
                 // UUID-keyed favorite. Deliberately do not touch a legacy raw-id
@@ -2234,7 +2333,18 @@ public final class ContactsRepository: NSObject {
         // new one; unrelated identities remain untouched.
         groupIdentityIDByLocalID = groupIdentityIDByLocalID.filter { $0.value != identityID }
         resolvedGroupsByIdentityID[identityID] = group
-        groupIdentityIDByLocalID[group.localID.lowercased()] = identityID
+        // A group normally has ONE identity. Two devices that each first-touch
+        // the same never-identified group before they sync can leave two, and
+        // both then resolve to this group. Every device must pick the same one
+        // after sync, so the reverse pointer keeps the SMALLEST identity UUID no
+        // matter which order the identities resolved in — the same choice
+        // `existingGroupIdentity`'s ascending scan makes. Nothing is deleted or
+        // merged; the other identity still resolves forward to this group.
+        let localKey = group.localID.lowercased()
+        if let current = groupIdentityIDByLocalID[localKey], current < identityID {
+            return
+        }
+        groupIdentityIDByLocalID[localKey] = identityID
     }
 
     private func clearCachedResolution(forIdentityID rawIdentityID: String) {
@@ -2252,12 +2362,14 @@ public final class ContactsRepository: NSObject {
     /// large group list.
     ///
     /// The reverse pointer is warmed by `loadGroups()` adoption
-    /// (`refreshAllGroupIdentities`) before the list renders, so a favorited,
-    /// resolved group hits here. A miss therefore means "not an adopted favorite
-    /// on this device" — the correct answer for a non-favorited row (the common
-    /// case) and a brief pre-adoption unfilled star otherwise, which the
-    /// post-`loadGroups()` reload corrects. The async write path
-    /// (`existingGroupIdentity`) keeps the disk fallback for correctness.
+    /// (`refreshAllGroupIdentities`) before the list renders, so a resolved
+    /// group hits here. A hit says only that the group HAS a durable identity,
+    /// never that it is favorited — callers ask the favorites store about the
+    /// returned UUID. A miss means "no adopted identity on this device" — the
+    /// correct answer for a never-identified row (the common case) and a brief
+    /// pre-adoption unfilled star otherwise, which the post-`loadGroups()`
+    /// reload corrects. The async write path (`existingGroupIdentity`) keeps
+    /// the disk fallback for correctness.
     private func groupIdentityID(for group: ContactGroup) -> String? {
         groupIdentityIDByLocalID[group.localID.lowercased()]
     }
@@ -2367,12 +2479,25 @@ public final class ContactsRepository: NSObject {
         return chosen
     }
 
-    /// Re-resolve every stored identity against the current group cache, then
-    /// refresh the live scalar fingerprint. Best-effort by design: Contacts or
-    /// iCloud failures never prevent the group list itself from loading.
+    /// Re-resolve stored identities against the current group cache, then
+    /// (unless `refreshFingerprints` is false) refresh each live scalar
+    /// fingerprint. Best-effort by design: Contacts or iCloud failures never
+    /// prevent the group list itself from loading.
+    ///
+    /// EVERY stored identity resolves, whatever refers to it. Group identity is
+    /// its own layer: a favorite is one consumer and other durable references
+    /// to a group are equally valid, so resolution must not ask which consumer
+    /// minted the record. A peer device's identity therefore resolves (and pins
+    /// this device's slot) here even when this device holds no favorite for it.
+    ///
+    /// `groupKeys` scopes the pass to those `.group` keys (nil = every stored
+    /// identity). `refreshFingerprints: false` is the watcher-delivery form: it
+    /// only resolves, which for an already-pinned live identity is a sidecar
+    /// read with no Contacts fetch and no write — see `GroupIdentityPass`.
     private func refreshAllGroupIdentities(
         resetCache: Bool = false,
-        groupKeys: [SidecarKey]? = nil
+        groupKeys: [SidecarKey]? = nil,
+        refreshFingerprints: Bool = true
     ) async {
         guard let sync else {
             if resetCache {
@@ -2385,6 +2510,14 @@ public final class ContactsRepository: NSObject {
             resolvedGroupsByIdentityID = [:]
             groupIdentityIDByLocalID = [:]
         }
+        // Resolution compares each identity with the `groups` cache, and treats
+        // a pinned local id that is absent from it as a DEAD slot to prune. That
+        // verdict is only sound once a complete group fetch has been published:
+        // before it, `groups` is empty, every pin looks dead, and a pass would
+        // prune (and write) good pins that `loadGroups()` then has to re-adopt.
+        // The contact reload and watcher deliveries can both get here first at
+        // launch; `loadGroups()` performs the pass once the cache is real.
+        guard hasAuthoritativeGroups else { return }
         do {
             let identities: [GroupIdentity]
             if let groupKeys {
@@ -2393,16 +2526,10 @@ public final class ContactsRepository: NSObject {
                 identities = try sync.allGroupIdentities()
             }
             for identity in identities.sorted(by: { $0.id < $1.id }) {
-                // Only resolve + refresh identities that still back a live
-                // favorite. An orphan identity — its group was un-favorited but
-                // the sidecar lingers for reuse on re-favorite — needs neither a
-                // reverse-pointer entry (it is not favorited, so `isGroupFavorite`
-                // must read false) nor a fingerprint rewrite; refreshing it would
-                // churn iCloud for data no surface shows.
-                guard (try? favorites?.isFavorite(kind: .group, id: identity.id)) == true else {
+                guard let live = try await resolveGroupIdentity(id: identity.id) else {
                     continue
                 }
-                if let live = try await resolveGroupIdentity(id: identity.id) {
+                if refreshFingerprints {
                     await refreshGroupIdentity(identityID: identity.id, group: live)
                 }
             }
@@ -2411,6 +2538,10 @@ public final class ContactsRepository: NSObject {
                 "group identity startup refresh failed",
                 metadata: ["error": "\(error.localizedDescription)"])
         }
+        // A group's placement is read through its identity, so a pass that may
+        // have resolved one can move a group into (or out of) a folder. No I/O,
+        // and a no-op when nothing moved.
+        rebuildGroupFolderTree()
     }
 
     /// Refresh a group only when it already has an identity record. This is the
@@ -2456,6 +2587,488 @@ public final class ContactsRepository: NSObject {
                     "error": "\(error.localizedDescription)",
                 ])
         }
+    }
+
+    // MARK: - Group folders
+    //
+    // Folders organize groups (`plans/group-folders.md`). Storage holds only each
+    // child's parent assignment; `GroupFolderTree` derives everything a list
+    // shows. This section owns the snapshot and the commands. Every command
+    // runs on the group-mutation chain, so it settles entirely before or after
+    // a group create/rename/delete or another folder command, and validates
+    // against a hierarchy it has just re-read.
+
+    /// Re-read the stored hierarchy and rebuild `groupFolderTree`.
+    ///
+    /// A record that cannot be READ right now (not downloaded, timed out) keeps
+    /// its last good value: unknown is not gone, and a folder must not drop out
+    /// of the tree because iCloud is slow. When the corpus cannot be enumerated
+    /// at all, the previous records stand and only the groups are refreshed.
+    /// Read-only over sidecars, so it is safe on the watcher path.
+    @discardableResult
+    private func reloadGroupHierarchy() async -> Bool {
+        guard let sync else {
+            rebuildGroupFolderTree()
+            return false
+        }
+        hierarchyLoadGeneration &+= 1
+        let generation = hierarchyLoadGeneration
+        do {
+            var records: GroupHierarchyRecords = try await sync.groupHierarchyRecords()
+            guard generation == hierarchyLoadGeneration else { return false }
+            for key in records.unreadableKeys {
+                switch key.kind {
+                case .groupFolder:
+                    if let last = hierarchyRecords.folders.first(where: { $0.id == key.id }) {
+                        records.folders.append(last)
+                    }
+                case .group:
+                    if let last = hierarchyRecords.groupPlacements[key.id] {
+                        records.groupPlacements[key.id] = last
+                    }
+                case .contact, .event, .link, .guide, .place:
+                    break
+                }
+            }
+            hierarchyRecords = records
+        } catch {
+            guard generation == hierarchyLoadGeneration else { return false }
+            hierarchyRecords.enumerationFailed = true
+            Self.groupHierarchyLog.warning(
+                "group hierarchy read failed; keeping the last good records",
+                metadata: ["error": "\(error.localizedDescription)"])
+            rebuildGroupFolderTree()
+            return false
+        }
+        rebuildGroupFolderTree()
+        return true
+    }
+
+    /// Watchers may keep provisional records for display, but a mutation must
+    /// never validate against them after a failed or superseded corpus read.
+    private func requireFreshGroupHierarchy() async throws {
+        guard await reloadGroupHierarchy() else {
+            throw GroupHierarchyError.hierarchyUnavailable
+        }
+    }
+
+    /// Rebuild the tree from the records already in hand. No I/O: this is what
+    /// a group create/rename/delete or a newly resolved identity calls, because
+    /// those change the tree's GROUP inputs but not the stored hierarchy.
+    private func rebuildGroupFolderTree() {
+        let tree = GroupFolderTree(records: hierarchyRecords, groups: groupTreeInputs())
+        guard tree != groupFolderTree else { return }
+        groupFolderTree = tree
+        groupHierarchyRevision &+= 1
+    }
+
+    private func groupTreeInputs() -> [GroupFolderTree.GroupInput] {
+        groups.map {
+            GroupFolderTree.GroupInput(
+                localID: $0.localID,
+                name: $0.name,
+                identityID: groupIdentityIDByLocalID[$0.localID.lowercased()])
+        }
+    }
+
+    /// Create a folder inside `parentFolderID` (nil = top level) and return its
+    /// id. Folder names need not be unique.
+    ///
+    /// `id` makes the create idempotent for a caller that may retry (automation
+    /// derives it from its idempotency token): a second call with the same id
+    /// writes nothing and returns the folder that is already there.
+    @discardableResult
+    public func createGroupFolder(
+        name: String, inFolder parentFolderID: String?, id: UUID = UUID()
+    ) async throws -> String {
+        try await performSerializedGroupMutation {
+            guard let sync = self.sync else { throw SidecarUnavailableError() }
+            try await self.requireFreshGroupHierarchy()
+            let parent = try self.validatedDestination(parentFolderID)
+            let folder = try sync.createGroupFolder(name: name, parentFolderID: parent, id: id)
+            await self.reloadGroupHierarchy()
+            self.postDidReload(contactDataChanged: false)
+            return folder.id
+        }
+    }
+
+    /// Rename a folder. Never moves it.
+    public func renameGroupFolder(id: String, to name: String) async throws {
+        try await performSerializedGroupMutation {
+            guard let sync = self.sync else { throw SidecarUnavailableError() }
+            try await self.requireFreshGroupHierarchy()
+            let folderID = try self.validatedLiveFolder(id)
+            guard try sync.renameGroupFolder(id: folderID, to: name) else { return }
+            await self.reloadGroupHierarchy()
+            self.postDidReload(contactDataChanged: false)
+        }
+    }
+
+    /// Move a folder — and with it everything inside — into `parentFolderID`
+    /// (nil = top level). A folder cannot move into itself or anything beneath
+    /// it. Moving to top level is also how a user clears an assignment the tree
+    /// could not honor (a suppressed cycle edge, a parent that never arrived).
+    public func moveGroupFolder(id: String, toFolder parentFolderID: String?) async throws {
+        try await performSerializedGroupMutation {
+            guard let sync = self.sync else { throw SidecarUnavailableError() }
+            try await self.requireFreshGroupHierarchy()
+            let folderID = try self.validatedLiveFolder(id)
+            let parent = try self.validatedDestination(parentFolderID)
+            if let parent {
+                guard !self.groupFolderTree.isFolder(parent, inSubtreeOf: folderID) else {
+                    throw GroupHierarchyError.wouldCreateCycle
+                }
+                try self.requireMoveTakesEffect(folderID: folderID, into: parent)
+            }
+            guard try sync.setGroupFolderParent(id: folderID, parentFolderID: parent) else { return }
+            await self.reloadGroupHierarchy()
+            self.postDidReload(contactDataChanged: false)
+        }
+    }
+
+    /// Delete a folder. Only the container goes: its folders and groups move up
+    /// one level — to where the folder itself is SHOWN, captured now — and no
+    /// group or contact is touched.
+    public func deleteGroupFolder(id: String) async throws {
+        try await performSerializedGroupMutation {
+            guard let sync = self.sync else { throw SidecarUnavailableError() }
+            try await self.requireFreshGroupHierarchy()
+            let folderID = try self.validatedLiveFolder(id)
+            let promotedTo = self.groupFolderTree.folders[folderID]?.parentFolderID
+            guard try sync.markGroupFolderDeleted(id: folderID, promotedToFolderID: promotedTo) else {
+                return
+            }
+            await self.reloadGroupHierarchy()
+            self.postDidReload(contactDataChanged: false)
+        }
+    }
+
+    /// Move `group` into `parentFolderID` (nil = top level).
+    ///
+    /// The placement lives on the group's durable identity — the SAME identity a
+    /// favorite uses. It is looked up exactly as favoriting looks it up and
+    /// minted only when the group has none, so a group never gets a second
+    /// identity and a favorited group stays favorited. Only the placement cell
+    /// is written. A group with no identity is already at top level, so moving
+    /// it there mints nothing.
+    public func moveGroup(_ group: ContactGroup, toFolder parentFolderID: String?) async throws {
+        try await performSerializedGroupMutation {
+            guard let sync = self.sync else { throw SidecarUnavailableError() }
+            try await self.requireFreshGroupHierarchy()
+            let parent = try self.validatedDestination(parentFolderID)
+
+            let identity: GroupIdentity
+            if let existing = try await self.existingGroupIdentity(for: group) {
+                identity = existing
+            } else if parent != nil {
+                let fingerprint = try await self.groupFingerprint(for: group)
+                identity = try sync.mintGroupIdentity(
+                    name: group.name,
+                    account: nil,
+                    memberCount: fingerprint.memberCount,
+                    memberHash: fingerprint.memberHash,
+                    hashedMemberCount: fingerprint.hashedMemberCount,
+                    localID: group.localID)
+                self.cache(group: group, forIdentityID: identity.id)
+            } else {
+                return
+            }
+
+            // Identity adoption/fingerprinting awaits Contacts. A peer may
+            // delete or invalidate the destination while that read is in flight.
+            // Re-read, then validate and write without another suspension.
+            try await self.requireFreshGroupHierarchy()
+            _ = try self.validatedDestination(parent)
+            let key = SidecarKey(kind: .group, id: identity.id)
+            guard !self.hierarchyRecords.unavailableKeys.contains(key),
+                  !self.hierarchyRecords.unreadableKeys.contains(key) else {
+                throw GroupHierarchyError.recordUnavailable(key)
+            }
+            _ = try sync.setGroupPlacement(
+                identityID: identity.id,
+                parentFolderID: parent,
+                observed: self.observedPlacementStamps(for: group))
+            await self.reloadGroupHierarchy()
+            self.postDidReload(contactDataChanged: false)
+        }
+    }
+
+    /// Create a Contacts group and place it in `parentFolderID`.
+    ///
+    /// The group is created FIRST. If placing it then fails, the group exists
+    /// and is reachable at top level, and the error carries it so the caller can
+    /// retry `moveGroup(_:toFolder:)` with that same group — never create again,
+    /// which would leave a duplicate group behind.
+    @discardableResult
+    public func createGroup(name: String, inFolder parentFolderID: String?) async throws -> ContactGroup {
+        let group = try await createGroup(name: name)
+        guard let parentFolderID else { return group }
+        do {
+            try await moveGroup(group, toFolder: parentFolderID)
+        } catch {
+            throw GroupPlacementFailedError(group: group, underlying: error)
+        }
+        return group
+    }
+
+    /// Finish clearing the folder placements of a group whose Contacts record
+    /// is already gone. Never deletes anything in Contacts.
+    public func retryGroupPlacementCleanup(_ pending: PendingGroupPlacementCleanup) async throws {
+        try await performSerializedGroupMutation {
+            try await self.clearPlacements(pending)
+        }
+    }
+
+    /// The durable identities that resolve to `group`, captured BEFORE the group
+    /// is deleted: afterwards nothing resolves to it and they could not be found.
+    private func placementCleanup(for group: ContactGroup) -> PendingGroupPlacementCleanup {
+        let localID = group.localID.lowercased()
+        let identityIDs = resolvedGroupsByIdentityID
+            .filter { $0.value.localID.lowercased() == localID }
+            .map(\.key)
+            .sorted()
+        let stamps = identityIDs.compactMap { hierarchyRecords.groupPlacements[$0]?.modifiedAt }
+        return PendingGroupPlacementCleanup(identityIDs: identityIDs, observedStamps: stamps)
+    }
+
+    /// Clear each captured identity's placement with a stamp later than every
+    /// placement seen for the group, so an older assignment that syncs in
+    /// afterwards cannot put a same-named successor back in the folder. An
+    /// identity that was never placed is left alone (clearing "no placement"
+    /// writes nothing).
+    private func clearPlacements(_ pending: PendingGroupPlacementCleanup) async throws {
+        guard let sync, !pending.identityIDs.isEmpty else { return }
+        var wrote = false
+        for identityID in pending.identityIDs {
+            if try sync.setGroupPlacement(
+                identityID: identityID, parentFolderID: nil, observed: pending.observedStamps) {
+                wrote = true
+            }
+        }
+        guard wrote else { return }
+        await reloadGroupHierarchy()
+        postDidReload(contactDataChanged: false)
+    }
+
+    /// Stamps of every placement stored for `group`, across the identities that
+    /// resolve to it (more than one only after a cross-device first-touch race).
+    private func observedPlacementStamps(for group: ContactGroup) -> [Date] {
+        placementCleanup(for: group).observedStamps
+    }
+
+    /// `rawFolderID` as a live, trustworthy folder of the current tree.
+    private func validatedLiveFolder(_ rawFolderID: String) throws -> String {
+        guard let folderID = GroupHierarchyCells.canonicalFolderID(rawFolderID) else {
+            throw GroupHierarchyError.invalidFolderID(rawFolderID)
+        }
+        let key = SidecarKey(kind: .groupFolder, id: folderID)
+        guard !hierarchyRecords.unavailableKeys.contains(key),
+              !hierarchyRecords.unreadableKeys.contains(key) else {
+            throw GroupHierarchyError.recordUnavailable(key)
+        }
+        guard groupFolderTree.folders[folderID] != nil else {
+            if hierarchyRecords.folders.contains(where: { $0.id == folderID && $0.isDeleted }) {
+                throw GroupHierarchyError.folderDeleted(folderID)
+            }
+            throw GroupHierarchyError.folderNotFound(folderID)
+        }
+        return folderID
+    }
+
+    /// A move or create destination: nil for top level, otherwise a live folder.
+    private func validatedDestination(_ rawFolderID: String?) throws -> String? {
+        try rawFolderID.map(validatedLiveFolder)
+    }
+
+    /// Refuse a folder move the tree would not honor. The subtree check above
+    /// catches every cycle the CURRENT tree can show. This catches the rest — a
+    /// cycle that closes through an edge the tree is already suppressing — by
+    /// building the tree the move would produce, with the stamp the move would
+    /// carry: the folder must land in `parent`, and no other folder may be
+    /// knocked out of place to make room for it.
+    private func requireMoveTakesEffect(folderID: String, into parent: String) throws {
+        guard let index = hierarchyRecords.folders.firstIndex(where: { $0.id == folderID }) else {
+            throw GroupHierarchyError.folderNotFound(folderID)
+        }
+        let current = hierarchyRecords.folders[index]
+        let stamp = try GroupHierarchyCells.stamp(
+            laterThan: current.placement.map { [$0.modifiedAt] } ?? [], now: Date())
+        var proposed = hierarchyRecords
+        proposed.folders[index] = GroupFolderRecord(
+            id: current.id,
+            name: current.name,
+            placement: FolderPlacement(
+                parentFolderID: parent, modifiedAt: stamp, modifiedBy: sync?.deviceID ?? ""),
+            deletion: current.deletion)
+        let result = GroupFolderTree(records: proposed, groups: [])
+        let suppressed: (GroupFolderTree) -> Set<String> = { tree in
+            Set(tree.folders.values.filter { $0.status == .cycleSuppressed }.map(\.id))
+        }
+        guard result.folders[folderID]?.parentFolderID == parent,
+              suppressed(result).isSubset(of: suppressed(groupFolderTree)) else {
+            throw GroupHierarchyError.wouldCreateCycle
+        }
+    }
+
+    // MARK: - Group and folder members
+
+    /// Missing or untrustworthy data is not evidence that a folder was deleted.
+    /// Only a readable deletion marker lets an open member list leave its scope.
+    public func memberScopeAvailability(for scope: GroupMemberScope) -> GroupMemberScopeAvailability {
+        guard case .folder(let rawID) = scope else { return .available }
+        guard !hierarchyRecords.enumerationFailed else { return .unavailable }
+        let id = rawID.lowercased()
+        let key = SidecarKey(kind: .groupFolder, id: id)
+        guard !hierarchyRecords.unavailableKeys.contains(key),
+              !hierarchyRecords.unreadableKeys.contains(key) else { return .unavailable }
+        if hierarchyRecords.folders.contains(where: { $0.id == id && $0.isDeleted }) {
+            return .deleted
+        }
+        return groupFolderTree.folders[id] == nil ? .unavailable : .available
+    }
+
+    /// The repository state a member read is valid against, as of now.
+    public var memberRevisions: GroupMemberSnapshot.Revisions {
+        GroupMemberSnapshot.Revisions(
+            hierarchy: groupHierarchyRevision,
+            membership: groupMembershipRevision,
+            contactData: contactDataRevision)
+    }
+
+    /// Whether nothing `snapshot` depends on moved while it was being read. A
+    /// caller checks this after the await and before publishing; a snapshot that
+    /// spans a change is discarded and read again, never shown.
+    public func isCurrent(_ snapshot: GroupMemberSnapshot) -> Bool {
+        snapshot.revisions == memberRevisions
+    }
+
+    /// The members of a group, or of every group beneath a folder.
+    ///
+    /// Error-aware, unlike `members(ofGroup:)`: a group whose fetch fails is
+    /// reported in `failedGroups`, never folded in as "no members", so a partial
+    /// union can be labeled as partial. Never throws and never mints: it is a
+    /// pure read.
+    ///
+    /// A folder covers every descendant group, whatever a list shows expanded.
+    /// Each group is fetched ONCE, a bounded number at a time. The results are
+    /// then combined in TREE order, not completion order, so the same inputs
+    /// always give the same snapshot. One person reached through several groups
+    /// is first normalized by the Contacts handle the fetches share — for this
+    /// request only; it is never a key the caller sees — to the repository's
+    /// CURRENT record for that handle, so every row carries the identity the
+    /// rest of the app uses. When two fetches disagree about a contact this
+    /// repository does not cache, the record is re-read rather than letting
+    /// whichever fetch finished last decide. The union is then taken by
+    /// `ContactID`. Contacts are never merged by name or email.
+    public func memberSnapshot(for scope: GroupMemberScope) async -> GroupMemberSnapshot {
+        let revisions = memberRevisions
+        let hierarchyIsComplete: Bool
+        let scopeGroups: [ContactGroup]
+        switch scope {
+        case .group(let group):
+            hierarchyIsComplete = true
+            scopeGroups = [group]
+        case .folder(let id):
+            hierarchyIsComplete = hierarchyRecords.isComplete
+            scopeGroups = groupFolderTree
+                .descendantGroupLocalIDs(ofFolder: id.lowercased())
+                .compactMap { group(localID: $0) }
+        }
+
+        let fetched = await fetchMembers(of: scopeGroups)
+
+        var order: [String] = []
+        var versions: [String: [Contact]] = [:]
+        var contributing: [String: [ContactGroup]] = [:]
+        var failedGroups: Set<ContactGroup> = []
+        for (group, result) in zip(scopeGroups, fetched) {
+            guard case .success(let members) = result else {
+                failedGroups.insert(group)
+                continue
+            }
+            for member in members {
+                if versions[member.localID] == nil { order.append(member.localID) }
+                versions[member.localID, default: []].append(member)
+                if contributing[member.localID]?.last != group {
+                    contributing[member.localID, default: []].append(group)
+                }
+            }
+        }
+
+        var contacts: [Contact] = []
+        var contributingGroups: [ContactID: [ContactGroup]] = [:]
+        for localID in order {
+            guard let fetchedVersions = versions[localID], let first = fetchedVersions.first else {
+                continue
+            }
+            let current: Contact
+            if let cached = contactsByLocalID[localID] {
+                current = cached
+            } else if fetchedVersions.allSatisfy({ $0.contactID == first.contactID }) {
+                current = first
+            } else {
+                // Two fetches saw this contact on either side of an identity
+                // change. Ask again instead of picking one of them.
+                guard let resolved = try? await contactsStore.fetch(localID: localID) else {
+                    // Neither conflicting version is authoritative. Keep the
+                    // other members, but report every affected group as partial.
+                    failedGroups.formUnion(contributing[localID] ?? [])
+                    continue
+                }
+                current = resolved
+            }
+            let id = current.contactID
+            let groupsForContact = contributing[localID] ?? []
+            if contributingGroups[id] == nil {
+                contacts.append(current)
+                contributingGroups[id] = groupsForContact
+            } else {
+                for group in groupsForContact where contributingGroups[id]?.contains(group) == false {
+                    contributingGroups[id]?.append(group)
+                }
+            }
+        }
+
+        return GroupMemberSnapshot(
+            scope: scope,
+            groups: scopeGroups,
+            contacts: contacts,
+            contributingGroups: contributingGroups,
+            failedGroups: scopeGroups.filter { failedGroups.contains($0) },
+            revisions: revisions,
+            hierarchyIsComplete: hierarchyIsComplete)
+    }
+
+    /// Fetch each group's members, at most `memberFetchConcurrency` at a time,
+    /// returning the results in the order of `groups`.
+    private func fetchMembers(of groups: [ContactGroup]) async -> [Result<[Contact], Error>] {
+        let store = contactsStore
+        var results = [Result<[Contact], Error>?](repeating: nil, count: groups.count)
+        await withTaskGroup(of: (Int, Result<[Contact], Error>).self) { taskGroup in
+            var next = 0
+            func addNext() {
+                guard next < groups.count else { return }
+                let index = next
+                let localID = groups[index].localID
+                next += 1
+                taskGroup.addTask {
+                    do {
+                        return (index, .success(try await store.fetchMembers(ofGroup: localID)))
+                    } catch {
+                        return (index, .failure(error))
+                    }
+                }
+            }
+            for _ in 0..<min(Self.memberFetchConcurrency, groups.count) { addNext() }
+            for await (index, result) in taskGroup {
+                results[index] = result
+                addNext()
+            }
+        }
+        // Every added task reports, so no slot stays nil. Should one ever, it is
+        // a FAILED fetch — an empty success would pass a missing group off as a
+        // group with no members.
+        return results.map { $0 ?? .failure(CancellationError()) }
     }
 
     /// Project persisted favorites into app-facing rows without exposing contact
@@ -3660,6 +4273,7 @@ public final class ContactsRepository: NSObject {
     /// reproduces the stale one.
     private func setContacts(_ newValue: [Contact]) {
         contacts = newValue
+        contactDataRevision &+= 1
 
         var byLocalID: [String: Contact] = [:]
         var byGuessWhoID: [String: String] = [:]
@@ -3739,6 +4353,11 @@ public final class ContactsRepository: NSObject {
         let requiresFullReload = note.userInfo?[GuessWhoContactsDidChangeKey.requiresFullReload] as? Bool ?? false
         Task { @MainActor [weak self] in
             guard let self else { return }
+            // Contacts changed underneath. The change set delivered here names
+            // contact records (`.updated` / `.deleted`) and carries nothing about
+            // group membership, so whether membership moved cannot be known from
+            // here; a member list has to assume it may have.
+            self.groupMembershipRevision &+= 1
             if requiresFullReload {
                 await self.reload()
             } else if let changeSet {
@@ -3774,12 +4393,14 @@ public final class ContactsRepository: NSObject {
     /// does not project (an event/guide/place edit): a scoped change naming NONE
     /// of these is irrelevant and must not mint a generation or cancel a
     /// pending/in-flight refresh it cannot affect. `.contact` and `.link` drive
-    /// the scoped projection reads; `.group` (a favorite-identity record) has no
-    /// scoped projection and escalates to the full sidecar-derived refresh in
-    /// `refreshFromSidecarChange`. A coarse kind-directory delivery has nil
+    /// the scoped projection reads; `.group` (a group-identity record) has no
+    /// scoped projection: it resolves the named identities and escalates to the
+    /// full sidecar-derived refresh in `refreshFromSidecarChange`. `.groupFolder`
+    /// feeds only the group hierarchy, which is re-read without touching any
+    /// contact-derived cache. A coarse kind-directory delivery has nil
     /// keys but known `changedKinds`; only globally unknown kinds are always
     /// relevant. Mirrors `EventsRepository.handledKinds`.
-    private static let handledSidecarKinds: Set<SidecarKind> = [.contact, .link, .group]
+    private static let handledSidecarKinds: Set<SidecarKind> = [.contact, .link, .group, .groupFolder]
 
     /// Monotonic token advanced whenever a new refresh is SCHEDULED — every
     /// `scheduleSidecarRefresh(_:)` call AND every `reload()` — so scheduling a
@@ -3854,18 +4475,49 @@ public final class ContactsRepository: NSObject {
     /// projection (the bulk timestamp cache that drives time-ordered sorts
     /// and bucket sections) and post a presentation-only reload
     /// (`contactDataChanged: false`, so the app's decoded-photo cache
-    /// survives). READ-ONLY over sidecars — this path must never write, or a
-    /// watcher post would re-trigger itself in a loop.
+    /// survives).
+    ///
+    /// READ-ONLY over sidecars, with ONE bounded exception. A write from this
+    /// path makes the watcher post again, so an unconditional write would loop.
+    /// The exception is group-identity resolution for a delivery that may name
+    /// a `.group` sidecar: a peer device's identity arrives with no pin for
+    /// this device, and resolving it writes this device's pin. At most two
+    /// writes per identity per pass: a prune of this device's dead pin, then
+    /// the adopting pin when a same-name group is live. They settle instead of
+    /// looping: the echo of an adopting pin re-resolves through the now-live
+    /// pin, which `resolveGroupIdentity` returns before any write; the echo of
+    /// a prune with no group to adopt finds no pin and no name match, and
+    /// writes nothing; and `writeGroupIdentity` skips a record that equals
+    /// what is on disk. The pass never refreshes fingerprints, so an
+    /// already-pinned identity costs one sidecar read and no Contacts fetch.
     private func refreshFromSidecarChange(_ changeSet: SidecarChangeSet, generation: Int) async {
         guard let changedKeys = changeSet.changedKeys else {
-            await performFullSidecarProjectionRefresh(generation: generation)
+            // No exact keys. Known kinds that exclude `.group` cannot carry an
+            // identity; a coarse `.group` directory item or a globally unknown
+            // batch (nil kinds) can, and names no key to scope to. The same
+            // reasoning covers `.groupFolder` and the hierarchy.
+            let kinds = changeSet.changedKinds
+            if kinds == [.groupFolder] {
+                // Only folders changed: no contact projection to re-read.
+                await refreshGroupHierarchyOnly(generation: generation)
+                return
+            }
+            let pass: GroupIdentityPass
+            if kinds?.contains(.group) ?? true {
+                pass = .resolveAll
+            } else if kinds?.contains(.groupFolder) ?? true {
+                pass = .hierarchyOnly
+            } else {
+                pass = .none
+            }
+            await performFullSidecarProjectionRefresh(generation: generation, groupIdentities: pass)
             return
         }
 
         let contactKeys = Set(changedKeys.filter { $0.kind == .contact })
         let linksChanged = changedKeys.contains { $0.kind == .link }
         // FIX D: among the kinds with no scoped projection on this path, ONLY
-        // `.group` (a favorite-identity record, which feeds group resolution)
+        // `.group` (a group-identity record, which feeds group resolution)
         // affects the contacts projection, so it alone escalates to the full
         // sidecar-derived refresh — which subsumes any `.contact` / `.link`
         // keys present alongside it. Every OTHER unscopable kind (`.guide`,
@@ -3874,24 +4526,34 @@ public final class ContactsRepository: NSObject {
         // mirroring `EventsRepository`. This is unlike the earlier FIX 4, which
         // escalated ANY unscopable kind to a full refresh.
         let groupChanged = changedKeys.contains { $0.kind == .group }
+        // `.groupFolder` feeds the group hierarchy only — never the contacts
+        // projection — so it re-reads the hierarchy and nothing else.
+        let folderChanged = changedKeys.contains { $0.kind == .groupFolder }
 
         // Relevance filter: a scoped set naming none of `.contact` / `.link` /
-        // `.group` (an event/guide/place-only delivery) moves no contacts
-        // projection, so do zero scan work and post nothing. Normally
+        // `.group` / `.groupFolder` (an event/guide/place-only delivery) moves
+        // nothing this repository projects, so do zero scan work and post
+        // nothing. Normally
         // unreachable — `scheduleSidecarRefresh` drops such a delivery before it
         // can mint a generation — but stay safe if one ever coalesces through:
         // settle any loading state an aborted older reload left set, rather than
         // strand it.
-        guard !contactKeys.isEmpty || linksChanged || groupChanged else {
+        guard !contactKeys.isEmpty || linksChanged || groupChanged || folderChanged else {
             if generation == refreshGeneration { isLoading = false }
             return
         }
 
         // A `.group` change (possibly mixed with `.contact` / `.link`) has no
         // scoped projection; the full sidecar-derived refresh subsumes any
-        // scopable keys alongside it and posts on its own.
+        // scopable keys alongside it and posts on its own. The named identities
+        // resolve first, so the reload it posts already sees a peer device's
+        // newly arrived identity as this device's live group.
+        // (`refreshAllGroupIdentities` orders the pass by identity UUID itself.)
         if groupChanged {
-            await performFullSidecarProjectionRefresh(generation: generation)
+            let groupKeys = Array(changedKeys.filter { $0.kind == .group })
+            await performFullSidecarProjectionRefresh(
+                generation: generation,
+                groupIdentities: .resolve(keys: groupKeys))
             return
         }
 
@@ -3910,8 +4572,40 @@ public final class ContactsRepository: NSObject {
             await refreshLinkProjection(generation: generation)
             guard generation == refreshGeneration else { return }
         }
+        if folderChanged {
+            await reloadGroupHierarchy()
+            guard generation == refreshGeneration else { return }
+        }
         isLoading = false
         postDidReload(contactDataChanged: false)
+    }
+
+    /// A delivery that can only have changed folders: re-read the hierarchy and
+    /// post, leaving every contact-derived cache alone.
+    private func refreshGroupHierarchyOnly(generation: Int) async {
+        await reloadGroupHierarchy()
+        guard generation == refreshGeneration else { return }
+        isLoading = false
+        postDidReload(contactDataChanged: false)
+    }
+
+    /// How much group-identity work one sidecar projection refresh performs.
+    private enum GroupIdentityPass: Equatable {
+        /// No `.group` sidecar can have changed (e.g. a coarse `.contact`
+        /// delivery): touch no identity.
+        case none
+        /// No `.group` sidecar can have changed but a `.groupFolder` may have:
+        /// touch no identity, and re-read the group hierarchy.
+        case hierarchyOnly
+        /// Watcher delivery naming exact `.group` keys: resolve just those.
+        case resolve(keys: [SidecarKey])
+        /// Watcher delivery whose scope may include `.group` but names no key
+        /// (a coarse kind-directory item, or a globally unknown batch): resolve
+        /// every stored identity.
+        case resolveAll
+        /// Contact reload: resolve every identity AND refresh its fingerprint,
+        /// now that the contact -> GuessWho-ID cache is full.
+        case resolveAndRefreshAll
     }
 
     /// The full sidecar-derived projection refresh: re-read the bulk timestamp
@@ -3921,8 +4615,11 @@ public final class ContactsRepository: NSObject {
     /// `.group`-change fallback (FIX D). The cache replace and post are gated on
     /// `generation`, so a newer refresh that began meanwhile is never
     /// overwritten by this one.
-    private func performFullSidecarProjectionRefresh(generation: Int) async {
-        await refreshFullSidecarProjectionCaches(generation: generation)
+    private func performFullSidecarProjectionRefresh(
+        generation: Int,
+        groupIdentities pass: GroupIdentityPass
+    ) async {
+        await refreshFullSidecarProjectionCaches(generation: generation, groupIdentities: pass)
         guard generation == refreshGeneration else { return }
         isLoading = false
         postDidReload(contactDataChanged: false)
