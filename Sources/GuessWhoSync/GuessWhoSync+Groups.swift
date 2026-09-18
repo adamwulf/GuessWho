@@ -147,7 +147,9 @@ extension GuessWhoSync {
 
     // MARK: - Private encode / decode
 
-    private static func decodeGroupIdentity(from envelope: SidecarEnvelope) -> GroupIdentity? {
+    /// Shared with the hierarchy read: a placement cannot be attributed when
+    /// the same envelope has no decodable group identity.
+    static func decodeGroupIdentity(from envelope: SidecarEnvelope) -> GroupIdentity? {
         guard let cell = envelope.fields[groupIdentityCellKey],
               cell.deletedAt == nil,
               case .object(let inner) = cell.value,

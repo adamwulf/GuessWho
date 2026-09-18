@@ -54,7 +54,15 @@ extension GuessWhoSync {
             case .group:
                 switch GroupHierarchyCells.decodePlacement(in: envelope) {
                 case .absent: break
-                case .value(let placement): records.groupPlacements[key.id] = placement
+                case .value(let placement):
+                    // Identity resolution skips undecodable records. A valid
+                    // placement beside one must not make a folder look empty
+                    // and complete merely because its group cannot be mapped.
+                    guard Self.decodeGroupIdentity(from: envelope) != nil else {
+                        records.unavailableKeys.insert(key)
+                        return
+                    }
+                    records.groupPlacements[key.id] = placement
                 case .malformed: records.unavailableKeys.insert(key)
                 }
             case .contact, .event, .link, .guide, .place:

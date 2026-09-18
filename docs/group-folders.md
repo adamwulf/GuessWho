@@ -184,9 +184,10 @@ returns a `GroupMemberSnapshot`[^33]. It never throws and mints nothing.
 - A group whose fetch fails is reported in `failedGroups`; `emptiness` separates
   a folder with no groups, groups with no members, and nothing to show because a
   fetch failed[^35]. A partial result is never labeled as complete.
-- A folder read is also partial when hierarchy enumeration, a placement, or a
-  folder record is unavailable. Missing hierarchy can hide whole groups, so
-  `hierarchyIsComplete` records this even when `failedGroups` is empty[^33][^35].
+- A folder read is also partial when hierarchy enumeration, a placement, a
+  placed group's identity, or a folder record is unavailable. Missing hierarchy
+  can hide whole groups, so `hierarchyIsComplete` records this even when
+  `failedGroups` is empty[^33][^35].
 - A multi-fetch read is not a transaction. The snapshot records the hierarchy,
   membership, and contact-data revisions it started from, and `isCurrent(_:)`
   says whether any moved[^36]. A caller discards a snapshot that spans a change

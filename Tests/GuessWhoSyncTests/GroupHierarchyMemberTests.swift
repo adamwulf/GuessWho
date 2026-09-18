@@ -6,8 +6,10 @@ import GuessWhoSyncTesting
 @Suite("Folder members with uncertain hierarchy", .serialized)
 @MainActor
 struct GroupHierarchyMemberTests {
-    @Test(arguments: [true, false], [true, false])
-    func unknownPlacementMakesFolderMembersPartial(unreadable: Bool, hasKnownMembers: Bool) async throws {
+    enum Damage: CaseIterable, Sendable { case unreadable, placement, identity, missingIdentity }
+
+    @Test(arguments: Damage.allCases, [true, false])
+    func unknownPlacementMakesFolderMembersPartial(damage: Damage, hasKnownMembers: Bool) async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         let contacts = InMemoryContactStore(contacts: [Contact(localID: "ann", givenName: "Ann")])
@@ -22,11 +24,23 @@ struct GroupHierarchyMemberTests {
         try sync.setGroupPlacement(identityID: identity.id, parentFolderID: folder.id)
         let key = SidecarKey(kind: .group, id: identity.id)
         let original = try #require(try backing.read(key))
-        if unreadable {
+        if damage == .unreadable {
             sidecars.unreadable = [key]
         } else {
             var fields = original.fields
-            fields["parentFolder"] = SidecarCell(value: .string("future format"), modifiedAt: Date(), modifiedBy: "B")
+            switch damage {
+            case .placement:
+                fields["parentFolder"] = SidecarCell(value: .string("future format"), modifiedAt: Date(), modifiedBy: "B")
+            case .identity:
+                let cell = try #require(fields[GuessWhoSync.groupIdentityCellKey])
+                guard case .object(var inner) = cell.value else { return }
+                inner["value"] = .string("{invalid JSON")
+                fields[GuessWhoSync.groupIdentityCellKey] = SidecarCell(
+                    value: .object(inner), modifiedAt: cell.modifiedAt, modifiedBy: cell.modifiedBy)
+            case .missingIdentity:
+                fields.removeValue(forKey: GuessWhoSync.groupIdentityCellKey)
+            case .unreadable: break
+            }
             try backing.write(SidecarEnvelope(entityID: key.id, fields: fields), at: key)
         }
         if hasKnownMembers {
@@ -47,7 +61,7 @@ struct GroupHierarchyMemberTests {
         #expect(snapshot.failedGroups.isEmpty)
         // A first-load identity scan also fails when a group record is unreadable.
         // Malformed placement alone still permits resolving the other group.
-        let showsKnownMembers = hasKnownMembers && !unreadable
+        let showsKnownMembers = hasKnownMembers && damage != .unreadable
         #expect(snapshot.contacts.map(\.localID) == (showsKnownMembers ? ["ann"] : []))
         #expect(snapshot.emptiness == (showsKnownMembers ? .notEmpty : .unavailable))
         // A direct group read does not depend on folder placements.

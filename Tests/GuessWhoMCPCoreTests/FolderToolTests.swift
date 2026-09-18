@@ -286,6 +286,14 @@ final class FolderToolTests: XCTestCase {
     }
 
     func testUnavailablePlacementIsReportedAsPartialOnTheWire() async throws {
+        try await assertUnavailableGroupRecordIsPartial(damageIdentity: false)
+    }
+
+    func testMalformedIdentityWithValidPlacementIsReportedAsPartialOnTheWire() async throws {
+        try await assertUnavailableGroupRecordIsPartial(damageIdentity: true)
+    }
+
+    private func assertUnavailableGroupRecordIsPartial(damageIdentity: Bool) async throws {
         let f = try await fixture()
         defer { f.cleanUp() }
         let (folderID, hidden) = try await folderWithDisjointGroups(f)
@@ -293,7 +301,15 @@ final class FolderToolTests: XCTestCase {
         let key = SidecarKey(kind: .group, id: identity.id)
         let original = try XCTUnwrap(try f.sidecars.read(key))
         var fields = original.fields
-        fields["parentFolder"] = SidecarCell(value: .string("future format"), modifiedAt: Date(), modifiedBy: "B")
+        if damageIdentity {
+            let cell = try XCTUnwrap(fields[GuessWhoSync.groupIdentityCellKey])
+            guard case .object(var inner) = cell.value else { return XCTFail("Expected identity object") }
+            inner["value"] = .string("{invalid JSON")
+            fields[GuessWhoSync.groupIdentityCellKey] = SidecarCell(
+                value: .object(inner), modifiedAt: cell.modifiedAt, modifiedBy: cell.modifiedBy)
+        } else {
+            fields["parentFolder"] = SidecarCell(value: .string("future format"), modifiedAt: Date(), modifiedBy: "B")
+        }
         try f.sidecars.write(SidecarEnvelope(entityID: key.id, fields: fields), at: key)
 
         let partial = try members(await call(f, .foldersListMembers, ["folderId": .string(folderID)]))
