@@ -158,6 +158,10 @@ actor RecordingContactStore: ContactStoreProtocol {
         memberReadFailures.insert(localID)
     }
 
+    func restoreMemberRead(forGroup localID: String) {
+        memberReadFailures.remove(localID)
+    }
+
     func clearMembershipFailures() {
         membershipFailureByLocalID.removeAll()
     }

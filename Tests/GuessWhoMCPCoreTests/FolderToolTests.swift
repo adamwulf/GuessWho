@@ -152,6 +152,85 @@ final class FolderToolTests: XCTestCase {
         XCTAssertNil(second.nextCursor)
     }
 
+    /// Unlike `populatedFolder`, these groups have disjoint members. Losing or
+    /// recovering the first group shifts every later member's page offset.
+    private func folderWithDisjointGroups(_ f: MCPProductionFixture) async throws -> (String, ContactGroup) {
+        let firstGroup = try XCTUnwrap(f.repository.groups.first)
+        _ = try await f.seedGroup(named: "ZZZ other", memberLocalIDs: [
+            MCPProductionFixture.blaiseLocalID, MCPProductionFixture.orgLocalID,
+        ])
+        let root = try folder(await call(f, .foldersCreate, ["name": "All groups"]))
+        for group in f.repository.groups {
+            try await f.repository.moveGroup(group, toFolder: root.id)
+        }
+        return (root.id, firstGroup)
+    }
+
+    func testMemberCursorRejectsNewReadFailureWithoutRevisionChange() async throws {
+        let f = try await fixture()
+        defer { f.cleanUp() }
+        let (id, group) = try await folderWithDisjointGroups(f)
+        let first = try members(await call(f, .foldersListMembers, ["folderId": .string(id), "limit": 1]))
+        XCTAssertEqual(first.items.map(\.id), [MCPProductionFixture.adaGuessWhoID])
+        let cursor = try XCTUnwrap(first.nextCursor)
+        let revisions = f.repository.memberRevisions
+
+        await f.store.failMemberRead(forGroup: group.localID)
+        let response = try await call(f, .foldersListMembers, [
+            "folderId": .string(id), "limit": 1, "cursor": .string(cursor),
+        ])
+
+        XCTAssertEqual(f.repository.memberRevisions, revisions)
+        XCTAssertEqual(response.errorPayload?.code, .invalidParams)
+        XCTAssertTrue(response.errorPayload?.message.contains("cursor") == true)
+        // Restarting still returns the available members, labeled partial.
+        let restarted = try members(await call(f, .foldersListMembers, ["folderId": .string(id)]))
+        XCTAssertTrue(restarted.partial)
+        XCTAssertEqual(restarted.items.count, 2)
+    }
+
+    func testMemberCursorRejectsRecoveredReadWithoutRevisionChange() async throws {
+        let f = try await fixture()
+        defer { f.cleanUp() }
+        let (id, group) = try await folderWithDisjointGroups(f)
+        await f.store.failMemberRead(forGroup: group.localID)
+        let first = try members(await call(f, .foldersListMembers, ["folderId": .string(id), "limit": 1]))
+        XCTAssertTrue(first.partial)
+        let cursor = try XCTUnwrap(first.nextCursor)
+        let revisions = f.repository.memberRevisions
+
+        await f.store.restoreMemberRead(forGroup: group.localID)
+        let response = try await call(f, .foldersListMembers, [
+            "folderId": .string(id), "limit": 1, "cursor": .string(cursor),
+        ])
+
+        XCTAssertEqual(f.repository.memberRevisions, revisions)
+        XCTAssertEqual(response.errorPayload?.code, .invalidParams)
+        XCTAssertTrue(response.errorPayload?.message.contains("cursor") == true)
+        let restarted = try members(await call(f, .foldersListMembers, ["folderId": .string(id)]))
+        XCTAssertFalse(restarted.partial)
+        XCTAssertEqual(restarted.items.count, 3)
+    }
+
+    func testMemberCursorContinuesAnUnchangedPartialResult() async throws {
+        let f = try await fixture()
+        defer { f.cleanUp() }
+        let (id, group) = try await folderWithDisjointGroups(f)
+        await f.store.failMemberRead(forGroup: group.localID)
+        let all = try members(await call(f, .foldersListMembers, ["folderId": .string(id)]))
+        let first = try members(await call(f, .foldersListMembers, ["folderId": .string(id), "limit": 1]))
+        let cursor = try XCTUnwrap(first.nextCursor)
+        let second = try members(await call(f, .foldersListMembers, [
+            "folderId": .string(id), "limit": 1, "cursor": .string(cursor),
+        ]))
+
+        XCTAssertTrue(first.partial)
+        XCTAssertTrue(second.partial)
+        XCTAssertEqual(first.unloadedGroupIds, second.unloadedGroupIds)
+        XCTAssertEqual(first.items.map(\.id) + second.items.map(\.id), all.items.map(\.id))
+        XCTAssertNil(second.nextCursor)
+    }
+
     func testMemberCursorRejectsChangedMembershipContactsAndHierarchy() async throws {
         let f = try await fixture()
         defer { f.cleanUp() }

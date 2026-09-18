@@ -866,19 +866,22 @@ public actor ToolDispatcher {
         let hierarchy: Int
         let membership: Int
         let contactData: Int
+        let resultFingerprint: String
         let offset: Int
 
-        init(folderId: String, revisions: GroupMemberSnapshot.Revisions, offset: Int) {
+        init(folderId: String, revisions: GroupMemberSnapshot.Revisions, resultFingerprint: String, offset: Int) {
             self.folderId = folderId
             hierarchy = revisions.hierarchy
             membership = revisions.membership
             contactData = revisions.contactData
+            self.resultFingerprint = resultFingerprint
             self.offset = offset
         }
 
-        func matches(folderId: String, revisions: GroupMemberSnapshot.Revisions) -> Bool {
+        func matches(folderId: String, revisions: GroupMemberSnapshot.Revisions, resultFingerprint: String) -> Bool {
             self.folderId == folderId && hierarchy == revisions.hierarchy
                 && membership == revisions.membership && contactData == revisions.contactData
+                && self.resultFingerprint == resultFingerprint
         }
     }
 
@@ -908,11 +911,30 @@ public actor ToolDispatcher {
             return folderFailure(GroupHierarchyError.folderNotFound(id),
                                  helperId: helperId, messageId: messageId)
         }
+        // A transient group fetch failure (or recovery) changes the ordered
+        // union without advancing repository revisions. Bind the cursor to the
+        // actual rows and availability too, otherwise its offset can skip or
+        // repeat contacts on the next read. Hash the full wire result in a
+        // stable encoding; the cursor carries no contact details itself.
+        let allItems = snapshot.contacts.map {
+            WireMapping.summary($0, id: WireRecordID.contactID(for: $0))
+        }
+        let unloadedGroupIds = snapshot.failedGroups.map(WireRecordID.groupID)
+        let result = WireFolderMemberPage(
+            items: allItems, nextCursor: nil, partial: snapshot.isPartial,
+            unloadedGroupIds: unloadedGroupIds)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        guard let encodedResult = try? encoder.encode(result) else {
+            return .error(helperId: helperId, messageId: messageId, code: .readFailed,
+                          message: "The folder's members couldn't be read. Try again in a moment.")
+        }
+        let resultFingerprint = Data(SHA256.hash(data: encodedResult)).base64EncodedString()
         var offset = 0
         if let cursor {
             guard let data = Data(base64Encoded: cursor),
                   let parsed = try? JSONDecoder().decode(FolderMemberCursor.self, from: data),
-                  parsed.matches(folderId: id, revisions: snapshot.revisions),
+                  parsed.matches(folderId: id, revisions: snapshot.revisions, resultFingerprint: resultFingerprint),
                   parsed.offset >= 0, parsed.offset <= snapshot.contacts.count else {
                 return invalidCursor(helperId: helperId, messageId: messageId)
             }
@@ -922,19 +944,19 @@ public actor ToolDispatcher {
         let end = offset + min(count, snapshot.contacts.count - offset)
         let nextCursor: String?
         if end < snapshot.contacts.count {
-            let next = FolderMemberCursor(folderId: id, revisions: snapshot.revisions, offset: end)
+            let next = FolderMemberCursor(
+                folderId: id, revisions: snapshot.revisions,
+                resultFingerprint: resultFingerprint, offset: end)
             nextCursor = (try? JSONEncoder().encode(next))?.base64EncodedString()
         } else {
             nextCursor = nil
         }
-        let items = snapshot.contacts[offset..<end].map {
-            WireMapping.summary($0, id: WireRecordID.contactID(for: $0))
-        }
+        let items = Array(allItems[offset..<end])
         return .folderMemberPage(
             helperId: helperId, messageId: messageId,
             page: WireFolderMemberPage(items: items, nextCursor: nextCursor,
                                        partial: snapshot.isPartial,
-                                       unloadedGroupIds: snapshot.failedGroups.map(WireRecordID.groupID)))
+                                       unloadedGroupIds: unloadedGroupIds))
     }
 
     private static func folderDTO(_ folder: GroupFolderTree.Folder) -> WireFolder {
