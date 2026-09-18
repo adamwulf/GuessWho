@@ -215,10 +215,13 @@ pure types, tested in the app bundle (`GroupFolderPresentationTests`):
   folder that is new here starts open and closing a parent never forgets its
   children[^39]. The disclosure control toggles and never navigates.
 - **Selection.** A group opens its members at once. A folder opens the same
-  member list over every group beneath it. On Mac Catalyst a folder's single
-  click is held for the double-click interval, because opening pushes the member
-  list over the tree and a double click (expand or collapse) has to be ruled out
-  first[^40]. Returning from members preserves the selected tree row, including
+  member list over every group beneath it. On Mac Catalyst the tree stays in
+  the middle pane and members replace the rightmost pane; selecting a member
+  pushes its profile there, with Back returning to the members. Group selections
+  from Favorites use the same rightmost-pane behavior. A folder's single click
+  is held for the double-click interval so a double click only expands or
+  collapses it, leaving the detail pane alone[^40]. On iPhone, members push onto
+  the Groups navigation stack. The selected tree row is preserved, including
   the destination used by New Folder and New Group[^37].
 - **Drag and drop** is local and single-item. A folder's center means move
   inside. A gap means out to the top level **only** at the boundary of a
@@ -227,7 +230,8 @@ pure types, tested in the app bundle (`GroupFolderPresentationTests`):
   through one call, so both are validated and reported the same way[^42].
 - **Member list.** A folder reuses the group member list with no favorite star,
   a "Some groups couldn’t be loaded." banner with Retry for a partial result,
-  and a return to the tree when its folder is deleted[^43][^44]. Reloading also
+  and dismissal when its folder is deleted (clearing the rightmost pane on
+  Catalyst, returning to the tree on iPhone)[^43][^44]. Reloading also
   reconfigures retained rows whose contact contents changed, so edits repaint
   without replacing their row identities[^43]. The loader preserves the last
   accepted rows while retrying stale reads, pausing briefly after three stale

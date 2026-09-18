@@ -371,9 +371,8 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             // Already here, so keep the list and the detail column — but still
             // go back to the top of the section, which is what clicking a
             // sidebar row does on this platform (Music, Mail) and what the
-            // rebuild used to do for free. Guides, Groups and Favorites all push
-            // onto this column, so without this, clicking "Groups" while looking
-            // at a group's members would do nothing at all.
+            // rebuild used to do for free. Guides and Favorites can push
+            // onto this column, so clicking their sidebar row returns to the list.
             supplementaryNavigationController(in: split)?
                 .popToRootViewController(animated: true)
             return
@@ -423,8 +422,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// section list does — no more, no less: the FULL section list lands in the
     /// supplementary column with the record's row selected and scrolled into
     /// view, and the record's detail replaces the secondary column. A group
-    /// child pushes its member list and leaves the detail column on its
-    /// placeholder, because that is what a group row already does.
+    /// child shows its members in the secondary column, just like a group row.
     ///
     /// That equivalence is also why state restoration needs no new case: this
     /// ends in the same (section, record) state as a click through the list.
@@ -484,10 +482,10 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             )
 
         case .groups:
-            let (list, nav) = installGroupsList(in: split, appDelegate: appDelegate)
+            let list = installGroupsList(in: split, appDelegate: appDelegate)
             guard let group = item.group else { return }
             list.select(groupLocalID: group.localID)
-            showGroupMembers(group: group, on: nav, appDelegate: appDelegate)
+            showGroupMembers(scope: .group(group), appDelegate: appDelegate)
 
         case .guides:
             // A guide row pushes its places and leaves the detail column on its
@@ -666,10 +664,8 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             guidesRepository: appDelegate.guidesRepository,
             photoLoader: appDelegate.contactPhotoLoader
         )
-        // Hoist the nav so a favorited-group or favorited-guide tap can push
-        // its member / places list onto this supplementary column (the row
-        // selection inside then replaces the secondary/detail column, exactly
-        // like the Groups and Guides sidebar tabs).
+        // Guides and departments drill into this supplementary column;
+        // groups show their members in the secondary column.
         let nav = UINavigationController(rootViewController: list)
         list.didSelectContact = { [weak self] contact in
             self?.showContactDetail(contact: contact, appDelegate: appDelegate)
@@ -681,8 +677,8 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
                 appDelegate: appDelegate
             )
         }
-        list.didSelectGroup = { [weak self, weak nav] group in
-            self?.showGroupMembers(group: group, on: nav, appDelegate: appDelegate)
+        list.didSelectGroup = { [weak self] group in
+            self?.showGroupMembers(scope: .group(group), appDelegate: appDelegate)
         }
         // A guide drills in exactly as it does from the Guides section: its
         // places list pushes onto this supplementary column, and picking a
@@ -698,7 +694,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             self?.showPlaceDetail(place: place, appDelegate: appDelegate)
         }
         // A department drills into its members list on this supplementary
-        // column, exactly as a favorited group does: member selection then
+        // column: member selection then
         // REPLACES the secondary/detail column (via `showContactDetail`).
         list.didSelectDepartment = { [weak self, weak nav] department in
             self?.showDepartmentMembers(
@@ -715,68 +711,50 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     private func installGroupsList(
         in split: UISplitViewController,
         appDelegate: GuessWhoAppDelegate
-    ) -> (GroupsListViewController, UINavigationController) {
+    ) -> GroupsListViewController {
         let list = GroupsListViewController(
             repository: appDelegate.contactsRepository,
             favoritesStore: appDelegate.favoritesStore
         )
-        // Selecting a group PUSHES the members list onto the supplementary
-        // column's nav (back-button returns to the group list); selecting a
-        // member REPLACES the secondary/detail column via
-        // `showContactDetail` — the established Catalyst pattern.
+        // Keep the tree visible while a group or folder's members replace the
+        // secondary column. Contacts drill into that same secondary nav stack.
         let nav = UINavigationController(rootViewController: list)
-        list.didSelectGroup = { [weak self, weak nav] group in
-            self?.showGroupMembers(scope: .group(group), on: nav, appDelegate: appDelegate)
+        list.didSelectGroup = { [weak self] group in
+            self?.showGroupMembers(scope: .group(group), appDelegate: appDelegate)
         }
-        // A folder opens the SAME member list, showing everyone in every group
-        // beneath it. No extra column: it pushes exactly where a group does.
-        list.didSelectFolder = { [weak self, weak nav] folderID in
-            self?.showGroupMembers(scope: .folder(id: folderID), on: nav, appDelegate: appDelegate)
+        list.didSelectFolder = { [weak self] folderID in
+            self?.showGroupMembers(scope: .folder(id: folderID), appDelegate: appDelegate)
         }
         split.setViewController(nav, for: .supplementary)
         installDetailPlaceholder(in: split, for: .groups)
-        return (list, nav)
+        return list
     }
 
-    /// Push a `GroupMembersListViewController` for `group` onto the supplementary
-    /// column's `nav`. Member selection REPLACES the secondary/detail column via
-    /// `showContactDetail`, like the People list.
-    private func showGroupMembers(
-        group: ContactGroup,
-        on nav: UINavigationController?,
-        appDelegate: GuessWhoAppDelegate
-    ) {
-        showGroupMembers(scope: .group(group), on: nav, appDelegate: appDelegate)
-    }
-
-    /// The scope-taking form: a group, or a folder (everyone in every group
-    /// beneath it).
+    /// Replace the secondary column with a group or folder's members. Reuse
+    /// the profile-link drill-down so Back from a contact returns to this list.
     private func showGroupMembers(
         scope: GroupMemberScope,
-        on nav: UINavigationController?,
         appDelegate: GuessWhoAppDelegate
     ) {
-        guard let nav else { return }
-        let members = GroupMembersListViewController(
-            scope: scope,
-            repository: appDelegate.contactsRepository,
-            photoLoader: appDelegate.contactPhotoLoader,
-            favoritesStore: appDelegate.favoritesStore
+        guard let split else { return }
+        let nav = UINavigationController()
+        let members = makeCatalystGroupMembers(
+            scope: scope, on: nav, appDelegate: appDelegate
         )
-        members.didSelectContact = { [weak self] contact in
-            self?.showContactDetail(contact: contact, appDelegate: appDelegate)
+        members.scopeDidDisappear = { [weak self, weak nav] in
+            guard let self, let nav, let split = self.split,
+                  split.viewController(for: .secondary) === nav else { return }
+            self.installDetailPlaceholder(in: split, for: self.mountedSection ?? .groups)
+            self.syncSelectionToTop(nil)
         }
-        members.didSelectContacts = { [weak self] contacts in
-            self?.showContactDetailStack(contacts: contacts, appDelegate: appDelegate)
-        }
-        members.scopeDidDisappear = { [weak nav, weak members] in
-            Self.popBack(from: members, on: nav)
-        }
-        nav.pushViewController(members, animated: true)
+        nav.viewControllers = [members]
+        nav.delegate = self
+        split.setViewController(nav, for: .secondary)
+        syncSelectionToTop(members)
     }
 
     /// Push a `DepartmentMembersListViewController` for `ref` onto the
-    /// SUPPLEMENTARY column's `nav`, mirroring `showGroupMembers`: member
+    /// SUPPLEMENTARY column's `nav`: member
     /// selection REPLACES the secondary/detail column via `showContactDetail`
     /// (and `showContactDetailStack` for a multi-select). This is the Favorites
     /// section's department drill-in — distinct from `pushCatalystDepartmentMembers`,
@@ -1053,8 +1031,20 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         appDelegate: GuessWhoAppDelegate
     ) {
         guard let nav else { return }
+        let members = makeCatalystGroupMembers(
+            scope: .group(ref.group), on: nav, appDelegate: appDelegate
+        )
+        nav.pushViewController(members, animated: true)
+    }
+
+    /// Shared member-list wiring for both list selections and profile links.
+    private func makeCatalystGroupMembers(
+        scope: GroupMemberScope,
+        on nav: UINavigationController,
+        appDelegate: GuessWhoAppDelegate
+    ) -> GroupMembersListViewController {
         let members = GroupMembersListViewController(
-            group: ref.group,
+            scope: scope,
             repository: appDelegate.contactsRepository,
             photoLoader: appDelegate.contactPhotoLoader,
             favoritesStore: appDelegate.favoritesStore
@@ -1067,7 +1057,10 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         members.didSelectContacts = { [weak self, weak nav] contacts in
             self?.pushCatalystContactDetailStack(contacts: contacts, on: nav, appDelegate: appDelegate)
         }
-        nav.pushViewController(members, animated: true)
+        members.scopeDidDisappear = { [weak nav, weak members] in
+            Self.popBack(from: members, on: nav)
+        }
+        return members
     }
 
     private func pushCatalystContactDetailStack(
@@ -1180,15 +1173,14 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// Push a `GuidePlacesListViewController` for `guide` onto `nav`. Shared
     /// by both shells: Catalyst pushes onto the supplementary column's nav,
     /// the iPhone tab shell onto the Guides tab's nav stack — the same
-    /// drill-in shape as Groups → members.
+    /// drill-in shape as the Favorites department list.
     ///
     /// `onSelectPlace` decides what a place row does. It defaults to PUSHING the
     /// place detail onto the same `nav`, which is right for the iPhone tab stack
     /// and for a Catalyst in-detail drill-down (both already live on the stack
     /// the detail belongs on). The Catalyst sidebar passes a handler that
     /// REPLACES the secondary column instead — a supplementary-column list must
-    /// not push its detail into itself. Same split as Groups:
-    /// `showGroupMembers` vs. `pushCatalystGroupMembers`.
+    /// not push its detail into itself.
     private func pushGuidePlaces(
         guide: MapsGuide,
         on nav: UINavigationController?,
@@ -1732,7 +1724,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
 
     /// The folder a member list was showing is gone: return to the list it was
     /// opened from. A no-op when the member list is no longer on the stack.
-    /// Shared by the Catalyst supplementary column and the iPhone Groups tab.
+    /// Shared by Catalyst detail drill-downs and the iPhone Groups tab.
     private static func popBack(from members: UIViewController?, on nav: UINavigationController?) {
         guard let nav, let members,
               let index = nav.viewControllers.firstIndex(of: members), index > 0 else { return }
