@@ -79,6 +79,11 @@ final class GroupMembersListViewController: UIViewController {
     /// doc). Replaced by each accepted `loadMembers()`.
     private var membersByID: [ContactID: Contact] = [:]
 
+    /// The contact contents used for the previous diffable snapshot. Row IDs
+    /// survive an edit, so changed contents must be reconfigured explicitly,
+    /// just as in ContactsListViewController.
+    private var renderedContacts: [ContactID: Contact] = [:]
+
     /// The last snapshot this list accepted. Drives the banner and the empty
     /// state, and tells the reload observer whether the hierarchy moved since.
     private var loadedSnapshot: GroupMemberSnapshot?
@@ -550,6 +555,21 @@ final class GroupMembersListViewController: UIViewController {
             let unique = ids.filter { seen.insert($0).inserted }
             snapshot.appendItems(unique, toSection: letter)
         }
+
+        // Keep the row's identity/selection, but repaint edits to its name,
+        // subtitle, or other contact contents. Only retained rows can be
+        // reconfigured; inserts and removals are handled by diffable apply.
+        let currentIDs = snapshot.itemIdentifiers
+        let changed = currentIDs.filter { id in
+            guard let previous = renderedContacts[id] else { return false }
+            return previous != membersByID[id]
+        }
+        if !changed.isEmpty {
+            snapshot.reconfigureItems(changed)
+        }
+        renderedContacts = Dictionary(uniqueKeysWithValues: currentIDs.compactMap { id in
+            membersByID[id].map { (id, $0) }
+        })
 
         dataSource.apply(snapshot, animatingDifferences: animated)
 

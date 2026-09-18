@@ -185,6 +185,12 @@ returns a `GroupMemberSnapshot`[^33]. It never throws and mints nothing.
   says whether any moved[^36]. A caller discards a snapshot that spans a change
   and reads again.
 
+Folder-member pagination also binds its cursor to a fingerprint of the ordered
+contact rows and the groups that failed to load. A transient fetch failure or
+recovery can change that result without changing repository revisions. The next
+page rejects such a cursor, so the caller restarts instead of skipping or
+repeating contacts. An unchanged partial result remains pageable[^46].
+
 ## UI
 
 The Groups list renders the tree[^37]. The rules that need no table view are
@@ -212,7 +218,9 @@ pure types, tested in the app bundle (`GroupFolderPresentationTests`):
   through one call, so both are validated and reported the same way[^42].
 - **Member list.** A folder reuses the group member list with no favorite star,
   a "Some groups couldn’t be loaded." banner with Retry for a partial result,
-  and a return to the tree when its folder is deleted[^43][^44].
+  and a return to the tree when its folder is deleted[^43][^44]. Reloading also
+  reconfigures retained rows whose contact contents changed, so edits repaint
+  without replacing their row identities[^43].
 - **Add to Group** nests folders as submenus; only groups are choices, and a
   folder with no group beneath it is left out[^45].
 
@@ -264,3 +272,4 @@ onto the tree.
 [^43]: [Member list for a group or a folder](../App/GuessWho/GroupMembersListViewController.swift:GroupMembersListViewController)
 [^44]: [Member list wording rules](../App/GuessWho/GroupMemberListPresentation.swift:GroupMemberListPresentation.make)
 [^45]: [Add to Group nesting](../App/GuessWho/AddToGroupMenu.swift:AddToGroupMenu.groupElements)
+[^46]: [Folder-member cursor validation](../Sources/GuessWhoMCPCore/ToolDispatcher.swift:ToolDispatcher.foldersListMembers)
