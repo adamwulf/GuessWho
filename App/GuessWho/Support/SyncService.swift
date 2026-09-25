@@ -939,11 +939,21 @@ final class SyncService {
     /// Builds the package-owned contact read repository over the same adapter
     /// this service uses for authorization and writes. UI clients should retain
     /// and read this repository instead of fetching Contacts directly.
-    func makeContactsRepository() -> ContactsRepository {
+    ///
+    /// - Parameter notificationCenter: where the repository hears contact
+    ///   changes and posts its reloads. Production keeps `.default`; a test
+    ///   passes a fresh center so the hosted app's own change posts can't
+    ///   reload its repository mid-test.
+    func makeContactsRepository(notificationCenter: NotificationCenter = .default) -> ContactsRepository {
         // Hand the repository the SAME sidecar engine and favorites store this
         // service holds (both nil in the `.unavailable` storage state) so it can
         // reconcile-on-write and key the contact-favorite path itself.
-        ContactsRepository(contacts: contactsAdapter, sync: sync, favorites: favoritesStore)
+        ContactsRepository(
+            contacts: contactsAdapter,
+            sync: sync,
+            favorites: favoritesStore,
+            notificationCenter: notificationCenter
+        )
     }
 
     // MARK: - Contact change history (incremental external sync)

@@ -110,6 +110,25 @@ final class SidebarViewController: UIViewController {
     /// therefore renders the row that now occupies it, not the row that asked.
     private var photoTasks: [ContactID: Task<Void, Never>] = [:]
 
+    /// Every thumbnail this sidebar has shown, held here and not only in the
+    /// loader's cache.
+    ///
+    /// The loader keeps photos in an `NSCache`, which may drop one at any
+    /// moment — even between `image(for:)` returning it and the repaint that
+    /// follows. The repaint used to read the photo back from that cache, so a
+    /// cache that let go first made the repaint miss, fetch again, and repaint
+    /// again, without end: the sidebar redrew nonstop and asked Contacts for the
+    /// photo dozens of times a second (build 188 on Mac Catalyst, after days of
+    /// uptime). Held here, the photo is a certain hit for the repaint after its
+    /// load, and every later repaint reuses it instead of fetching it again.
+    ///
+    /// Kept only for the contacts the sidebar shows (`rebuildFavoriteChildren`
+    /// drops the rest) and only for the loader's current `cacheGeneration`: the
+    /// loader drops its cache when contact data changes, and these go with it so
+    /// a changed photo replaces the old one.
+    private var thumbnails: [ContactID: UIImage] = [:]
+    private var thumbnailsGeneration = 0
+
     /// See `ContactsListViewController.reloadObserver` for the
     /// `nonisolated(unsafe)` rationale.
     private nonisolated(unsafe) var favoritesChangedObserver: NSObjectProtocol?
@@ -504,12 +523,32 @@ final class SidebarViewController: UIViewController {
         content.text = contact.displayNameWithNickname
         content.imageProperties.cornerRadius = Self.childIconSize / 2
         let id = contact.contactID
-        if let cached = photoLoader.cachedImage(for: id, kind: .thumbnail) {
-            content.image = cached
+        if let image = thumbnail(for: id) {
+            content.image = image
         } else {
             content.image = ContactAvatarImage.placeholder(for: contact, diameter: Self.childIconSize)
             loadPhotoIfNeeded(for: id)
         }
+    }
+
+    /// The photo on hand for `id`: the loader's cached copy (also kept in
+    /// `thumbnails`, in case the cache drops it later), else the one this
+    /// sidebar already holds.
+    private func thumbnail(for id: ContactID) -> UIImage? {
+        discardThumbnailsIfInvalidated()
+        if let cached = photoLoader.cachedImage(for: id, kind: .thumbnail) {
+            thumbnails[id] = cached
+            return cached
+        }
+        return thumbnails[id]
+    }
+
+    /// Forget every held thumbnail once the loader has dropped its cache for
+    /// changed contact data — any of them may be the photo that changed.
+    private func discardThumbnailsIfInvalidated() {
+        guard thumbnailsGeneration != photoLoader.cacheGeneration else { return }
+        thumbnails.removeAll()
+        thumbnailsGeneration = photoLoader.cacheGeneration
     }
 
     /// One line for a place child: its name, or its address when the entry
@@ -532,22 +571,31 @@ final class SidebarViewController: UIViewController {
     /// wording the Favorites list uses, so the two surfaces read alike.
     private static let unavailableTitle = "Unavailable"
 
-    /// Fetch a thumbnail that isn't cached yet, then repaint the rows on screen.
-    /// Going through the cache + a reconfigure (rather than handing the image to
-    /// a cell) means a recycled cell can never show someone else's photo.
+    /// Fetch a thumbnail that isn't on hand yet, then repaint the rows on
+    /// screen. Going through `thumbnails` + a reconfigure (rather than handing
+    /// the image to a cell) means a recycled cell can never show someone else's
+    /// photo.
     private func loadPhotoIfNeeded(for id: ContactID) {
         guard photoTasks[id] == nil else { return }
+        let generation = photoLoader.cacheGeneration
         photoTasks[id] = Task { [weak self, photoLoader] in
             let image = await photoLoader.image(for: id, kind: .thumbnail)
             guard let self else { return }
             self.photoTasks[id] = nil
             // Repaint ONLY when there's something new to show. A contact with no
             // photo keeps its initials placeholder, and repainting anyway would
-            // re-enter `configure(_:for:)`, find nothing cached, ask again, and
+            // re-enter `configure(_:for:)`, find nothing on hand, ask again, and
             // spin forever. (The loader negative-caches "no photo", so the
             // repeat asks that a later repaint does trigger are cache hits, not
             // Contacts fetches.)
-            guard image != nil else { return }
+            guard let image else { return }
+            // Hold the photo only if contact data did not change while it
+            // loaded — otherwise it may be the old photo. Either way, repaint:
+            // after a change the repaint asks again for the current photo.
+            if photoLoader.cacheGeneration == generation {
+                self.discardThumbnailsIfInvalidated()
+                self.thumbnails[id] = image
+            }
             self.reconfigureVisibleRows()
         }
     }
@@ -772,11 +820,15 @@ final class SidebarViewController: UIViewController {
         var byID: [FavoriteListItem.ID: FavoriteListItem] = [:]
         var sections: [FavoriteListItem.ID: SidebarTab] = [:]
         var organizations: [ContactID: Contact] = [:]
+        var shownContacts: Set<ContactID> = []
         var entries: [FavoriteHierarchy.Entry] = []
         for item in items {
             let tab = Self.section(for: item)
             byID[item.id] = item
             sections[item.id] = tab
+            if let contact = item.contact {
+                shownContacts.insert(contact.contactID)
+            }
             let role: FavoriteHierarchy.Role
             switch item.kind {
             case .contact:
@@ -805,6 +857,10 @@ final class SidebarViewController: UIViewController {
         favoriteItemsByID = byID
         favoriteSections = sections
         organizationsByID = organizations
+        // A contact row is a favorited contact or an organization parent; hold
+        // photos for those alone, so an unstarred contact's photo is let go.
+        shownContacts.formUnion(organizations.keys)
+        thumbnails = thumbnails.filter { shownContacts.contains($0.key) }
     }
 
     private func item(for row: FavoriteHierarchy.Row) -> Item {
