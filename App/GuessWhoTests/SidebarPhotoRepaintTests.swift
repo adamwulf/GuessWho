@@ -45,14 +45,16 @@ struct SidebarPhotoRepaintTests {
         #expect(try await fixture.rowImageSize(becoming: Self.size(3)) == Self.size(3))
 
         // The contact's photo changes in Contacts, and the repository announces
-        // changed contact data — the post that drops the loader's cache and
-        // rebuilds the sidebar.
+        // changed contact data — the post that drops the loader's cache. It goes
+        // out on the fixture's own center, which the sidebar does not watch, so
+        // rebuild the sidebar the way that post does in the app.
         await fixture.store.setThumbnail(Self.png(side: 5))
-        NotificationCenter.default.post(
+        fixture.notificationCenter.post(
             name: .contactsRepositoryDidReload,
             object: fixture.repository,
             userInfo: [ContactsRepositoryDidReloadKey.contactDataChanged: true]
         )
+        fixture.favorites.reload()
 
         #expect(try await fixture.rowImageSize(becoming: Self.size(5)) == Self.size(5))
     }
@@ -77,12 +79,18 @@ struct SidebarPhotoRepaintTests {
 
 /// A real sidebar in a visible window, with one favorited contact whose photo
 /// comes from a counting stub store.
+///
+/// The repository and photo loader share a private `notificationCenter`: the
+/// hosted app's own contact-change posts on `.default` would otherwise reload
+/// this repository mid-test, drop the loader's cache, and add a fetch the
+/// tests did not cause.
 @MainActor
 private struct SidebarPhotoFixture {
     static let contactUUID = "5ad5ad5a-0000-4000-8000-000000000001"
     static let contactName = "Ada Lovelace"
 
     let root: URL
+    let notificationCenter: NotificationCenter
     let store: SidebarPhotoContactStore
     let repository: ContactsRepository
     let favorites: FavoritesListStore
@@ -108,13 +116,14 @@ private struct SidebarPhotoFixture {
             deviceID: "test-device",
             contactCursorURL: root.appendingPathComponent("test-cursor")
         )
-        let repository = service.makeContactsRepository()
+        let notificationCenter = NotificationCenter()
+        let repository = service.makeContactsRepository(notificationCenter: notificationCenter)
         await repository.reload()
 
         let favorites = FavoritesListStore(service: service)
         favorites.toggle(kind: .contact, id: contactUUID)
 
-        let photoLoader = ContactPhotoLoader(repository: repository)
+        let photoLoader = ContactPhotoLoader(repository: repository, notificationCenter: notificationCenter)
         photoLoader.dropsStoredImagesForTesting = true
 
         // Open every section, so the favorite's row is on screen and painted.
@@ -135,6 +144,7 @@ private struct SidebarPhotoFixture {
 
         return SidebarPhotoFixture(
             root: root,
+            notificationCenter: notificationCenter,
             store: store,
             repository: repository,
             favorites: favorites,
@@ -190,14 +200,8 @@ private func sidebarPhotoStubUnused(function: String = #function) -> Never {
     fatalError("sidebar photo test stub member unexpectedly reached: \(function)")
 }
 
-private struct SidebarPhotoStubError: Error {}
-
 /// Serves one fixed contact and a thumbnail for it, and counts thumbnail
 /// fetches so a test can tell a settled row from one that keeps asking.
-///
-/// `changes(since:)` throws instead of trapping: the hosted app shares
-/// `NotificationCenter.default`, and an external Contacts edit on the test Mac
-/// must not crash the run.
 private actor SidebarPhotoContactStore: ContactStoreProtocol {
     private let contacts: [Contact]
     private var thumbnail: Data
@@ -224,7 +228,7 @@ private actor SidebarPhotoContactStore: ContactStoreProtocol {
     func create(_ contact: Contact) async throws -> Contact { sidebarPhotoStubUnused() }
     func contactsAuthorizationStatus() async -> StoreAuthorizationStatus { .authorized }
     func requestContactsAccess() async -> StoreAccessResult { sidebarPhotoStubUnused() }
-    func changes(since token: Data?) async throws -> ContactChangeSet { throw SidebarPhotoStubError() }
+    func changes(since token: Data?) async throws -> ContactChangeSet { sidebarPhotoStubUnused() }
     func loadImageData(localID: String) async throws -> Data? { nil }
     func setImageData(localID: String, imageData: Data?) async throws { sidebarPhotoStubUnused() }
     func fetchAllGroups() async throws -> [ContactGroup] { [] }
