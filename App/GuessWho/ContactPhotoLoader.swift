@@ -39,7 +39,18 @@ final class ContactPhotoLoader {
     private let cache = NSCache<CacheKeyBox, AnyObject>()
     private var inFlight: [CacheKey: Task<LoadOutcome, Never>] = [:]
     private nonisolated(unsafe) var reloadObserver: NSObjectProtocol?
-    private var cacheGeneration = 0
+
+    /// Bumped each time the cache is dropped because contact data changed
+    /// (`removeAll` / `invalidate`). A caller that keeps its own copy of a
+    /// loaded photo compares this to know when that copy went stale — see
+    /// `SidebarViewController.thumbnails`. An `NSCache` eviction does NOT bump
+    /// it: an evicted photo is still correct, just no longer held here.
+    private(set) var cacheGeneration = 0
+
+    /// Test seam: drop each photo from the cache the moment it is stored, which
+    /// `NSCache` is free to do at any time. Lets a test prove a caller never
+    /// assumes `image(for:)` returning a photo means `cachedImage(for:)` will.
+    var dropsStoredImagesForTesting = false
 
     init(repository: ContactsRepository, notificationCenter: NotificationCenter = .default) {
         self.repository = repository
@@ -125,6 +136,7 @@ final class ContactPhotoLoader {
         switch outcome {
         case .loaded(let image):
             cache.setObject(image, forKey: boxed)
+            if dropsStoredImagesForTesting { cache.removeObject(forKey: boxed) }
             return image
         case .noPhoto:
             cache.setObject(NSNull(), forKey: boxed)
