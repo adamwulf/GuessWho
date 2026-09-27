@@ -28,12 +28,34 @@ struct EventCalendarTests {
         """
         let decoded = try JSONDecoder().decode(Event.self, from: Data(legacy.utf8))
         #expect(decoded.calendarID == nil)
+        #expect(decoded.calendarIDs == nil)
+        #expect(decoded.allCalendarIDs.isEmpty)
         #expect(decoded.eventKitID == "ek-legacy")
         #expect(decoded.calendarName == "Work")
         #expect(decoded.calendarColorHex == "#FF9500")
     }
 
-    @Test("Event round-trips calendarID through Codable")
+    @Test("Event decodes a payload that has calendarID but predates calendarIDs")
+    func eventDecodesPayloadWithoutCalendarIDs() throws {
+        let payload = """
+        {
+          "id": "6F9619FF-8B86-D011-B42D-00C04FC964FF",
+          "eventKitID": "ek-1",
+          "title": "Standup",
+          "startDate": 0,
+          "endDate": 900,
+          "isAllDay": false,
+          "attendees": [],
+          "calendarID": "cal-work"
+        }
+        """
+        let decoded = try JSONDecoder().decode(Event.self, from: Data(payload.utf8))
+        #expect(decoded.calendarIDs == nil)
+        // The computed set falls back to the single calendar.
+        #expect(decoded.allCalendarIDs == ["cal-work"])
+    }
+
+    @Test("Event round-trips calendarID and calendarIDs through Codable")
     func eventRoundTripsCalendarID() throws {
         let start = Date(timeIntervalSinceReferenceDate: 0)
         let original = Event(
@@ -42,6 +64,7 @@ struct EventCalendarTests {
             startDate: start,
             endDate: start.addingTimeInterval(3600),
             calendarID: "cal-work",
+            calendarIDs: ["cal-shared", "cal-work"],
             calendarName: "Work",
             calendarColorHex: "#FF9500"
         )
@@ -49,12 +72,36 @@ struct EventCalendarTests {
         let decoded = try JSONDecoder().decode(Event.self, from: data)
         #expect(decoded == original)
         #expect(decoded.calendarID == "cal-work")
+        #expect(decoded.calendarIDs == ["cal-shared", "cal-work"])
     }
 
-    @Test("A manual event has no calendarID by default")
+    @Test("A manual event has no calendarID and no calendars by default")
     func manualEventHasNoCalendarID() {
         let start = Date(timeIntervalSinceReferenceDate: 0)
-        #expect(Event(startDate: start, endDate: start).calendarID == nil)
+        let manual = Event(startDate: start, endDate: start)
+        #expect(manual.calendarID == nil)
+        #expect(manual.calendarIDs == nil)
+        #expect(manual.allCalendarIDs.isEmpty)
+    }
+
+    @Test("allCalendarIDs is the union of calendarIDs and calendarID")
+    func allCalendarIDsUnionsBothFields() {
+        let start = Date(timeIntervalSinceReferenceDate: 0)
+        let onlyPrimary = Event(startDate: start, endDate: start, calendarID: "cal-work")
+        #expect(onlyPrimary.allCalendarIDs == ["cal-work"])
+
+        let copies = Event(
+            startDate: start, endDate: start,
+            calendarID: "cal-work", calendarIDs: ["cal-shared", "cal-work"]
+        )
+        #expect(copies.allCalendarIDs == ["cal-shared", "cal-work"])
+
+        // A list that omits the primary still counts it.
+        let partial = Event(
+            startDate: start, endDate: start,
+            calendarID: "cal-work", calendarIDs: ["cal-shared"]
+        )
+        #expect(partial.allCalendarIDs == ["cal-shared", "cal-work"])
     }
 
     @Test("EventCalendar round-trips through Codable, with and without a color")

@@ -28,17 +28,32 @@ public struct Event: Hashable, Sendable, Codable {
 
     /// Identifier of the calendar the event lives in
     /// (`EKCalendar.calendarIdentifier`). Matches `EventCalendar.id` from
-    /// `EventStoreProtocol.fetchEventCalendars()`, so the app can filter
-    /// events by calendar. nil for manual (sidecar-only) events and for
-    /// calendar events whose calendar can't be resolved. Read-only mirror —
-    /// never written back or persisted in the sidecar.
+    /// `EventStoreProtocol.fetchEventCalendars()`. When EventKit holds more
+    /// than one copy of the event (see `calendarIDs`), this is the calendar of
+    /// the primary copy — the one `calendarName` and `calendarColorHex`
+    /// describe. nil for manual (sidecar-only) events and for calendar events
+    /// whose calendar can't be resolved. Read-only mirror — never written back
+    /// or persisted in the sidecar.
     public var calendarID: String?
 
-    /// Display name of the calendar the event lives in (`EKEvent.calendar.title`).
-    /// nil for manual (sidecar-only) events and for calendar events whose
-    /// calendar can't be resolved. Read-only mirror — never written back.
-    /// Lets the UI disambiguate the same event duplicated across several
-    /// calendars (e.g. one copy per audience the user shares with).
+    /// Identifiers of every calendar that holds a copy of this event
+    /// occurrence, sorted, primary copy included. EventKit can hold several
+    /// copies under one `eventKitID` — for example one calendar file imported
+    /// into two calendars. The adapter returns those copies as ONE `Event`, so
+    /// filter by calendar with `allCalendarIDs`: the event belongs to each of
+    /// these calendars, not only to `calendarID`. nil for manual events and
+    /// for events built without it (`allCalendarIDs` then falls back to
+    /// `calendarID`). Read-only mirror — never written back or persisted in
+    /// the sidecar.
+    public var calendarIDs: [String]?
+
+    /// Display name of the calendar the event lives in (`EKEvent.calendar.title`)
+    /// — the primary copy's calendar, like `calendarID`. nil for manual
+    /// (sidecar-only) events and for calendar events whose calendar can't be
+    /// resolved. Read-only mirror — never written back. Lets the UI
+    /// disambiguate the same event duplicated across several calendars under
+    /// different identifiers (e.g. one copy per audience the user shares
+    /// with); copies under the SAME `eventKitID` are one `Event` instead.
     public var calendarName: String?
 
     /// Hex string (`#RRGGBB`) of the event's calendar color
@@ -72,6 +87,7 @@ public struct Event: Hashable, Sendable, Codable {
         eventKitNotes: String? = nil,
         attendees: [EventAttendee] = [],
         calendarID: String? = nil,
+        calendarIDs: [String]? = nil,
         calendarName: String? = nil,
         calendarColorHex: String? = nil,
         createdAt: Date? = nil,
@@ -87,6 +103,7 @@ public struct Event: Hashable, Sendable, Codable {
         self.eventKitNotes = eventKitNotes
         self.attendees = attendees
         self.calendarID = calendarID
+        self.calendarIDs = calendarIDs
         self.calendarName = calendarName
         self.calendarColorHex = calendarColorHex
         self.createdAt = createdAt
@@ -157,6 +174,16 @@ extension Event {
     /// True iff this event points at an EventKit event (regardless of whether
     /// that event currently exists).
     public var isLinked: Bool { eventKitID != nil }
+
+    /// Every calendar that holds a copy of this event: `calendarIDs` plus
+    /// `calendarID`. Empty for manual events. Use this, not `calendarID`
+    /// alone, to decide whether an event is in a calendar — a hidden calendar
+    /// hides the event only when no other copy is in a shown calendar.
+    public var allCalendarIDs: Set<String> {
+        var ids = Set(calendarIDs ?? [])
+        if let calendarID { ids.insert(calendarID) }
+        return ids
+    }
 
     /// Derive a stable placeholder UUID from an `eventKitID` string. Used by
     /// the EventKit adapter (`toEvent`) and by the orchestrator's windowed
