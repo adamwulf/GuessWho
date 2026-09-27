@@ -588,7 +588,7 @@ final class EventsRepository: NSObject {
 
     var filtered: [Event] {
         let visibleEvents = events.filter {
-            calendarVisibility.isVisible(calendarID: $0.calendarID)
+            calendarVisibility.isVisible(calendarIDs: $0.allCalendarIDs)
         }
         let candidates: [Event]
         switch filter {

@@ -132,11 +132,24 @@ struct RepositoryRefreshGenerationTests {
             attendees: [EventAttendee(name: "Taylor", email: "taylor@example.com")],
             calendarID: "hidden-calendar"
         )
-        let eventStore = RefreshGenEventStore(events: [visibleEvent, hiddenEvent])
+        let copiedEvent = Event(
+            eventKitID: "copied-event",
+            title: "Copied calendar",
+            startDate: now.addingTimeInterval(210),
+            endDate: now.addingTimeInterval(230),
+            location: "3 Copied Way",
+            attendees: [EventAttendee(name: "Taylor", email: "taylor@example.com")],
+            // The deterministic primary copy can be hidden, but this row must
+            // remain while its equivalent copy is in a visible calendar.
+            calendarID: "hidden-calendar",
+            calendarIDs: ["hidden-calendar", "visible-calendar"]
+        )
+        let eventStore = RefreshGenEventStore(events: [visibleEvent, hiddenEvent, copiedEvent])
         let service = makeService(root: root, eventsAdapter: eventStore)
         await service.requestEventsAccessIfNeeded()
         let visibleSidecarID = try await service.linkEvent(toEventKitID: "visible-event")
         let hiddenSidecarID = try await service.linkEvent(toEventKitID: "hidden-event")
+        let copiedSidecarID = try await service.linkEvent(toEventKitID: "copied-event")
         let relatedPlace = SidecarKey(kind: .place, id: UUID().uuidString)
         _ = try service.addLink(
             from: SidecarKey(kind: .event, id: visibleSidecarID.uuidString),
@@ -145,6 +158,11 @@ struct RepositoryRefreshGenerationTests {
         )
         _ = try service.addLink(
             from: SidecarKey(kind: .event, id: hiddenSidecarID.uuidString),
+            to: relatedPlace,
+            note: ""
+        )
+        _ = try service.addLink(
+            from: SidecarKey(kind: .event, id: copiedSidecarID.uuidString),
             to: relatedPlace,
             note: ""
         )
@@ -165,20 +183,20 @@ struct RepositoryRefreshGenerationTests {
 
         await repository.reload()
 
-        #expect(Set(repository.events.map(\.title)) == ["Hidden calendar", "Manual event", "Visible calendar"])
-        #expect(Set(repository.filtered.map(\.title)) == ["Manual event", "Visible calendar"])
+        #expect(Set(repository.events.map(\.title)) == ["Copied calendar", "Hidden calendar", "Manual event", "Visible calendar"])
+        #expect(Set(repository.filtered.map(\.title)) == ["Copied calendar", "Manual event", "Visible calendar"])
 
         repository.filter = .hasAttendees
         await waitUntil { repository.isLoading == false }
-        #expect(repository.filtered.map(\.title) == ["Visible calendar"])
+        #expect(Set(repository.filtered.map(\.title)) == ["Copied calendar", "Visible calendar"])
 
         repository.filter = .physicalLocation
         await waitUntil { repository.isLoading == false }
-        #expect(repository.filtered.map(\.title) == ["Visible calendar"])
+        #expect(Set(repository.filtered.map(\.title)) == ["Copied calendar", "Visible calendar"])
 
         repository.filter = .linked
         await waitUntil { repository.isLoading == false }
-        #expect(repository.filtered.map(\.title) == ["Visible calendar"])
+        #expect(Set(repository.filtered.map(\.title)) == ["Copied calendar", "Visible calendar"])
 
         repository.filter = .showAll
         await waitUntil { repository.isLoading == false }
@@ -186,9 +204,18 @@ struct RepositoryRefreshGenerationTests {
         #expect(repository.filtered.isEmpty)
         repository.searchText = "Visible"
         #expect(repository.filtered.map(\.title) == ["Visible calendar"])
+        repository.searchText = "Copied"
+        #expect(repository.filtered.map(\.title) == ["Copied calendar"])
         repository.searchText = "Manual"
         #expect(repository.filtered.map(\.title) == ["Manual event"])
         repository.searchText = ""
+
+        // Once every source calendar is hidden, the copied row disappears;
+        // manual events remain. Showing either source calendar restores it.
+        visibility.setVisible(false, calendarID: "visible-calendar")
+        #expect(repository.filtered.map(\.title) == ["Manual event"])
+        visibility.setVisible(true, calendarID: "visible-calendar")
+        #expect(Set(repository.filtered.map(\.title)) == ["Copied calendar", "Manual event", "Visible calendar"])
 
         // A scoped refresh can replace the adopted event projection, but it
         // must not bypass the visibility filter when the list re-snapshots.
@@ -198,12 +225,12 @@ struct RepositoryRefreshGenerationTests {
             trigger: "test-hidden-calendar-delta"
         )
         await waitUntil { deltaCounter.count == 1 }
-        #expect(Set(repository.filtered.map(\.title)) == ["Manual event", "Visible calendar"])
+        #expect(Set(repository.filtered.map(\.title)) == ["Copied calendar", "Manual event", "Visible calendar"])
 
         // Associated-item lookups bypass the Events-section repository filter,
         // so a matching event remains available even when its calendar is off.
         let associatedEvents = await service.recentEvents(forEmails: ["taylor@example.com"])
-        #expect(Set(associatedEvents.map(\.title)) == ["Hidden calendar", "Visible calendar"])
+        #expect(Set(associatedEvents.map(\.title)) == ["Copied calendar", "Hidden calendar", "Visible calendar"])
     }
 
     @Test

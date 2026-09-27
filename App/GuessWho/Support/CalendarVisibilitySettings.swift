@@ -35,6 +35,13 @@ final class CalendarVisibilitySettings {
         return !hiddenCalendarIDs.contains(calendarID)
     }
 
+    /// An EventKit event can have equivalent copies in several calendars.
+    /// Keep its single Events-section row whenever at least one copy belongs
+    /// to a shown calendar. An empty set is a manual event and is always shown.
+    func isVisible(calendarIDs: Set<String>) -> Bool {
+        calendarIDs.isEmpty || !calendarIDs.isSubset(of: hiddenCalendarIDs)
+    }
+
     func setVisible(_ isVisible: Bool, calendarID: String) {
         setVisible(isVisible, calendarIDs: [calendarID])
     }
