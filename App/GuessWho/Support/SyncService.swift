@@ -204,6 +204,28 @@ final class SyncService {
         }
     }
 
+    /// `availableEventCalendars()` for the Events list's reload path, hopped
+    /// off the main actor like the other EventKit reads that path makes. nil
+    /// when the read fails, so the caller can keep what it last read.
+    func availableEventCalendarsOffMain() async -> [EventCalendar]? {
+        guard eventsAuthorization == .authorized else { return [] }
+        let adapter = eventsAdapter
+        do {
+            return try await withCheckedThrowingContinuation { continuation in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    do {
+                        continuation.resume(returning: try adapter.fetchEventCalendars())
+                    } catch {
+                        continuation.resume(throwing: error)
+                    }
+                }
+            }
+        } catch {
+            lastError = "Calendar list fetch failed: \(error.localizedDescription)"
+            return nil
+        }
+    }
+
     // Routes the windowed read through the orchestrator's Option-C projection
     // (`sync.eventsWindow`). EventKit inclusion is gated here so the orchestrator
     // stays permission-agnostic. `async` — the window read is a synchronous

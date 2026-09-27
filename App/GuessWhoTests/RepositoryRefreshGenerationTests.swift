@@ -174,7 +174,7 @@ struct RepositoryRefreshGenerationTests {
             location: nil
         )
         let visibility = CalendarVisibilitySettings(defaults: defaults, notificationCenter: center)
-        visibility.setVisible(false, calendarID: "hidden-calendar")
+        visibility.setCalendarEnabled(false, calendarID: "hidden-calendar")
         let repository = EventsRepository(
             service: service,
             calendarVisibility: visibility,
@@ -218,9 +218,9 @@ struct RepositoryRefreshGenerationTests {
 
         // Once every source calendar is hidden, the copied row disappears;
         // manual events remain. Showing either source calendar restores it.
-        visibility.setVisible(false, calendarID: "visible-calendar")
+        visibility.setCalendarEnabled(false, calendarID: "visible-calendar")
         #expect(repository.filtered.map(\.title) == ["Manual event"])
-        visibility.setVisible(true, calendarID: "visible-calendar")
+        visibility.setCalendarEnabled(true, calendarID: "visible-calendar")
         #expect(Set(repository.filtered.map(\.title)) == ["Copied calendar", "Manual event", "Visible calendar"])
 
         // A scoped refresh can replace the adopted event projection, but it
@@ -300,7 +300,7 @@ struct RepositoryRefreshGenerationTests {
         #expect(eventStore.fetchEventsCount == 1)
         counter.reset()
 
-        visibility.setVisible(false, calendarID: "calendar")
+        visibility.setCalendarEnabled(false, calendarID: "calendar")
 
         #expect(counter.count == 1)
         #expect(repository.isLoading == false)
@@ -308,28 +308,90 @@ struct RepositoryRefreshGenerationTests {
         #expect(eventStore.fetchEventsCount == 1)
 
         counter.reset()
-        visibility.setVisible(true, calendarID: "calendar")
+        visibility.setCalendarEnabled(true, calendarID: "calendar")
         #expect(counter.count == 1)
         #expect(visibility.isVisible(calendarID: "calendar"))
 
         counter.reset()
-        visibility.setVisible(true, calendarID: "calendar")
+        visibility.setCalendarEnabled(true, calendarID: "calendar")
         #expect(counter.count == 0)
 
         counter.reset()
-        visibility.setVisible(false, calendarIDs: ["work", "family", "holidays"])
+        visibility.setCalendarEnabled(false, calendarID: "work")
         #expect(counter.count == 1)
+
+        counter.reset()
+        visibility.setAccountEnabled(false, accountID: "exchange")
+        #expect(counter.count == 1)
+        await Task.yield()
+        #expect(eventStore.fetchEventsCount == 1)
+
+        counter.reset()
+        visibility.setAccountEnabled(false, accountID: "exchange")
+        #expect(counter.count == 0)
 
         let reloadedVisibility = CalendarVisibilitySettings(
             defaults: defaults,
             notificationCenter: center
         )
-        #expect(reloadedVisibility.isVisible(calendarID: "calendar"))
-        #expect(reloadedVisibility.isVisible(calendarID: "work") == false)
-        #expect(reloadedVisibility.isVisible(calendarID: "family") == false)
-        #expect(reloadedVisibility.isVisible(calendarID: "holidays") == false)
-        #expect(reloadedVisibility.isVisible(calendarID: "new-calendar"))
+        #expect(reloadedVisibility.isCalendarEnabled("calendar"))
+        #expect(reloadedVisibility.isCalendarEnabled("work") == false)
+        #expect(reloadedVisibility.isCalendarEnabled("new-calendar"))
+        #expect(reloadedVisibility.isAccountEnabled("exchange") == false)
+        #expect(reloadedVisibility.isAccountEnabled("new-account"))
         #expect(reloadedVisibility.isVisible(calendarID: nil))
+    }
+
+    /// Events name only their calendars, so the reload must learn each
+    /// calendar's account before it publishes: a hidden account's events are
+    /// filtered out on the first snapshot, and showing the account again
+    /// restores them without touching any calendar's own switch.
+    @Test
+    func hiddenAccountHidesItsCalendarsEvents() async throws {
+        let root = try makeTempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let center = NotificationCenter()
+        let now = eventFixtureBase()
+        let eventStore = RefreshGenEventStore(
+            events: [
+                Event(
+                    eventKitID: "work-event",
+                    title: "Work",
+                    startDate: now,
+                    endDate: now.addingTimeInterval(60),
+                    calendarID: "work"
+                ),
+                Event(
+                    eventKitID: "family-event",
+                    title: "Family",
+                    startDate: now.addingTimeInterval(120),
+                    endDate: now.addingTimeInterval(180),
+                    calendarID: "family"
+                ),
+            ],
+            calendars: [
+                EventCalendar(id: "work", title: "Work", sourceID: "exchange", sourceTitle: "Exchange"),
+                EventCalendar(id: "family", title: "Family", sourceID: "icloud", sourceTitle: "iCloud"),
+            ]
+        )
+        let service = makeService(root: root, eventsAdapter: eventStore)
+        await service.requestEventsAccessIfNeeded()
+        let visibility = makeCalendarVisibility(notificationCenter: center)
+        visibility.setAccountEnabled(false, accountID: "exchange")
+        let repository = EventsRepository(
+            service: service,
+            calendarVisibility: visibility,
+            notificationCenter: center
+        )
+
+        await repository.reload()
+
+        #expect(Set(repository.events.map(\.title)) == ["Work", "Family"])
+        #expect(repository.filtered.map(\.title) == ["Family"])
+        #expect(visibility.isCalendarEnabled("work"))
+
+        visibility.setAccountEnabled(true, accountID: "exchange")
+        #expect(Set(repository.filtered.map(\.title)) == ["Work", "Family"])
     }
 
     /// Contact-store changes must continue to refresh event rows because
@@ -1264,13 +1326,17 @@ private actor RefreshGenContactStore: ContactStoreProtocol {
 /// calendar-visibility coverage injects EventKit-shaped events.
 private final class RefreshGenEventStore: EventStoreProtocol, @unchecked Sendable {
     private let events: [Event]
+    private let calendars: [EventCalendar]
     private let fetchCountLock = NSLock()
     private var _fetchEventsCount = 0
     private var _mainThreadFetchEventsCount = 0
 
-    init(events: [Event] = []) {
+    init(events: [Event] = [], calendars: [EventCalendar] = []) {
         self.events = events
+        self.calendars = calendars
     }
+
+    func fetchEventCalendars() throws -> [EventCalendar] { calendars }
 
     func eventsAuthorizationStatus() -> StoreAuthorizationStatus { .notDetermined }
     func requestEventsAccess() async -> StoreAccessResult { StoreAccessResult(status: .authorized) }

@@ -547,9 +547,15 @@ final class EventsRepository: NSObject {
         // Refresh the per-event link counts before publishing so the snapshot the
         // list applies already sees them (one bulk scan, not a per-row read).
         let refreshedLinkCounts = await service.linkCountsByEndpointID(ofKind: .event)
-        // Re-check after the second await: nothing may be published if a newer
+        // Events name only their calendars, so a hidden account hides them
+        // through this calendar-to-account list. Read it on every full reload
+        // so an added or moved calendar is placed before the rows publish; a
+        // failed read keeps the previous list.
+        let calendars = await service.availableEventCalendarsOffMain()
+        // Re-check after the last await: nothing may be published if a newer
         // request has since superseded this one.
         guard token == refreshGeneration, requestedFilter == filter else { return .superseded }
+        if let calendars { calendarVisibility.updateCalendars(calendars) }
         events = sortOrder.sorted(fetched)
         linkCountsByID = refreshedLinkCounts
         hasLoadedOnce = true
