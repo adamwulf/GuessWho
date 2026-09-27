@@ -21,35 +21,41 @@ struct EventCalendarCopiesTests {
 
     private final class UpdateCapture: @unchecked Sendable {
         private let lock = NSLock()
-        private let writableEvent: EKEvent
+        private let writableEvents: [EKEvent]
         private var requestedID: String?
-        private var savedSameObject = false
-        private var savedTitle: String?
-        private var savedStart: Date?
+        private var savedSameObjects = false
+        private var savedTitles: [String] = []
+        private var savedStarts: [Date] = []
 
-        init(writableEvent: EKEvent) {
-            self.writableEvent = writableEvent
+        init(writableEvents: [EKEvent]) {
+            self.writableEvents = writableEvents
         }
 
-        func event(for eventKitID: String) -> EKEvent {
+        func events(for eventKitID: String) -> [EKEvent] {
             lock.lock()
             defer { lock.unlock() }
             requestedID = eventKitID
-            return writableEvent
+            return writableEvents
         }
 
-        func recordSave(_ event: EKEvent) {
+        func recordSave(_ events: [EKEvent]) {
             lock.lock()
             defer { lock.unlock() }
-            savedSameObject = event === writableEvent
-            savedTitle = event.title
-            savedStart = event.startDate
+            savedSameObjects = Set(events.map(ObjectIdentifier.init))
+                == Set(writableEvents.map(ObjectIdentifier.init))
+            savedTitles = events.map { $0.title }
+            savedStarts = events.map { $0.startDate }
         }
 
-        func snapshot() -> (requestedID: String?, savedSameObject: Bool, savedTitle: String?, savedStart: Date?) {
+        func snapshot() -> (
+            requestedID: String?,
+            savedSameObjects: Bool,
+            savedTitles: [String],
+            savedStarts: [Date]
+        ) {
             lock.lock()
             defer { lock.unlock() }
-            return (requestedID, savedSameObject, savedTitle, savedStart)
+            return (requestedID, savedSameObjects, savedTitles, savedStarts)
         }
     }
 
@@ -227,21 +233,25 @@ struct EventCalendarCopiesTests {
         #expect(EKEventStoreAdapter.primaryCalendarCopyIndex([]) == nil)
     }
 
-    @Test("updateEvent edits and saves the event resolved by the primary-copy seam")
-    func updateEventUsesPrimaryCopyResolver() throws {
+    @Test("updateEvent edits and saves every calendar copy of the primary occurrence")
+    func updateEventUsesEveryCopyFromPrimaryOccurrenceResolver() throws {
         let store = EKEventStore()
-        let writable = EKEvent(eventStore: store)
-        writable.title = "Old title"
-        writable.startDate = Self.start
-        writable.endDate = Self.start.addingTimeInterval(900)
-        let capture = UpdateCapture(writableEvent: writable)
+        let writableA = EKEvent(eventStore: store)
+        writableA.title = "Old title A"
+        writableA.startDate = Self.start
+        writableA.endDate = Self.start.addingTimeInterval(900)
+        let writableB = EKEvent(eventStore: store)
+        writableB.title = "Old title B"
+        writableB.startDate = Self.start
+        writableB.endDate = Self.start.addingTimeInterval(900)
+        let capture = UpdateCapture(writableEvents: [writableA, writableB])
         let newStart = Self.start.addingTimeInterval(300)
         let adapter = EKEventStoreAdapter(
             store: store,
             notificationCenter: NotificationCenter(),
             fetchEventsWork: { _, _ in [] },
-            fetchEventForUpdateWork: { _, eventKitID in capture.event(for: eventKitID) },
-            saveEventWork: { _, event in capture.recordSave(event) },
+            fetchEventsForUpdateWork: { _, eventKitID in capture.events(for: eventKitID) },
+            saveEventsWork: { _, events in capture.recordSave(events) },
             authorizationStatusWork: { .authorized }
         )
 
@@ -256,9 +266,9 @@ struct EventCalendarCopiesTests {
 
         let result = capture.snapshot()
         #expect(result.requestedID == Self.sharedID)
-        #expect(result.savedSameObject)
-        #expect(result.savedTitle == "Edited title")
-        #expect(result.savedStart == newStart)
+        #expect(result.savedSameObjects)
+        #expect(result.savedTitles == ["Edited title", "Edited title"])
+        #expect(result.savedStarts == [newStart, newStart])
     }
 
     // MARK: - Projections built on the adapter

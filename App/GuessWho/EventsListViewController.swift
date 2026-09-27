@@ -209,6 +209,7 @@ final class EventsListViewController: UIViewController {
         emptyLabel.textColor = .secondaryLabel
         emptyLabel.textAlignment = .center
         emptyLabel.adjustsFontForContentSizeCategory = true
+        emptyLabel.numberOfLines = 0
         emptyLabel.isHidden = true
         emptyLabel.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(emptyLabel)
@@ -480,6 +481,7 @@ final class EventsListViewController: UIViewController {
 
     private func applySnapshot(animated: Bool) {
         let events = repository.filtered
+        let previousSnapshot = dataSource.snapshot()
 
         var byID: [UUID: Event] = [:]
         for event in events {
@@ -497,13 +499,21 @@ final class EventsListViewController: UIViewController {
             // with the window — reconfigure the ones surviving from the
             // previous snapshot so a post-paging apply re-runs the provider.
             let surviving = [Self.loadOlderItemID, Self.loadLaterItemID].filter {
-                dataSource.snapshot().indexOfItem($0) != nil
+                previousSnapshot.indexOfItem($0) != nil
             }
             snapshot.reconfigureItems(surviving)
         } else {
             snapshot.appendSections([.events])
             snapshot.appendItems(events.map { $0.id }, toSection: .events)
         }
+        // UUID identity intentionally stays stable while a reload changes the
+        // row's title, link count, favorite state, or visible-calendar badge.
+        // Re-run the provider for surviving rows so on-screen cells repaint
+        // immediately instead of waiting to scroll offscreen and back.
+        let survivingEventIDs = events.map(\.id).filter {
+            previousSnapshot.indexOfItem($0) != nil
+        }
+        snapshot.reconfigureItems(survivingEventIDs)
         dataSource.apply(snapshot, animatingDifferences: animated) { [weak self] in
             self?.applyPendingSelection()
         }

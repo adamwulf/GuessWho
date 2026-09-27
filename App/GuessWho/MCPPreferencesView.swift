@@ -796,16 +796,28 @@ enum MCPPreferencesPresenter {
     private static let windowMargin: CGFloat = 40
 
     static func present() {
-        let roots = rootViewControllers()
+        let windows = applicationWindows()
+        if let owner = windows.first(where: { window in
+            window.rootViewController.map(containsSettingsHost) ?? false
+        }) {
+            // Settings is app-global. If another Catalyst window invoked ⌘,
+            // bring forward the scene that already owns the sheet instead of
+            // silently doing nothing or stacking a second copy.
+            if let scene = owner.windowScene {
+                UIApplication.shared.requestSceneSessionActivation(
+                    scene.session,
+                    userActivity: nil,
+                    options: nil,
+                    errorHandler: nil
+                )
+            }
+            return
+        }
+        let roots = windows.compactMap(\.rootViewController)
         guard let appDelegate = UIApplication.shared.delegate as? GuessWhoAppDelegate,
               let root = roots.first
         else { return }
 
-        // Settings is app-global even when Catalyst has several scenes. Check
-        // every window's whole presentation chain before choosing the active
-        // presenter, because the sheet may itself be presenting an install
-        // alert and another window may currently own keyboard focus.
-        guard !roots.contains(where: containsSettingsHost) else { return }
         var presenter = root
         while let presented = presenter.presentedViewController {
             presenter = presented
@@ -835,10 +847,10 @@ enum MCPPreferencesPresenter {
                 max(windowSize.height - windowMargin * 2, minimumSheetSize.height)))
     }
 
-    /// Roots ordered with the frontmost Catalyst window first, followed by
+    /// Windows ordered with the frontmost Catalyst window first, followed by
     /// the other active windows and then inactive scenes. The complete list is
-    /// also the scope of the duplicate-sheet check above.
-    private static func rootViewControllers() -> [UIViewController] {
+    /// also the scope of the duplicate-sheet lookup above.
+    private static func applicationWindows() -> [UIWindow] {
         let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
         let activeWindows = scenes
             .filter { $0.activationState == .foregroundActive }
@@ -850,7 +862,7 @@ enum MCPPreferencesPresenter {
             + activeWindows.filter { !$0.isKeyWindow }
             + otherWindows.filter(\.isKeyWindow)
             + otherWindows.filter { !$0.isKeyWindow }
-        return orderedWindows.compactMap(\.rootViewController)
+        return orderedWindows
     }
 
     private static func containsSettingsHost(_ root: UIViewController) -> Bool {
