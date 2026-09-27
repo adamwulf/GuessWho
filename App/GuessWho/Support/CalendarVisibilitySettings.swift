@@ -16,7 +16,7 @@ extension Notification.Name {
 /// switch AND its account's switch are on.
 ///
 /// We store the exceptions (hidden identifiers), rather than the selected
-/// identifiers, so a newly-added calendar or account is visible by default.
+/// identifiers, so a newly-added calendar or account starts with its switch on.
 /// Events that do not come from a system calendar are always visible.
 @MainActor
 @Observable

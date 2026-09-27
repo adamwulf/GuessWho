@@ -481,7 +481,7 @@ private struct CalendarsPreferencesPane: View {
             Section {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Choose which calendars appear in Events.")
-                    Text("Pages for people, organizations, and places still show their related events from every calendar. New calendars are shown automatically.")
+                    Text("Pages for people, organizations, and places still show their related events from every calendar. New calendars are turned on automatically.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }
