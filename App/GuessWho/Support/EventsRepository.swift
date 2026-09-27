@@ -587,21 +587,37 @@ final class EventsRepository: NSObject {
     }
 
     var filtered: [Event] {
-        let visibleEvents = events.filter {
+        matchingSearch(in: candidates(from: events.filter {
             calendarVisibility.isVisible(calendarIDs: $0.allCalendarIDs)
-        }
+        }))
+    }
+
+    /// True when the current filter/search would have results except that all
+    /// matching rows here come only from calendars the user hid. The list uses
+    /// this to distinguish a genuinely empty result from one that Settings can
+    /// restore.
+    var hasHiddenEventsMatchingCurrentQuery: Bool {
+        !matchingSearch(in: candidates(from: events.filter {
+            !calendarVisibility.isVisible(calendarIDs: $0.allCalendarIDs)
+        })).isEmpty
+    }
+
+    private func candidates(from events: [Event]) -> [Event] {
         let candidates: [Event]
         switch filter {
         case .showAll, .linked:
-            candidates = visibleEvents
+            candidates = events
         case .hasAttendees:
-            candidates = visibleEvents.filter { !$0.attendees.isEmpty }
+            candidates = events.filter { !$0.attendees.isEmpty }
         case .physicalLocation:
             // Keep only events whose location names a real place: non-empty and
             // not a web/video-call link (Zoom/Meet/http(s) URLs are dropped).
-            candidates = visibleEvents.filter { EventLocationMatcher.isPhysicalLocation($0.location) }
+            candidates = events.filter { EventLocationMatcher.isPhysicalLocation($0.location) }
         }
+        return candidates
+    }
 
+    private func matchingSearch(in candidates: [Event]) -> [Event] {
         let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return candidates }
         let needle = trimmed.lowercased()
@@ -618,5 +634,14 @@ final class EventsRepository: NSObject {
     /// sidecar stores an event endpoint id.
     func linkCount(for event: Event) -> Int {
         linkCountsByID[event.id.uuidString.lowercased()] ?? 0
+    }
+
+    /// Whether an Events-list row may label itself with the primary copy's
+    /// calendar name and color. A merged row can remain visible through a
+    /// second, shown calendar even while its primary calendar is hidden; in
+    /// that case suppress the primary badge instead of identifying the row as
+    /// belonging to a calendar the user turned off.
+    func shouldShowCalendarMetadata(for event: Event) -> Bool {
+        calendarVisibility.isVisible(calendarID: event.calendarID)
     }
 }

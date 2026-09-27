@@ -241,7 +241,8 @@ final class EventsListViewController: UIViewController {
             (cell as? EventCell)?.configure(
                 with: event,
                 isFavorite: self.favoritesStore.isFavorite(kind: .event, id: event.id.uuidString),
-                linkCount: self.repository.linkCount(for: event)
+                linkCount: self.repository.linkCount(for: event),
+                showsCalendarMetadata: self.repository.shouldShowCalendarMetadata(for: event)
             )
             return cell
         }
@@ -520,7 +521,11 @@ final class EventsListViewController: UIViewController {
         } else {
             activityIndicator.stopAnimating()
         }
-        if isEmpty && !repository.searchText.isEmpty {
+        if isEmpty && repository.hasHiddenEventsMatchingCurrentQuery {
+            emptyLabel.text = repository.searchText.isEmpty
+                ? "Some events are hidden by your calendar choices in Settings › Calendars."
+                : "Some matching events are hidden by your calendar choices in Settings › Calendars."
+        } else if isEmpty && !repository.searchText.isEmpty {
             emptyLabel.text = "No events match \"\(repository.searchText)\"."
         } else {
             switch repository.filter {
@@ -746,12 +751,12 @@ extension EventsListViewController: UISearchResultsUpdating {
 
 /// Event row: leading calendar icon, title label (falling back to
 /// "(Untitled event)" when blank), caption start-date subtitle, and — for
-/// events sourced from a calendar — a third line with a color swatch and
-/// the calendar's name. The calendar line lets the user tell apart the same
-/// event duplicated across several calendars (a common pattern when one copy
-/// is shared per audience). Manual events omit the third line and stay
-/// two-line; the row self-sizes so its height follows the content. A trailing
-/// star marks favorited events.
+/// events sourced from a shown calendar — a third line with a color swatch and
+/// the calendar's name. A merged event can also exist in a second calendar;
+/// when its primary calendar is hidden, the row remains visible through the
+/// shown copy but suppresses the hidden calendar's name and color. Manual
+/// events omit the third line and stay two-line; the row self-sizes so its
+/// height follows the content. A trailing star marks favorited events.
 private final class EventCell: UITableViewCell {
     private let iconView = UIImageView()
     private let titleLabel = UILabel()
@@ -886,7 +891,12 @@ private final class EventCell: UITableViewCell {
         ])
     }
 
-    func configure(with event: Event, isFavorite: Bool, linkCount: Int) {
+    func configure(
+        with event: Event,
+        isFavorite: Bool,
+        linkCount: Int,
+        showsCalendarMetadata: Bool
+    ) {
         iconView.image = UIImage(systemName: "calendar")
         titleLabel.text = event.title.isEmpty ? "(Untitled event)" : event.title
         dateLabel.text = event.startDate.formatted(date: .abbreviated, time: .omitted)
@@ -908,7 +918,7 @@ private final class EventCell: UITableViewCell {
         // Third line appears only for calendar-sourced events that carry a
         // calendar name; manual events stay two-line. Both branches fully
         // reset the row's mutable state so nothing leaks across reused cells.
-        if let name = event.calendarName, !name.isEmpty {
+        if showsCalendarMetadata, let name = event.calendarName, !name.isEmpty {
             calendarLabel.text = name
             // Swatch shows only when we have a color; otherwise hide it and
             // let the name alone identify the calendar.

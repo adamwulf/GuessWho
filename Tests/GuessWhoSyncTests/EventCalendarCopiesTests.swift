@@ -19,6 +19,40 @@ struct EventCalendarCopiesTests {
     private static let window = DateInterval(start: start.addingTimeInterval(-3_600), duration: 7_200)
     private static let sharedID = "shared-event"
 
+    private final class UpdateCapture: @unchecked Sendable {
+        private let lock = NSLock()
+        private let writableEvent: EKEvent
+        private var requestedID: String?
+        private var savedSameObject = false
+        private var savedTitle: String?
+        private var savedStart: Date?
+
+        init(writableEvent: EKEvent) {
+            self.writableEvent = writableEvent
+        }
+
+        func event(for eventKitID: String) -> EKEvent {
+            lock.lock()
+            defer { lock.unlock() }
+            requestedID = eventKitID
+            return writableEvent
+        }
+
+        func recordSave(_ event: EKEvent) {
+            lock.lock()
+            defer { lock.unlock() }
+            savedSameObject = event === writableEvent
+            savedTitle = event.title
+            savedStart = event.startDate
+        }
+
+        func snapshot() -> (requestedID: String?, savedSameObject: Bool, savedTitle: String?, savedStart: Date?) {
+            lock.lock()
+            defer { lock.unlock() }
+            return (requestedID, savedSameObject, savedTitle, savedStart)
+        }
+    }
+
     /// One EventKit copy, shaped as `toEvent` stamps it: `calendarIDs` lists
     /// only the copy's own calendar.
     private static func copy(
@@ -183,6 +217,48 @@ struct EventCalendarCopiesTests {
 
         #expect(result.count == 1)
         Self.expectMergedSharedCopy(result.first)
+    }
+
+    @Test("The writable primary calendar uses the same deterministic ordering as reads")
+    func writablePrimaryCalendarMatchesReadOrdering() {
+        #expect(EKEventStoreAdapter.primaryCalendarCopyIndex(["cal-b", "cal-a", nil]) == 1)
+        #expect(EKEventStoreAdapter.primaryCalendarCopyIndex([nil, "cal-b", "cal-a"]) == 2)
+        #expect(EKEventStoreAdapter.primaryCalendarCopyIndex([nil, nil]) == 0)
+        #expect(EKEventStoreAdapter.primaryCalendarCopyIndex([]) == nil)
+    }
+
+    @Test("updateEvent edits and saves the event resolved by the primary-copy seam")
+    func updateEventUsesPrimaryCopyResolver() throws {
+        let store = EKEventStore()
+        let writable = EKEvent(eventStore: store)
+        writable.title = "Old title"
+        writable.startDate = Self.start
+        writable.endDate = Self.start.addingTimeInterval(900)
+        let capture = UpdateCapture(writableEvent: writable)
+        let newStart = Self.start.addingTimeInterval(300)
+        let adapter = EKEventStoreAdapter(
+            store: store,
+            notificationCenter: NotificationCenter(),
+            fetchEventsWork: { _, _ in [] },
+            fetchEventForUpdateWork: { _, eventKitID in capture.event(for: eventKitID) },
+            saveEventWork: { _, event in capture.recordSave(event) },
+            authorizationStatusWork: { .authorized }
+        )
+
+        try adapter.updateEvent(
+            eventKitID: Self.sharedID,
+            title: "Edited title",
+            startDate: newStart,
+            endDate: newStart.addingTimeInterval(1_800),
+            isAllDay: false,
+            location: "New room"
+        )
+
+        let result = capture.snapshot()
+        #expect(result.requestedID == Self.sharedID)
+        #expect(result.savedSameObject)
+        #expect(result.savedTitle == "Edited title")
+        #expect(result.savedStart == newStart)
     }
 
     // MARK: - Projections built on the adapter

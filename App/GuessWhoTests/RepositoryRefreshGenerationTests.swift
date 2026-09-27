@@ -185,6 +185,10 @@ struct RepositoryRefreshGenerationTests {
 
         #expect(Set(repository.events.map(\.title)) == ["Copied calendar", "Hidden calendar", "Manual event", "Visible calendar"])
         #expect(Set(repository.filtered.map(\.title)) == ["Copied calendar", "Manual event", "Visible calendar"])
+        let copiedRow = try #require(repository.events.first { $0.title == "Copied calendar" })
+        let visibleRow = try #require(repository.events.first { $0.title == "Visible calendar" })
+        #expect(repository.shouldShowCalendarMetadata(for: copiedRow) == false)
+        #expect(repository.shouldShowCalendarMetadata(for: visibleRow))
 
         repository.filter = .hasAttendees
         await waitUntil { repository.isLoading == false }
@@ -202,8 +206,10 @@ struct RepositoryRefreshGenerationTests {
         await waitUntil { repository.isLoading == false }
         repository.searchText = "Hidden"
         #expect(repository.filtered.isEmpty)
+        #expect(repository.hasHiddenEventsMatchingCurrentQuery)
         repository.searchText = "Visible"
         #expect(repository.filtered.map(\.title) == ["Visible calendar"])
+        #expect(repository.hasHiddenEventsMatchingCurrentQuery == false)
         repository.searchText = "Copied"
         #expect(repository.filtered.map(\.title) == ["Copied calendar"])
         repository.searchText = "Manual"
@@ -1217,7 +1223,7 @@ private actor RefreshGenContactStore: ContactStoreProtocol {
 
 /// Small deterministic calendar store. Most tests use its empty default;
 /// calendar-visibility coverage injects EventKit-shaped events.
-private final class RefreshGenEventStore: EventStoreProtocol, Sendable {
+private final class RefreshGenEventStore: EventStoreProtocol, @unchecked Sendable {
     private let events: [Event]
     private let fetchCountLock = NSLock()
     private var _fetchEventsCount = 0
@@ -1232,7 +1238,7 @@ private final class RefreshGenEventStore: EventStoreProtocol, Sendable {
         fetchCountLock.lock()
         _fetchEventsCount += 1
         fetchCountLock.unlock()
-        events.filter { $0.startDate <= interval.end && $0.endDate >= interval.start }
+        return events.filter { $0.startDate <= interval.end && $0.endDate >= interval.start }
     }
 
     var fetchEventsCount: Int {

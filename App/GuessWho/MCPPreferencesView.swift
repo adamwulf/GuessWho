@@ -417,6 +417,7 @@ private struct CalendarsPreferencesPane: View {
 
     @State private var accounts: [CalendarAccountGroup] = []
     @State private var loaded = false
+    @State private var loadFailed = false
 
     var body: some View {
         content
@@ -426,7 +427,10 @@ private struct CalendarsPreferencesPane: View {
             // Calendar.app and account sync can add, remove, or rename a
             // calendar while this pane stays selected. Keep its controls in
             // step with the same store-change signal the Events list observes.
-            .onReceive(NotificationCenter.default.publisher(for: .EKEventStoreChanged)) { _ in
+            .onReceive(
+                NotificationCenter.default.publisher(for: .EKEventStoreChanged)
+                    .receive(on: DispatchQueue.main)
+            ) { _ in
                 reload()
             }
     }
@@ -451,6 +455,14 @@ private struct CalendarsPreferencesPane: View {
         case .authorized:
             if !loaded {
                 ProgressView()
+            } else if loadFailed {
+                ContentUnavailableView {
+                    Label("Calendars Couldn’t Load", systemImage: "exclamationmark.triangle")
+                } description: {
+                    Text("The calendar list couldn’t be read.")
+                } actions: {
+                    Button("Try Again", action: reload)
+                }
             } else if accounts.isEmpty {
                 ContentUnavailableView {
                     Label("No Calendars", systemImage: "calendar")
@@ -524,7 +536,13 @@ private struct CalendarsPreferencesPane: View {
 
     private func reload() {
         guard service.eventsAuthorization == .authorized else { return }
-        accounts = CalendarAccountGroup.groups(from: service.availableEventCalendars())
+        do {
+            accounts = CalendarAccountGroup.groups(from: try service.availableEventCalendars())
+            loadFailed = false
+        } catch {
+            accounts = []
+            loadFailed = true
+        }
         loaded = true
     }
 
@@ -778,15 +796,18 @@ enum MCPPreferencesPresenter {
     private static let windowMargin: CGFloat = 40
 
     static func present() {
+        let roots = rootViewControllers()
         guard let appDelegate = UIApplication.shared.delegate as? GuessWhoAppDelegate,
-              let root = rootViewController()
+              let root = roots.first
         else { return }
-        // Already showing? Don't stack a second sheet on repeat ⌘, — checked
-        // along the whole presentation chain, because the sheet may itself
-        // be presenting (e.g. an install alert) and so not be the topmost.
+
+        // Settings is app-global even when Catalyst has several scenes. Check
+        // every window's whole presentation chain before choosing the active
+        // presenter, because the sheet may itself be presenting an install
+        // alert and another window may currently own keyboard focus.
+        guard !roots.contains(where: containsSettingsHost) else { return }
         var presenter = root
         while let presented = presenter.presentedViewController {
-            if presented is SettingsHost { return }
             presenter = presented
         }
         let view = MCPPreferencesView(
@@ -814,14 +835,31 @@ enum MCPPreferencesPresenter {
                 max(windowSize.height - windowMargin * 2, minimumSheetSize.height)))
     }
 
-    private static func rootViewController() -> UIViewController? {
-        let scene = UIApplication.shared.connectedScenes
-            .compactMap { $0 as? UIWindowScene }
-            .first { $0.activationState == .foregroundActive }
-            ?? UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
+    /// Roots ordered with the frontmost Catalyst window first, followed by
+    /// the other active windows and then inactive scenes. The complete list is
+    /// also the scope of the duplicate-sheet check above.
+    private static func rootViewControllers() -> [UIViewController] {
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        let activeWindows = scenes
+            .filter { $0.activationState == .foregroundActive }
+            .flatMap(\.windows)
+        let otherWindows = scenes
+            .filter { $0.activationState != .foregroundActive }
+            .flatMap(\.windows)
+        let orderedWindows = activeWindows.filter(\.isKeyWindow)
+            + activeWindows.filter { !$0.isKeyWindow }
+            + otherWindows.filter(\.isKeyWindow)
+            + otherWindows.filter { !$0.isKeyWindow }
+        return orderedWindows.compactMap(\.rootViewController)
+    }
 
-        return scene?.windows.first(where: { $0.isKeyWindow })?.rootViewController
-            ?? scene?.windows.first?.rootViewController
+    private static func containsSettingsHost(_ root: UIViewController) -> Bool {
+        var candidate: UIViewController? = root
+        while let current = candidate {
+            if current is SettingsHost { return true }
+            candidate = current.presentedViewController
+        }
+        return false
     }
 }
 

@@ -194,13 +194,13 @@ final class SyncService {
     /// Calendars the user can include in the main Events section. Calendar
     /// identifiers are local EventKit identities, so the app keeps the matching
     /// visibility preference in device-local defaults rather than syncing it.
-    func availableEventCalendars() -> [EventCalendar] {
+    func availableEventCalendars() throws -> [EventCalendar] {
         guard eventsAuthorization == .authorized else { return [] }
         do {
             return try eventsAdapter.fetchEventCalendars()
         } catch {
             lastError = "Calendar list fetch failed: \(error.localizedDescription)"
-            return []
+            throw error
         }
     }
 
