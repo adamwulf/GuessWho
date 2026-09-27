@@ -709,10 +709,8 @@ final class SidebarViewController: UIViewController {
         }
     }
 
-    /// Settings has no sidebar row on any platform: every user reaches
-    /// the Debug Mode toggle through the system Settings app via the
-    /// bundled `Settings.bundle` (Catalyst auto-renders it into the
-    /// ⌘, preferences window; iOS/iPadOS show it in Settings.app).
+    /// Settings has no sidebar row on any platform: Catalyst uses the ⌘,
+    /// Settings sheet, while iOS/iPadOS keep the system Settings.bundle entry.
     private var sidebarTabs: [SidebarTab] {
         SidebarTab.allCases
     }

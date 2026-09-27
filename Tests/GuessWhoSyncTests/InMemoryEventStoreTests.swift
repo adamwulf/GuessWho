@@ -215,4 +215,55 @@ struct InMemoryEventStoreTests {
         store.removeEvent(eventKitID: "ext-removable")
         #expect(try store.fetch(eventKitID: "ext-removable") == nil)
     }
+
+    // MARK: - fetchEventCalendars
+
+    private let work = EventCalendar(
+        id: "cal-work", title: "Work", sourceID: "src-icloud", sourceTitle: "iCloud", colorHex: "#FF9500"
+    )
+    private let home = EventCalendar(
+        id: "cal-home", title: "Home", sourceID: "src-icloud", sourceTitle: "iCloud"
+    )
+    private let team = EventCalendar(
+        id: "cal-team", title: "Team", sourceID: "src-exchange", sourceTitle: "Exchange", colorHex: "#007AFF"
+    )
+
+    @Test
+    func fetchEventCalendarsIsEmptyByDefault() throws {
+        #expect(try InMemoryEventStore().fetchEventCalendars().isEmpty)
+    }
+
+    @Test
+    func fetchEventCalendarsReturnsInjectedCalendarsInInjectionOrder() throws {
+        let store = InMemoryEventStore(calendars: [team, work, home])
+        #expect(try store.fetchEventCalendars() == [team, work, home])
+    }
+
+    @Test
+    func setCalendarsReplacesTheListedCalendars() throws {
+        let store = InMemoryEventStore(calendars: [work])
+        store.setCalendars([home, team])
+        #expect(try store.fetchEventCalendars() == [home, team])
+        store.setCalendars([])
+        #expect(try store.fetchEventCalendars().isEmpty)
+    }
+
+    @Test(arguments: [StoreAuthorizationStatus.notDetermined, .denied, .restricted])
+    func fetchEventCalendarsListsNothingWithoutReadAccess(_ status: StoreAuthorizationStatus) throws {
+        let store = InMemoryEventStore(calendars: [work, team])
+        store.setAuthorizationStatus(status)
+        #expect(try store.fetchEventCalendars().isEmpty)
+
+        // The injected list is kept, not cleared: granting access lists it again.
+        store.setAuthorizationStatus(.authorized)
+        #expect(try store.fetchEventCalendars() == [work, team])
+    }
+
+    @Test
+    func countingWrapperForwardsTheWrappedStoresCalendars() throws {
+        // CountingEventStore must forward rather than fall back to the
+        // protocol's empty default, which would hide the inner calendars.
+        let wrapped = CountingEventStore(wrapping: InMemoryEventStore(calendars: [work, team]))
+        #expect(try wrapped.fetchEventCalendars() == [work, team])
+    }
 }

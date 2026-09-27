@@ -46,6 +46,7 @@ final class EventsRepository: NSObject {
     private static let reloadLog = Logger(label: "app.events-reload")
 
     private let service: SyncService
+    private let calendarVisibility: CalendarVisibilitySettings
 
     private(set) var events: [Event] = []
     private(set) var isLoading: Bool = false
@@ -120,8 +121,13 @@ final class EventsRepository: NSObject {
     /// `ContactsRepository` does for the same reason.
     private let notificationCenter: NotificationCenter
 
-    init(service: SyncService, notificationCenter: NotificationCenter = .default) {
+    init(
+        service: SyncService,
+        calendarVisibility: CalendarVisibilitySettings,
+        notificationCenter: NotificationCenter = .default
+    ) {
         self.service = service
+        self.calendarVisibility = calendarVisibility
         self.notificationCenter = notificationCenter
         let now = Date()
         // Default window: the past 30 days through the end of today — no future
@@ -154,6 +160,21 @@ final class EventsRepository: NSObject {
         notificationCenter.addObserver(self, selector: #selector(storeDidChange(_:)), name: .EKEventStoreChanged, object: nil)
         notificationCenter.addObserver(self, selector: #selector(storeDidChange(_:)), name: .guessWhoContactsDidChange, object: nil)
         notificationCenter.addObserver(self, selector: #selector(storeDidChange(_:)), name: .guessWhoSidecarsDidChange, object: nil)
+        notificationCenter.addObserver(
+            self,
+            selector: #selector(calendarVisibilityDidChange(_:)),
+            name: .calendarVisibilityDidChange,
+            object: calendarVisibility
+        )
+    }
+
+    /// Calendar selection changes only the list projection, not the backing
+    /// event read. Re-snapshot immediately without paying for another EventKit
+    /// query. Associated-item event queries do not use this repository and are
+    /// deliberately unaffected by the Events-section visibility preference.
+    @objc
+    private func calendarVisibilityDidChange(_ note: Notification) {
+        notificationCenter.post(name: .eventsRepositoryDidReload, object: self)
     }
 
     /// Reloads the events list. `nonisolated` because the selector API delivers
@@ -356,6 +377,9 @@ final class EventsRepository: NSObject {
         let requestedFilter = filter
         let requestedStart = windowStart
         let requestedEnd = windowEnd
+        let previousEventsByID = Dictionary(uniqueKeysWithValues: eventIDs.compactMap { id in
+            events.first { $0.id.uuidString.lowercased() == id }.map { (id, $0) }
+        })
         var projectedEvents: [String: Event] = [:]
         if !eventIDs.isEmpty {
             guard let fetched = await service.sidecarEvents(
@@ -365,6 +389,22 @@ final class EventsRepository: NSObject {
                 return
             }
             projectedEvents = fetched
+        }
+
+        // A removed linked record exposes its still-existing calendar event as
+        // an ephemeral row. Resolve that fallback during the asynchronous read
+        // phase, before the supersession guard and publish loop; a cold EventKit
+        // window enumeration must never block the main actor.
+        var exposedCalendarEvents: [String: Event] = [:]
+        for id in eventIDs where projectedEvents[id] == nil {
+            guard let eventKitID = previousEventsByID[id]?.eventKitID,
+                  let live = await service.eventKitEvent(
+                    eventKitID: eventKitID,
+                    from: requestedStart,
+                    to: requestedEnd
+                  )
+            else { continue }
+            exposedCalendarEvents[id] = live
         }
 
         if let refreshReadPauseForTesting { await refreshReadPauseForTesting() }
@@ -398,7 +438,7 @@ final class EventsRepository: NSObject {
         else { return }
 
         for id in eventIDs {
-            let previous = events.first { $0.id.uuidString.lowercased() == id }
+            let previous = previousEventsByID[id]
             events.removeAll { $0.id.uuidString.lowercased() == id }
 
             if let projected = projectedEvents[id] {
@@ -409,7 +449,7 @@ final class EventsRepository: NSObject {
                     events.append(projected)
                 }
             } else if let eventKitID = previous?.eventKitID,
-                      var live = service.eventKitEvent(eventKitID: eventKitID),
+                      var live = exposedCalendarEvents[id],
                       live.startDate >= windowStart,
                       live.startDate <= windowEnd
             {
@@ -566,6 +606,22 @@ final class EventsRepository: NSObject {
     }
 
     var filtered: [Event] {
+        matchingSearch(in: candidates(from: events.filter {
+            calendarVisibility.isVisible(calendarIDs: $0.allCalendarIDs)
+        }))
+    }
+
+    /// True when at least one row matching the current filter/search is in a
+    /// calendar the user hid. The list consults this only after its visible
+    /// result is empty, distinguishing a genuinely empty result from one that
+    /// Settings can restore.
+    var hasHiddenEventsMatchingCurrentQuery: Bool {
+        !matchingSearch(in: candidates(from: events.filter {
+            !calendarVisibility.isVisible(calendarIDs: $0.allCalendarIDs)
+        })).isEmpty
+    }
+
+    private func candidates(from events: [Event]) -> [Event] {
         let candidates: [Event]
         switch filter {
         case .showAll, .linked:
@@ -577,7 +633,10 @@ final class EventsRepository: NSObject {
             // not a web/video-call link (Zoom/Meet/http(s) URLs are dropped).
             candidates = events.filter { EventLocationMatcher.isPhysicalLocation($0.location) }
         }
+        return candidates
+    }
 
+    private func matchingSearch(in candidates: [Event]) -> [Event] {
         let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return candidates }
         let needle = trimmed.lowercased()
@@ -594,5 +653,14 @@ final class EventsRepository: NSObject {
     /// sidecar stores an event endpoint id.
     func linkCount(for event: Event) -> Int {
         linkCountsByID[event.id.uuidString.lowercased()] ?? 0
+    }
+
+    /// Whether an Events-list row may label itself with the primary copy's
+    /// calendar name and color. A merged row can remain visible through a
+    /// second, shown calendar even while its primary calendar is hidden; in
+    /// that case suppress the primary badge instead of identifying the row as
+    /// belonging to a calendar the user turned off.
+    func shouldShowCalendarMetadata(for event: Event) -> Bool {
+        calendarVisibility.isVisible(calendarID: event.calendarID)
     }
 }

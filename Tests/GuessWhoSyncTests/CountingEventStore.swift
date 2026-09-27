@@ -56,6 +56,12 @@ final class CountingEventStore: EventStoreProtocol, @unchecked Sendable {
         return try inner.fetch(legacyEventIdentifier: legacyEventIdentifier)
     }
 
+    // Forwarded (not counted) so a wrapped store's calendars are not hidden
+    // behind the protocol's empty default.
+    func fetchEventCalendars() throws -> [EventCalendar] {
+        try inner.fetchEventCalendars()
+    }
+
     func fetchEvents(on day: Date) throws -> [Event] {
         lock.lock()
         fetchEventsOnDayCount += 1

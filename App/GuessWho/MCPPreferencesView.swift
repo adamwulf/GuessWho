@@ -2,31 +2,41 @@
 
 import SwiftUI
 import UIKit
+import EventKit
 import GuessWhoLogging
 import GuessWhoMCPCore
 import GuessWhoMCPWire
+import GuessWhoSync
 
-/// The app's Settings sheet (⌘, on Catalyst — plans/cli-mcp.md Phase 3).
+/// The app's Settings sheet (⌘, on Catalyst — plans/cli-mcp.md Phase 3),
+/// laid out as preference tabs (`PreferencesTab`):
 ///
-/// Sections: the assistant/terminal master toggles + read-only toggles
-/// (App-Group defaults — the SAME keys `MCPHostController` observes and
-/// `MCPGates` reads per call, so a flip applies immediately); the
-/// command-line install section (copy-path primary install, the 4-state
-/// status from `CLISymlinkResolver`, the admin-auth symlink install via the
-/// AppKit bridge, and paste-able removal — never a hand-typed path); the
-/// agent-activity log; the Recently Deleted entry point; and the Debug Mode
-/// toggle (kept here so taking over ⌘, loses nothing vs. the
-/// Settings.bundle window it replaces — iOS still uses Settings.bundle).
+/// - **Access** — the assistant/terminal access modes (App-Group defaults —
+///   the SAME keys `MCPHostController` observes and `MCPGates` reads per
+///   call, so a flip applies immediately) and the command-line install
+///   (copy-path primary install, the 4-state status from
+///   `CLISymlinkResolver`, the admin-auth symlink install via the AppKit
+///   bridge, and paste-able removal — never a hand-typed path).
+/// - **Agent Activity** — the agent-activity log, reloaded on each visit.
+/// - **Calendars** — which calendars feed the Events section
+///   (`CalendarsPreferencesPane`, backed by the shared
+///   `CalendarVisibilitySettings`).
+/// - **Recently Deleted** — `RecentlyDeletedView`, reloaded on each visit.
+/// - **Advanced** — the Debug Mode toggle (kept here so taking over ⌘,
+///   loses nothing vs. the Settings.bundle window it replaces — iOS still
+///   uses Settings.bundle).
 ///
 /// Every CLI/MCP-facing string comes from the wire module's
 /// `PreferencesStrings` / `InstallStrings` / `AgentActivityStrings` /
 /// `RecentlyDeletedStrings`, all under the banned-vocabulary test. The
-/// Debug section is a sanctioned debug-mode surface (product principle
-/// carve-out) and may use internal vocabulary.
+/// Advanced tab's Debug Mode copy is a sanctioned debug-mode surface
+/// (product principle carve-out) and may use internal vocabulary.
 struct MCPPreferencesView: View {
     @ObservedObject var installModel: CLIInstallModel
     let auditLog: MCPAuditLog
     let recentlyDeleted: RecentlyDeletedService
+    let service: SyncService
+    let calendarVisibility: CalendarVisibilitySettings
 
     @AppStorage(MCPToggleKeys.mcpAccessMode, store: MCPPreferencesStore.group)
     private var mcpAccess: MCPAccessMode = .off
@@ -35,31 +45,27 @@ struct MCPPreferencesView: View {
     @AppStorage(AppSettings.Key.debugModeEnabled)
     private var debugModeEnabled = AppSettings.Default.debugModeEnabled
 
+    @State private var selectedTab: PreferencesTab = .access
     @State private var activityRows: [AgentActivityRow] = []
     @State private var activityLoaded = false
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         NavigationStack {
-            Form {
-                assistantSection
-                terminalSection
-                installSection
-                activitySection
-                recentlyDeletedSection
-                debugSection
+            VStack(spacing: 0) {
+                PreferencesTabBar(selection: $selectedTab)
+                    .padding(.vertical, 8)
+                Divider()
+                selectedPane
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
+            .background(Color(uiColor: .systemGroupedBackground))
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }
                 }
-            }
-            .task {
-                installModel.refresh()
-                activityRows = AgentActivityFormatter.rows(from: await auditLog.entries(), limit: 20)
-                activityLoaded = true
             }
             .alert(
                 installModel.alertTitle,
@@ -70,6 +76,37 @@ struct MCPPreferencesView: View {
                         Text(installModel.alertMessage)
                     }
                 })
+        }
+    }
+
+    // MARK: - Tabs
+
+    /// Only the selected pane exists, so each pane's `.task` runs again when
+    /// the user returns to it — the install status, agent activity, calendar
+    /// list, and recently deleted items are fresh on every visit.
+    @ViewBuilder
+    private var selectedPane: some View {
+        switch selectedTab {
+        case .access:
+            Form {
+                assistantSection
+                terminalSection
+                installSection
+            }
+            .task { installModel.refresh() }
+        case .activity:
+            Form {
+                activitySection
+            }
+            .task { await loadActivity() }
+        case .calendars:
+            CalendarsPreferencesPane(service: service, visibility: calendarVisibility)
+        case .recentlyDeleted:
+            RecentlyDeletedView(service: recentlyDeleted)
+        case .advanced:
+            Form {
+                debugSection
+            }
         }
     }
 
@@ -252,21 +289,17 @@ struct MCPPreferencesView: View {
                     .padding(.vertical, 1)
                 }
             }
-        } header: {
-            Text(AgentActivityStrings.sectionTitle)
         } footer: {
+            // No header: the tab already names the pane.
             Text(AgentActivityStrings.footer)
         }
     }
 
-    // MARK: - Recently Deleted
-
-    private var recentlyDeletedSection: some View {
-        Section {
-            NavigationLink(RecentlyDeletedStrings.title) {
-                RecentlyDeletedView(service: recentlyDeleted)
-            }
-        }
+    /// Keeps the previous rows on screen while a revisit reloads, so the
+    /// pane doesn't flash back to a spinner.
+    private func loadActivity() async {
+        activityRows = AgentActivityFormatter.rows(from: await auditLog.entries(), limit: 20)
+        activityLoaded = true
     }
 
     // MARK: - Debug (sanctioned debug-mode surface; internal vocabulary OK)
@@ -278,6 +311,281 @@ struct MCPPreferencesView: View {
             // Mirrors the Settings.bundle footer so Catalyst (where this
             // sheet replaces the auto-rendered ⌘, window) reads the same.
             Text("Shows developer diagnostics like the GuessWho reconcile indicator on contact rows and the Debug section on contact details.")
+        }
+    }
+}
+
+// MARK: - Tabs
+
+/// The Settings sheet's tabs, in display order.
+enum PreferencesTab: CaseIterable, Identifiable {
+    case access
+    case activity
+    case calendars
+    case recentlyDeleted
+    case advanced
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .access: return "Access"
+        case .activity: return AgentActivityStrings.sectionTitle
+        case .calendars: return "Calendars"
+        case .recentlyDeleted: return RecentlyDeletedStrings.title
+        case .advanced: return "Advanced"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .access: return "key"
+        case .activity: return "clock.arrow.circlepath"
+        case .calendars: return "calendar"
+        case .recentlyDeleted: return "trash"
+        case .advanced: return "gearshape.2"
+        }
+    }
+}
+
+/// A Mac-style preferences toolbar: one icon-over-title button per tab,
+/// centered, with the selected tab tinted. When the sheet is too narrow to
+/// show every tab, the row scrolls sideways instead of clipping.
+private struct PreferencesTabBar: View {
+    @Binding var selection: PreferencesTab
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            tabButtons
+                .padding(.horizontal, 12)
+            ScrollView(.horizontal, showsIndicators: false) {
+                tabButtons
+                    .padding(.horizontal, 12)
+            }
+        }
+    }
+
+    private var tabButtons: some View {
+        HStack(spacing: 4) {
+            ForEach(PreferencesTab.allCases) { tab in
+                tabButton(tab)
+            }
+        }
+    }
+
+    private func tabButton(_ tab: PreferencesTab) -> some View {
+        let isSelected = tab == selection
+        let shape = RoundedRectangle(cornerRadius: 8, style: .continuous)
+        return Button {
+            selection = tab
+        } label: {
+            VStack(spacing: 3) {
+                Image(systemName: tab.systemImage)
+                    .font(.title3)
+                    .frame(height: 24)
+                    // The title alone names the tab for VoiceOver.
+                    .accessibilityHidden(true)
+                Text(tab.title)
+                    .font(.caption)
+                    .lineLimit(1)
+            }
+            .frame(minWidth: 72)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .foregroundStyle(isSelected ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
+            .background(shape.fill(isSelected ? Color.primary.opacity(0.08) : Color.clear))
+            .contentShape(shape)
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+}
+
+// MARK: - Calendars
+
+/// The Calendars tab: which calendars feed the main Events section, grouped
+/// by account, with a switch per account and per calendar. Lists
+/// `SyncService.availableEventCalendars()` and reads/writes the SAME
+/// `CalendarVisibilitySettings` instance `EventsRepository` filters with, so
+/// each switch applies to an open Events list immediately. Every calendar
+/// is visible until the user hides it. Related events on person,
+/// organization, or place pages don't go through that filter, which the
+/// pane's description says.
+private struct CalendarsPreferencesPane: View {
+    let service: SyncService
+    let visibility: CalendarVisibilitySettings
+
+    @State private var accounts: [CalendarAccountGroup] = []
+    @State private var loaded = false
+    @State private var loadFailed = false
+
+    var body: some View {
+        content
+            // Keyed on access so a grant that lands while the sheet is open
+            // (the launch-time request resolving) loads the list.
+            .task(id: service.eventsAuthorization) { reload() }
+            // Calendar.app and account sync can add, remove, or rename a
+            // calendar while this pane stays selected. Keep its controls in
+            // step with the same store-change signal the Events list observes.
+            .onReceive(
+                NotificationCenter.default.publisher(for: .EKEventStoreChanged)
+                    .receive(on: DispatchQueue.main)
+            ) { _ in
+                reload()
+            }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        switch service.eventsAuthorization {
+        case .notDetermined:
+            ProgressView()
+        case .denied:
+            ContentUnavailableView {
+                Label("Calendar Access Is Off", systemImage: "calendar.badge.exclamationmark")
+            } description: {
+                Text("To choose which calendars appear in Events, allow calendar access in System Settings › Privacy & Security › Calendars.")
+            }
+        case .restricted:
+            ContentUnavailableView {
+                Label("Calendar Access Is Restricted", systemImage: "calendar.badge.exclamationmark")
+            } description: {
+                Text("This Mac's settings don't allow calendar access, so calendars can't be listed here.")
+            }
+        case .authorized:
+            if !loaded {
+                ProgressView()
+            } else if loadFailed {
+                ContentUnavailableView {
+                    Label("Calendars Couldn’t Load", systemImage: "exclamationmark.triangle")
+                } description: {
+                    Text("The calendar list couldn’t be read.")
+                } actions: {
+                    Button("Try Again", action: reload)
+                }
+            } else if accounts.isEmpty {
+                ContentUnavailableView {
+                    Label("No Calendars", systemImage: "calendar")
+                } description: {
+                    Text("When you add a calendar, it appears here.")
+                }
+            } else {
+                calendarForm
+            }
+        }
+    }
+
+    private var calendarForm: some View {
+        Form {
+            Section {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Choose which calendars appear in Events.")
+                    Text("Pages for people, organizations, and places still show their related events from every calendar. New calendars are shown automatically.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+                .listRowBackground(Color.clear)
+            }
+            ForEach(accounts) { account in
+                Section {
+                    accountToggle(account)
+                    ForEach(account.calendars) { calendar in
+                        calendarToggle(calendar)
+                    }
+                }
+            }
+        }
+    }
+
+    /// On only when every calendar in the account is shown; a partly-shown
+    /// account reads off (its caption gives the count), and switching it on
+    /// shows them all.
+    private func accountToggle(_ account: CalendarAccountGroup) -> some View {
+        let shown = account.calendars.filter { visibility.isVisible(calendarID: $0.id) }.count
+        let isOn = Binding(
+            get: { account.calendars.allSatisfy { visibility.isVisible(calendarID: $0.id) } },
+            set: { newValue in
+                visibility.setVisible(newValue, calendarIDs: account.calendars.map(\.id))
+            })
+        return Toggle(isOn: isOn) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(account.title)
+                    .font(.headline)
+                Text(Self.summary(shown: shown, total: account.calendars.count))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func calendarToggle(_ calendar: EventCalendar) -> some View {
+        let isOn = Binding(
+            get: { visibility.isVisible(calendarID: calendar.id) },
+            set: { visibility.setVisible($0, calendarID: calendar.id) })
+        return Toggle(isOn: isOn) {
+            Label {
+                Text(calendar.title.isEmpty ? "Untitled Calendar" : calendar.title)
+            } icon: {
+                Circle()
+                    .fill(Self.color(for: calendar))
+                    .frame(width: 10, height: 10)
+            }
+        }
+        .padding(.leading, 12)
+    }
+
+    private func reload() {
+        guard service.eventsAuthorization == .authorized else { return }
+        do {
+            accounts = CalendarAccountGroup.groups(from: try service.availableEventCalendars())
+            loadFailed = false
+        } catch {
+            accounts = []
+            loadFailed = true
+        }
+        loaded = true
+    }
+
+    private static func summary(shown: Int, total: Int) -> String {
+        if shown == 0 { return "Hidden from Events" }
+        if shown == total { return total == 1 ? "Shown in Events" : "All \(total) calendars shown" }
+        return "\(shown) of \(total) calendars shown"
+    }
+
+    private static func color(for calendar: EventCalendar) -> Color {
+        calendar.colorHex.flatMap(UIColor.init(hexString:)).map(Color.init(uiColor:)) ?? .secondary
+    }
+}
+
+/// One account's calendars for the Calendars tab. `groups(from:)` groups by
+/// account identity (`EventCalendar.sourceID`), not display name, so two
+/// accounts that share a name stay separate. Accounts, and the calendars
+/// within each, sort by name with the identifier as the tie-breaker, so the
+/// list keeps one stable order across reloads.
+struct CalendarAccountGroup: Identifiable {
+    /// The account identifier; empty for calendars listed without an account.
+    let id: String
+    let title: String
+    let calendars: [EventCalendar]
+
+    static func groups(from calendars: [EventCalendar]) -> [CalendarAccountGroup] {
+        Dictionary(grouping: calendars, by: \.sourceID)
+            .map { sourceID, members in
+                let sorted = members.sorted { precedes($0.title, $0.id, $1.title, $1.id) }
+                // Every calendar in an account carries the account's name.
+                let title = sorted.first { !$0.sourceTitle.isEmpty }?.sourceTitle ?? "Other"
+                return CalendarAccountGroup(id: sourceID, title: title, calendars: sorted)
+            }
+            .sorted { precedes($0.title, $0.id, $1.title, $1.id) }
+    }
+
+    private static func precedes(
+        _ lhsName: String, _ lhsID: String, _ rhsName: String, _ rhsID: String
+    ) -> Bool {
+        switch lhsName.localizedStandardCompare(rhsName) {
+        case .orderedAscending: return true
+        case .orderedDescending: return false
+        case .orderedSame: return lhsID < rhsID
         }
     }
 }
@@ -475,37 +783,95 @@ final class CLIInstallModel: ObservableObject {
 /// directly so presentation never depends on responder-chain focus.
 @MainActor
 enum MCPPreferencesPresenter {
+    /// The one hosting type both the presentation and the duplicate check
+    /// use, so they can't drift apart if the root view's type changes.
+    private typealias SettingsHost = UIHostingController<MCPPreferencesView>
+
     private static let installModel = CLIInstallModel()
 
+    /// Desktop-sized, so each tab has room without scrolling in a typical
+    /// window; `sheetSize(fitting:)` shrinks it to fit a smaller window.
+    private static let preferredSheetSize = CGSize(width: 680, height: 600)
+    private static let minimumSheetSize = CGSize(width: 420, height: 360)
+    private static let windowMargin: CGFloat = 40
+
     static func present() {
+        let windows = applicationWindows()
+        if let owner = windows.first(where: { window in
+            window.rootViewController.map(containsSettingsHost) ?? false
+        }) {
+            // Settings is app-global. If another Catalyst window invoked ⌘,
+            // bring forward the scene that already owns the sheet instead of
+            // silently doing nothing or stacking a second copy.
+            if let scene = owner.windowScene {
+                UIApplication.shared.requestSceneSessionActivation(
+                    scene.session,
+                    userActivity: nil,
+                    options: nil,
+                    errorHandler: nil
+                )
+            }
+            return
+        }
+        let roots = windows.compactMap(\.rootViewController)
         guard let appDelegate = UIApplication.shared.delegate as? GuessWhoAppDelegate,
-              let presenter = topViewController()
+              let root = roots.first
         else { return }
-        // Already showing? Don't stack a second sheet on repeat ⌘,.
-        if presenter is UIHostingController<MCPPreferencesView> { return }
+
+        var presenter = root
+        while let presented = presenter.presentedViewController {
+            presenter = presented
+        }
         let view = MCPPreferencesView(
             installModel: installModel,
             auditLog: appDelegate.mcpHostController.auditLog,
-            recentlyDeleted: appDelegate.mcpHostController.makeRecentlyDeletedService())
-        let host = UIHostingController(rootView: view)
+            recentlyDeleted: appDelegate.mcpHostController.makeRecentlyDeletedService(),
+            service: appDelegate.service,
+            calendarVisibility: appDelegate.calendarVisibility)
+        let host = SettingsHost(rootView: view)
         host.modalPresentationStyle = .formSheet
+        host.preferredContentSize = sheetSize(fitting: presenter.view.window?.bounds.size)
         presenter.present(host, animated: true)
     }
 
-    private static func topViewController() -> UIViewController? {
-        let scene = UIApplication.shared.connectedScenes
-            .compactMap { $0 as? UIWindowScene }
-            .first { $0.activationState == .foregroundActive }
-            ?? UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
+    /// The preferred size, shrunk to leave a margin inside a smaller window
+    /// but never below a floor the tabs stay usable at (each pane scrolls).
+    private static func sheetSize(fitting windowSize: CGSize?) -> CGSize {
+        guard let windowSize else { return preferredSheetSize }
+        return CGSize(
+            width: min(
+                preferredSheetSize.width,
+                max(windowSize.width - windowMargin * 2, minimumSheetSize.width)),
+            height: min(
+                preferredSheetSize.height,
+                max(windowSize.height - windowMargin * 2, minimumSheetSize.height)))
+    }
 
-        guard let root = scene?.windows.first(where: { $0.isKeyWindow })?.rootViewController
-            ?? scene?.windows.first?.rootViewController else { return nil }
+    /// Windows ordered with the frontmost Catalyst window first, followed by
+    /// the other active windows and then inactive scenes. The complete list is
+    /// also the scope of the duplicate-sheet lookup above.
+    private static func applicationWindows() -> [UIWindow] {
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        let activeWindows = scenes
+            .filter { $0.activationState == .foregroundActive }
+            .flatMap(\.windows)
+        let otherWindows = scenes
+            .filter { $0.activationState != .foregroundActive }
+            .flatMap(\.windows)
+        let orderedWindows = activeWindows.filter(\.isKeyWindow)
+            + activeWindows.filter { !$0.isKeyWindow }
+            + otherWindows.filter(\.isKeyWindow)
+            + otherWindows.filter { !$0.isKeyWindow }
+        return orderedWindows
+    }
 
-        var top = root
-        while let presented = top.presentedViewController {
-            top = presented
+    private static func containsSettingsHost(_ root: UIViewController) -> Bool {
+        var candidate: UIViewController? = root
+        while let current = candidate {
+            if current is SettingsHost { return true }
+            candidate = current.presentedViewController
         }
-        return top
+        return false
     }
 }
 

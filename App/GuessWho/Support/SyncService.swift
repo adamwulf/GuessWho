@@ -191,6 +191,19 @@ final class SyncService {
         }
     }
 
+    /// Calendars the user can include in the main Events section. Calendar
+    /// identifiers are local EventKit identities, so the app keeps the matching
+    /// visibility preference in device-local defaults rather than syncing it.
+    func availableEventCalendars() throws -> [EventCalendar] {
+        guard eventsAuthorization == .authorized else { return [] }
+        do {
+            return try eventsAdapter.fetchEventCalendars()
+        } catch {
+            lastError = "Calendar list fetch failed: \(error.localizedDescription)"
+            throw error
+        }
+    }
+
     // Routes the windowed read through the orchestrator's Option-C projection
     // (`sync.eventsWindow`). EventKit inclusion is gated here so the orchestrator
     // stays permission-agnostic. `async` — the window read is a synchronous
@@ -270,6 +283,38 @@ final class SyncService {
     func eventKitEvent(eventKitID: String) -> Event? {
         guard eventsAuthorization == .authorized else { return nil }
         return (try? eventsAdapter.fetch(eventKitID: eventKitID)) ?? nil
+    }
+
+    /// Window-aware EventKit projection used when deleting a sidecar exposes
+    /// the underlying calendar row. It uses the same overlap batch and
+    /// representative rule as `GuessWhoSync.eventsWindow` and watcher deltas,
+    /// so removing metadata cannot swap in a different recurring occurrence
+    /// or calendar copy. The adapter query is synchronous and may enumerate a
+    /// large window, so this wrapper hops it off the main actor.
+    func eventKitEvent(eventKitID: String, from: Date, to: Date) async -> Event? {
+        guard eventsAuthorization == .authorized else { return nil }
+        do {
+            let adapter = eventsAdapter
+            return try await withCheckedThrowingContinuation { continuation in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    do {
+                        let interval = DateInterval(start: from, end: to)
+                        let copies = try adapter.fetchEvents(in: interval)
+                            .filter { $0.eventKitID == eventKitID }
+                        continuation.resume(returning: Event.mergedCalendarRepresentative(
+                            from: copies,
+                            preferredStartRange: from...to,
+                            prefersLatestStart: true
+                        ))
+                    } catch {
+                        continuation.resume(throwing: error)
+                    }
+                }
+            }
+        } catch {
+            lastError = "Calendar event fetch failed: \(error.localizedDescription)"
+            return nil
+        }
     }
 
     // Reverse lookup — sidecar event UUID currently pointing at `ekid`, or

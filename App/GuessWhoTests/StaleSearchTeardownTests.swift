@@ -255,7 +255,10 @@ struct StaleSearchTeardownTests {
         let root = try makeTempRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let service = makeService(root: root, contacts: [])
-        let repository = EventsRepository(service: service)
+        let repository = EventsRepository(
+            service: service,
+            calendarVisibility: CalendarVisibilitySettings(defaults: nil)
+        )
 
         let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 400, height: 800))
         defer { window.isHidden = true }

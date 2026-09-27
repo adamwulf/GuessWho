@@ -94,6 +94,13 @@ public protocol EventStoreProtocol: Sendable {
     /// implements it via a test-set translation map.
     func fetch(legacyEventIdentifier: String) throws -> Event?
 
+    /// Every calendar that can hold events, each carrying its account
+    /// (source) identity so the caller can group calendars by account. An
+    /// `EventCalendar.id` equals the `Event.calendarID` of the events in that
+    /// calendar. Returns `[]` without event read access. Order is
+    /// unspecified; callers sort for display.
+    func fetchEventCalendars() throws -> [EventCalendar]
+
     // MARK: - Writes (linked events only; Option C)
 
     /// Create a brand-new EventKit event from the given fields in the host's
@@ -128,4 +135,9 @@ public extension EventStoreProtocol {
     /// preparation. Keeping the default a no-op makes this a pure performance
     /// hint rather than a new correctness requirement for every conformer.
     func prepareEventsWithAttendeeIndex(in interval: DateInterval) throws {}
+
+    /// A store that does not model calendars lists none. The default keeps
+    /// stores that predate calendar listing (test stubs, sample data)
+    /// conforming; `EKEventStoreAdapter` and `InMemoryEventStore` override it.
+    func fetchEventCalendars() throws -> [EventCalendar] { [] }
 }

@@ -14,14 +14,20 @@ public final class InMemoryEventStore: EventStoreProtocol, @unchecked Sendable {
     /// `fetch(legacyEventIdentifier:)` so migration tests can simulate
     /// EventKit's two-namespace lookup without a real `EKEventStore`.
     private var legacyToEventKitID: [String: String] = [:]
+    /// Injected calendar list, returned verbatim (same order) by
+    /// `fetchEventCalendars()`. Independent of the stored events: a test
+    /// that wants an event to belong to a calendar sets the event's
+    /// `calendarID` to the calendar's `id` itself.
+    private var calendars: [EventCalendar]
 
-    public init(events: [Event] = []) {
+    public init(events: [Event] = [], calendars: [EventCalendar] = []) {
         var initial: [String: Event] = [:]
         for event in events {
             guard let ekid = event.eventKitID else { continue }
             initial[ekid] = event
         }
         self.eventsByEventKitID = initial
+        self.calendars = calendars
     }
 
     // MARK: - Authorization
@@ -114,6 +120,15 @@ public final class InMemoryEventStore: EventStoreProtocol, @unchecked Sendable {
         defer { lock.unlock() }
         guard let ekid = legacyToEventKitID[legacyEventIdentifier] else { return nil }
         return eventsByEventKitID[ekid]
+    }
+
+    /// The injected calendars in injection order, or `[]` unless the simulated
+    /// authorization is `.authorized` — mirroring the adapter's read gate.
+    public func fetchEventCalendars() throws -> [EventCalendar] {
+        lock.lock()
+        defer { lock.unlock() }
+        guard authorizationStatus == .authorized else { return [] }
+        return calendars
     }
 
     public func searchEvents(matching text: String, in interval: DateInterval) throws -> [Event] {
@@ -235,6 +250,13 @@ public final class InMemoryEventStore: EventStoreProtocol, @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         legacyToEventKitID[legacy] = ekid
+    }
+
+    /// Test-only: replace the calendar list `fetchEventCalendars()` returns.
+    public func setCalendars(_ calendars: [EventCalendar]) {
+        lock.lock()
+        defer { lock.unlock() }
+        self.calendars = calendars
     }
 
     /// Test-only: insert an `Event` keyed by its own `eventKitID`, bypassing
