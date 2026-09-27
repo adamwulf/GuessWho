@@ -493,14 +493,13 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
         builder.insertChild(menu, atEndOfMenu: .help)
 
         #if targetEnvironment(macCatalyst)
-        // Settings… (⌘,) — the in-app Settings sheet (plans/cli-mcp.md
-        // Phase 3): the CLI/MCP toggles, command-line install, agent
-        // activity, Recently Deleted, and the Debug Mode toggle. Replaces
+        // Settings… (⌘,) — the tabbed in-app Settings sheet: calendar
+        // visibility, CLI/MCP access and install, agent activity, Recently
+        // Deleted, and the Debug Mode toggle. Replaces
         // the system-provided preferences item (which auto-renders
         // Settings.bundle — that bundle stays for iOS, and its one control,
         // Debug Mode, lives in the sheet too so Catalyst loses nothing).
-        // Phase 2's File-menu "Recently Deleted…" entry moved into the
-        // sheet as a Preferences row.
+        // Phase 2's File-menu "Recently Deleted…" entry moved into the sheet.
         let settings = UIKeyCommand(
             title: "Settings…",
             action: #selector(settingsMenuAction),

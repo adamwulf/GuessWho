@@ -265,11 +265,9 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     #if targetEnvironment(macCatalyst)
     /// Catalyst shell. Sidebar selection drives content/detail column swaps
     /// (e.g. .people → ContactsListViewController + ContactDetailView). Settings
-    /// has no sidebar row: the Debug Mode toggle is reached through the system
-    /// Settings app via the bundled `Settings.bundle`, which Catalyst
-    /// auto-renders into the ⌘, preferences window. Picking a tab with no
-    /// selected detail resets the secondary column to a "Nothing Selected"
-    /// placeholder.
+    /// has no sidebar row; Catalyst presents the tabbed Settings sheet with ⌘,.
+    /// Picking a tab with no selected detail resets the secondary column to a
+    /// "Nothing Selected" placeholder.
     private func makeCatalystSplit(
         appDelegate: GuessWhoAppDelegate,
         restoring: RestorationState?
