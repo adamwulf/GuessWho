@@ -198,9 +198,11 @@ extension Event {
     /// editable calendar wins first, then an unknown writability (older
     /// payloads), then a known read-only calendar; within that tier a resolved
     /// calendar precedes an unresolved one, then the smaller calendar
-    /// identifier wins, then the earlier start. Exact ties keep first-seen
-    /// order. The adapter's single lookup and the orchestrator's window index
-    /// share this so a full reload and a scoped delta choose the same copy.
+    /// identifier wins, then the earlier start by default (or the later start
+    /// when `prefersLatestStart` is true). Exact ties keep first-seen order.
+    /// The adapter's copy-collapsing paths and the orchestrator's window index
+    /// share these calendar and writability tiers; window projections also
+    /// prefer the latest occurrence whose start is inside their window.
     static func primaryCalendarCopyIndex(
         calendarIDs: [String?],
         startDates: [Date],

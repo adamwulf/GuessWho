@@ -289,18 +289,28 @@ final class SyncService {
     /// the underlying calendar row. It uses the same overlap batch and
     /// representative rule as `GuessWhoSync.eventsWindow` and watcher deltas,
     /// so removing metadata cannot swap in a different recurring occurrence
-    /// or calendar copy.
-    func eventKitEvent(eventKitID: String, from: Date, to: Date) -> Event? {
+    /// or calendar copy. The adapter query is synchronous and may enumerate a
+    /// large window, so this wrapper hops it off the main actor.
+    func eventKitEvent(eventKitID: String, from: Date, to: Date) async -> Event? {
         guard eventsAuthorization == .authorized else { return nil }
         do {
-            let interval = DateInterval(start: from, end: to)
-            let copies = try eventsAdapter.fetchEvents(in: interval)
-                .filter { $0.eventKitID == eventKitID }
-            return Event.mergedCalendarRepresentative(
-                from: copies,
-                preferredStartRange: from...to,
-                prefersLatestStart: true
-            )
+            let adapter = eventsAdapter
+            return try await withCheckedThrowingContinuation { continuation in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    do {
+                        let interval = DateInterval(start: from, end: to)
+                        let copies = try adapter.fetchEvents(in: interval)
+                            .filter { $0.eventKitID == eventKitID }
+                        continuation.resume(returning: Event.mergedCalendarRepresentative(
+                            from: copies,
+                            preferredStartRange: from...to,
+                            prefersLatestStart: true
+                        ))
+                    } catch {
+                        continuation.resume(throwing: error)
+                    }
+                }
+            }
         } catch {
             lastError = "Calendar event fetch failed: \(error.localizedDescription)"
             return nil

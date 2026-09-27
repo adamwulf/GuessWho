@@ -240,6 +240,45 @@ struct RepositoryRefreshGenerationTests {
     }
 
     @Test
+    func deletedLinkedRecordExposesCalendarRowWithoutMainThreadFetch() async throws {
+        let root = try makeTempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let center = NotificationCenter()
+        let now = eventFixtureBase()
+        let calendarEvent = Event(
+            eventKitID: "still-in-calendar",
+            title: "Still in Calendar",
+            startDate: now,
+            endDate: now.addingTimeInterval(60),
+            calendarID: "calendar"
+        )
+        let eventStore = RefreshGenEventStore(events: [calendarEvent])
+        let service = makeService(root: root, eventsAdapter: eventStore)
+        await service.requestEventsAccessIfNeeded()
+        let sidecarID = try await service.linkEvent(toEventKitID: "still-in-calendar")
+        let repository = EventsRepository(
+            service: service,
+            calendarVisibility: makeCalendarVisibility(notificationCenter: center),
+            notificationCenter: center
+        )
+        await repository.reload()
+        #expect(repository.events.map(\.id) == [sidecarID])
+        #expect(eventStore.fetchEventsCount == 1)
+
+        try service.deleteEvent(uuid: sidecarID.uuidString)
+        repository.scheduleDebouncedReload(
+            SidecarChangeSet(changedKeys: [SidecarKey(kind: .event, id: sidecarID.uuidString)]),
+            trigger: "test-deleted-linked-event"
+        )
+        let ephemeralID = Event.stableID(forEventKitID: "still-in-calendar")
+        await waitUntil { repository.events.map(\.id) == [ephemeralID] }
+
+        #expect(repository.events.first?.title == "Still in Calendar")
+        #expect(eventStore.fetchEventsCount == 2)
+        #expect(eventStore.mainThreadFetchEventsCount == 0)
+    }
+
+    @Test
     func calendarVisibilityChangesResnapshotWithoutReloadingTheStore() async throws {
         let root = try makeTempRoot()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -1227,6 +1266,7 @@ private final class RefreshGenEventStore: EventStoreProtocol, @unchecked Sendabl
     private let events: [Event]
     private let fetchCountLock = NSLock()
     private var _fetchEventsCount = 0
+    private var _mainThreadFetchEventsCount = 0
 
     init(events: [Event] = []) {
         self.events = events
@@ -1237,6 +1277,7 @@ private final class RefreshGenEventStore: EventStoreProtocol, @unchecked Sendabl
     func fetchEvents(in interval: DateInterval) throws -> [Event] {
         fetchCountLock.lock()
         _fetchEventsCount += 1
+        if Thread.isMainThread { _mainThreadFetchEventsCount += 1 }
         fetchCountLock.unlock()
         return events.filter { $0.startDate <= interval.end && $0.endDate >= interval.start }
     }
@@ -1245,6 +1286,11 @@ private final class RefreshGenEventStore: EventStoreProtocol, @unchecked Sendabl
         fetchCountLock.lock()
         defer { fetchCountLock.unlock() }
         return _fetchEventsCount
+    }
+    var mainThreadFetchEventsCount: Int {
+        fetchCountLock.lock()
+        defer { fetchCountLock.unlock() }
+        return _mainThreadFetchEventsCount
     }
     func fetch(eventKitID: String) throws -> Event? {
         events.first { $0.eventKitID == eventKitID }

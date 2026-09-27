@@ -377,6 +377,9 @@ final class EventsRepository: NSObject {
         let requestedFilter = filter
         let requestedStart = windowStart
         let requestedEnd = windowEnd
+        let previousEventsByID = Dictionary(uniqueKeysWithValues: eventIDs.compactMap { id in
+            events.first { $0.id.uuidString.lowercased() == id }.map { (id, $0) }
+        })
         var projectedEvents: [String: Event] = [:]
         if !eventIDs.isEmpty {
             guard let fetched = await service.sidecarEvents(
@@ -386,6 +389,22 @@ final class EventsRepository: NSObject {
                 return
             }
             projectedEvents = fetched
+        }
+
+        // A removed linked record exposes its still-existing calendar event as
+        // an ephemeral row. Resolve that fallback during the asynchronous read
+        // phase, before the supersession guard and publish loop; a cold EventKit
+        // window enumeration must never block the main actor.
+        var exposedCalendarEvents: [String: Event] = [:]
+        for id in eventIDs where projectedEvents[id] == nil {
+            guard let eventKitID = previousEventsByID[id]?.eventKitID,
+                  let live = await service.eventKitEvent(
+                    eventKitID: eventKitID,
+                    from: requestedStart,
+                    to: requestedEnd
+                  )
+            else { continue }
+            exposedCalendarEvents[id] = live
         }
 
         if let refreshReadPauseForTesting { await refreshReadPauseForTesting() }
@@ -419,7 +438,7 @@ final class EventsRepository: NSObject {
         else { return }
 
         for id in eventIDs {
-            let previous = events.first { $0.id.uuidString.lowercased() == id }
+            let previous = previousEventsByID[id]
             events.removeAll { $0.id.uuidString.lowercased() == id }
 
             if let projected = projectedEvents[id] {
@@ -430,11 +449,7 @@ final class EventsRepository: NSObject {
                     events.append(projected)
                 }
             } else if let eventKitID = previous?.eventKitID,
-                      var live = service.eventKitEvent(
-                        eventKitID: eventKitID,
-                        from: windowStart,
-                        to: windowEnd
-                      ),
+                      var live = exposedCalendarEvents[id],
                       live.startDate >= windowStart,
                       live.startDate <= windowEnd
             {
@@ -596,10 +611,10 @@ final class EventsRepository: NSObject {
         }))
     }
 
-    /// True when the current filter/search would have results except that all
-    /// matching rows here come only from calendars the user hid. The list uses
-    /// this to distinguish a genuinely empty result from one that Settings can
-    /// restore.
+    /// True when at least one row matching the current filter/search is in a
+    /// calendar the user hid. The list consults this only after its visible
+    /// result is empty, distinguishing a genuinely empty result from one that
+    /// Settings can restore.
     var hasHiddenEventsMatchingCurrentQuery: Bool {
         !matchingSearch(in: candidates(from: events.filter {
             !calendarVisibility.isVisible(calendarIDs: $0.allCalendarIDs)

@@ -684,8 +684,9 @@ public final class EKEventStoreAdapter: EventStoreProtocol, @unchecked Sendable 
     // supplies every displayed value, and `calendarIDs` lists every calendar
     // holding the event even when copies have drifted to different starts.
     // The raw batch still keeps recurring occurrences apart for attendee
-    // indexing; `GuessWhoSync.eventsWindow` and the single-event lookup share
-    // `Event.mergedCalendarRepresentative`, so full and delta reads agree.
+    // indexing. The window and watcher-delta projections both select the
+    // latest occurrence that starts inside their window; the single-event
+    // lookup uses the same calendar/writability tiers without a window.
 
     /// Writable counterpart of `fetchEventCopiesDirectly`: resolve every
     /// EventKit copy through the canonical or legacy namespace, identify the
@@ -797,7 +798,8 @@ public final class EKEventStoreAdapter: EventStoreProtocol, @unchecked Sendable 
 
     /// The one `Event` `fetch(eventKitID:)` returns for every copy EventKit
     /// holds under one identifier. Displayed fields come from the same
-    /// deterministic representative as the window projection; calendar
+    /// deterministic calendar/writability tiers as the window projection;
+    /// unlike a window read, this lookup has no preferred date range. Calendar
     /// membership is the union across all copies, including drifted dates.
     static func singleEvent(fromCopies copies: [Event]) -> Event? {
         Event.mergedCalendarRepresentative(from: copies)
