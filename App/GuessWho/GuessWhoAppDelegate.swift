@@ -20,6 +20,9 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
     /// paths (external-change notifications, list selections) all see
     /// the same instance.
     let contactsRepository: ContactsRepository
+    /// User selection for which system calendars feed the main Events section.
+    /// Shared by Settings and the repository so changes apply immediately.
+    let calendarVisibility: CalendarVisibilitySettings
     /// Owned here for the same reason as `contactsRepository`: both the iPhone
     /// tab shell and the Catalyst columns consume this one instance.
     let eventsRepository: EventsRepository
@@ -111,10 +114,15 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
         let service = SyncService()
         #endif
         let contactsRepository = service.makeContactsRepository()
+        let calendarVisibility = CalendarVisibilitySettings()
         self.service = service
         self.favoritesStore = FavoritesListStore(service: service)
         self.contactsRepository = contactsRepository
-        self.eventsRepository = EventsRepository(service: service)
+        self.calendarVisibility = calendarVisibility
+        self.eventsRepository = EventsRepository(
+            service: service,
+            calendarVisibility: calendarVisibility
+        )
         self.guidesRepository = GuidesRepository(service: service)
         self.contactPhotoLoader = ContactPhotoLoader(repository: contactsRepository)
         #if DEBUG

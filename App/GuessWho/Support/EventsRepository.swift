@@ -46,6 +46,7 @@ final class EventsRepository: NSObject {
     private static let reloadLog = Logger(label: "app.events-reload")
 
     private let service: SyncService
+    private let calendarVisibility: CalendarVisibilitySettings
 
     private(set) var events: [Event] = []
     private(set) var isLoading: Bool = false
@@ -120,8 +121,13 @@ final class EventsRepository: NSObject {
     /// `ContactsRepository` does for the same reason.
     private let notificationCenter: NotificationCenter
 
-    init(service: SyncService, notificationCenter: NotificationCenter = .default) {
+    init(
+        service: SyncService,
+        calendarVisibility: CalendarVisibilitySettings = CalendarVisibilitySettings(),
+        notificationCenter: NotificationCenter = .default
+    ) {
         self.service = service
+        self.calendarVisibility = calendarVisibility
         self.notificationCenter = notificationCenter
         let now = Date()
         // Default window: the past 30 days through the end of today — no future
@@ -154,6 +160,21 @@ final class EventsRepository: NSObject {
         notificationCenter.addObserver(self, selector: #selector(storeDidChange(_:)), name: .EKEventStoreChanged, object: nil)
         notificationCenter.addObserver(self, selector: #selector(storeDidChange(_:)), name: .guessWhoContactsDidChange, object: nil)
         notificationCenter.addObserver(self, selector: #selector(storeDidChange(_:)), name: .guessWhoSidecarsDidChange, object: nil)
+        notificationCenter.addObserver(
+            self,
+            selector: #selector(calendarVisibilityDidChange(_:)),
+            name: .calendarVisibilityDidChange,
+            object: calendarVisibility
+        )
+    }
+
+    /// Calendar selection changes only the list projection, not the backing
+    /// event read. Re-snapshot immediately without paying for another EventKit
+    /// query. Associated-item event queries do not use this repository and are
+    /// deliberately unaffected by the Events-section visibility preference.
+    @objc
+    private func calendarVisibilityDidChange(_ note: Notification) {
+        notificationCenter.post(name: .eventsRepositoryDidReload, object: self)
     }
 
     /// Reloads the events list. `nonisolated` because the selector API delivers
@@ -566,16 +587,19 @@ final class EventsRepository: NSObject {
     }
 
     var filtered: [Event] {
+        let visibleEvents = events.filter {
+            calendarVisibility.isVisible(calendarID: $0.calendarID)
+        }
         let candidates: [Event]
         switch filter {
         case .showAll, .linked:
-            candidates = events
+            candidates = visibleEvents
         case .hasAttendees:
-            candidates = events.filter { !$0.attendees.isEmpty }
+            candidates = visibleEvents.filter { !$0.attendees.isEmpty }
         case .physicalLocation:
             // Keep only events whose location names a real place: non-empty and
             // not a web/video-call link (Zoom/Meet/http(s) URLs are dropped).
-            candidates = events.filter { EventLocationMatcher.isPhysicalLocation($0.location) }
+            candidates = visibleEvents.filter { EventLocationMatcher.isPhysicalLocation($0.location) }
         }
 
         let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)

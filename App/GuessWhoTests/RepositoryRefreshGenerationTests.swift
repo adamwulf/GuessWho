@@ -29,10 +29,13 @@ struct RepositoryRefreshGenerationTests {
         return dir
     }
 
-    private func makeService(root: URL) -> SyncService {
+    private func makeService(
+        root: URL,
+        eventsAdapter: RefreshGenEventStore = RefreshGenEventStore()
+    ) -> SyncService {
         SyncService(
             contactsAdapter: RefreshGenContactStore(),
-            eventsAdapter: RefreshGenEventStore(),
+            eventsAdapter: eventsAdapter,
             sidecarLocation: .iCloud(root),
             deviceID: "test-device",
             contactCursorURL: root.appendingPathComponent("test-cursor")
@@ -92,6 +95,82 @@ struct RepositoryRefreshGenerationTests {
     }
 
     // MARK: - EventsRepository
+
+    @Test
+    func calendarVisibilityFiltersOnlyTheEventsSection() async throws {
+        let root = try makeTempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let suiteName = "CalendarVisibilityTests-\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let center = NotificationCenter()
+        let now = eventFixtureBase()
+        let visibleEvent = Event(
+            eventKitID: "visible-event",
+            title: "Visible calendar",
+            startDate: now,
+            endDate: now.addingTimeInterval(60),
+            attendees: [EventAttendee(name: "Taylor", email: "taylor@example.com")],
+            calendarID: "visible-calendar"
+        )
+        let hiddenEvent = Event(
+            eventKitID: "hidden-event",
+            title: "Hidden calendar",
+            startDate: now.addingTimeInterval(120),
+            endDate: now.addingTimeInterval(180),
+            attendees: [EventAttendee(name: "Taylor", email: "taylor@example.com")],
+            calendarID: "hidden-calendar"
+        )
+        let eventStore = RefreshGenEventStore(events: [visibleEvent, hiddenEvent])
+        let service = makeService(root: root, eventsAdapter: eventStore)
+        await service.requestEventsAccessIfNeeded()
+        let visibility = CalendarVisibilitySettings(defaults: defaults, notificationCenter: center)
+        visibility.setVisible(false, calendarID: "hidden-calendar")
+        let repository = EventsRepository(
+            service: service,
+            calendarVisibility: visibility,
+            notificationCenter: center
+        )
+
+        await repository.reload()
+
+        #expect(repository.events.map(\.title).sorted() == ["Hidden calendar", "Visible calendar"])
+        #expect(repository.filtered.map(\.title) == ["Visible calendar"])
+
+        // Associated-item lookups bypass the Events-section repository filter,
+        // so a matching event remains available even when its calendar is off.
+        let associatedEvents = await service.recentEvents(forEmails: ["taylor@example.com"])
+        #expect(Set(associatedEvents.map(\.title)) == ["Hidden calendar", "Visible calendar"])
+    }
+
+    @Test
+    func calendarVisibilityChangesResnapshotWithoutReloadingTheStore() async throws {
+        let root = try makeTempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let suiteName = "CalendarVisibilityNotificationTests-\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let center = NotificationCenter()
+        let visibility = CalendarVisibilitySettings(defaults: defaults, notificationCenter: center)
+        let repository = EventsRepository(
+            service: makeService(root: root),
+            calendarVisibility: visibility,
+            notificationCenter: center
+        )
+        let counter = ReloadPostCounter(.eventsRepositoryDidReload, on: center)
+
+        visibility.setVisible(false, calendarID: "calendar")
+
+        #expect(counter.count == 1)
+        #expect(repository.isLoading == false)
+        let reloadedVisibility = CalendarVisibilitySettings(
+            defaults: defaults,
+            notificationCenter: center
+        )
+        #expect(reloadedVisibility.isVisible(calendarID: "calendar") == false)
+        #expect(reloadedVisibility.isVisible(calendarID: "new-calendar"))
+        #expect(reloadedVisibility.isVisible(calendarID: nil))
+    }
 
     /// Contact-store changes must continue to refresh event rows because
     /// attendee presentation may depend on the updated contact projection. The
@@ -977,21 +1056,49 @@ private actor RefreshGenContactStore: ContactStoreProtocol {
     func removeMember(contactLocalID: String, fromGroup groupLocalID: String) async throws { refreshGenStubUnused() }
 }
 
-/// No calendar. `createManualEvent` is sidecar-only and never touches this
-/// store, so every read returns empty and every write is unreachable.
+/// Small deterministic calendar store. Most tests use its empty default;
+/// calendar-visibility coverage injects EventKit-shaped events.
 private final class RefreshGenEventStore: EventStoreProtocol, Sendable {
+    private let events: [Event]
+
+    init(events: [Event] = []) {
+        self.events = events
+    }
+
     func eventsAuthorizationStatus() -> StoreAuthorizationStatus { .notDetermined }
-    func requestEventsAccess() async -> StoreAccessResult { refreshGenStubUnused() }
-    func fetchEvents(in interval: DateInterval) throws -> [Event] { [] }
-    func fetch(eventKitID: String) throws -> Event? { nil }
-    func fetchEvents(on day: Date) throws -> [Event] { [] }
-    func searchEvents(matching text: String, in interval: DateInterval) throws -> [Event] { [] }
+    func requestEventsAccess() async -> StoreAccessResult { StoreAccessResult(status: .authorized) }
+    func fetchEvents(in interval: DateInterval) throws -> [Event] {
+        events.filter { $0.startDate <= interval.end && $0.endDate >= interval.start }
+    }
+    func fetch(eventKitID: String) throws -> Event? {
+        events.first { $0.eventKitID == eventKitID }
+    }
+    func fetchEvents(on day: Date) throws -> [Event] {
+        events.filter { Calendar.current.isDate($0.startDate, inSameDayAs: day) }
+    }
+    func searchEvents(matching text: String, in interval: DateInterval) throws -> [Event] {
+        try fetchEvents(in: interval).filter {
+            text.isEmpty || $0.title.localizedCaseInsensitiveContains(text)
+        }
+    }
     func eventsWithAttendee(
         matchingEmails emails: Set<String>,
         orLocations locations: Set<String>,
         in interval: DateInterval,
         limit: Int
-    ) throws -> [Event] { [] }
+    ) throws -> [Event] {
+        events
+            .filter { event in
+                event.startDate <= interval.end
+                    && event.endDate >= interval.start
+                    && event.attendees.contains { attendee in
+                        attendee.email.map(emails.contains) ?? false
+                    }
+            }
+            .sorted { $0.startDate > $1.startDate }
+            .prefix(limit)
+            .map { $0 }
+    }
     func fetch(legacyEventIdentifier: String) throws -> Event? { nil }
     func createEvent(
         title: String,
