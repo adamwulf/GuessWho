@@ -17,8 +17,12 @@ public final class EKEventStoreAdapter: EventStoreProtocol, @unchecked Sendable 
     /// Injectable only so tests can count and gate the exact expensive
     /// `events(matching:)` boundary without reading the developer's calendars.
     typealias FetchEventsWork = @Sendable (EKEventStore, DateInterval) throws -> [Event]
+    /// Injectable only so tests can prove the calendar listing is gated on
+    /// read access without reading the developer's calendars.
+    typealias FetchCalendarsWork = @Sendable (EKEventStore) -> [EventCalendar]
     typealias AuthorizationStatusWork = @Sendable () -> StoreAuthorizationStatus
     private let fetchEventsWork: FetchEventsWork
+    private let fetchCalendarsWork: FetchCalendarsWork
     private let authorizationStatusWork: AuthorizationStatusWork
     /// The ONE lock + generation both window caches share (FIX 2). Because a
     /// single lock guards both, `invalidateCaches` bumps the generation and
@@ -58,23 +62,31 @@ public final class EKEventStoreAdapter: EventStoreProtocol, @unchecked Sendable 
             fetchEventsWork: { store, interval in
                 try Self.fetchEventsDirectly(store: store, interval: interval)
             },
+            fetchCalendarsWork: { store in
+                Self.fetchCalendarsDirectly(store: store)
+            },
             authorizationStatusWork: {
                 Self.mapAuthorization(EKEventStore.authorizationStatus(for: .event))
             }
         )
     }
 
-    /// Store-free test seam for the blocking EventKit enumeration and access
-    /// status. Production always uses the public convenience initializer.
+    /// Store-free test seam for the blocking EventKit enumeration, the
+    /// calendar listing, and access status. Production always uses the public
+    /// convenience initializer.
     init(
         store: EKEventStore = EKEventStore(),
         notificationCenter: NotificationCenter,
         cacheLifetime: TimeInterval = 20,
         fetchEventsWork: @escaping FetchEventsWork,
+        fetchCalendarsWork: @escaping FetchCalendarsWork = { store in
+            EKEventStoreAdapter.fetchCalendarsDirectly(store: store)
+        },
         authorizationStatusWork: @escaping AuthorizationStatusWork
     ) {
         self.store = store
         self.fetchEventsWork = fetchEventsWork
+        self.fetchCalendarsWork = fetchCalendarsWork
         self.authorizationStatusWork = authorizationStatusWork
         // One shared clock (single lock + generation) drives both caches so
         // their invalidation is atomic. Built first because both coordinators
@@ -351,6 +363,22 @@ public final class EKEventStoreAdapter: EventStoreProtocol, @unchecked Sendable 
         return Self.toEvent(ekEvent)
     }
 
+    public func fetchEventCalendars() throws -> [EventCalendar] {
+        // Same authorization gate as the event reads: the observation feeds
+        // the transition detector, and without read access nothing is listed
+        // (write-only access maps to `.denied`, so it lists nothing either).
+        let authorization = authorizationStatusWork()
+        resolveAuthorization(to: authorization)
+        guard authorization == .authorized else { return [] }
+        return fetchCalendarsWork(store)
+    }
+
+    // `internal` (not `private`) only because the test-seam initializer's
+    // default argument references it.
+    static func fetchCalendarsDirectly(store: EKEventStore) -> [EventCalendar] {
+        store.calendars(for: .event).compactMap(Self.toEventCalendar)
+    }
+
     public func searchEvents(matching text: String, in interval: DateInterval) throws -> [Event] {
         let events = try fetchEvents(in: interval)
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -567,9 +595,11 @@ public final class EKEventStoreAdapter: EventStoreProtocol, @unchecked Sendable 
         let location = (e.location?.isEmpty ?? true) ? nil : e.location
         let notes = (e.notes?.isEmpty ?? true) ? nil : e.notes
         let attendees = (e.attendees ?? []).map(Self.toAttendee)
-        // Mirror the source calendar's name + color so the list can
-        // disambiguate the same event duplicated across calendars.
+        // Mirror the source calendar's identity, name, and color so the list
+        // can filter by calendar and disambiguate the same event duplicated
+        // across calendars.
         let calendar = e.calendar
+        let calendarID = Self.calendarID(of: calendar)
         let calendarName = (calendar?.title.isEmpty ?? true) ? nil : calendar?.title
         let calendarColorHex = calendar?.cgColor.flatMap(Self.hexString(from:))
         return Event(
@@ -582,11 +612,38 @@ public final class EKEventStoreAdapter: EventStoreProtocol, @unchecked Sendable 
             location: location,
             eventKitNotes: notes,
             attendees: attendees,
+            calendarID: calendarID,
             calendarName: calendarName,
             calendarColorHex: calendarColorHex,
             // EKEvent.creationDate is nil for some synced/imported events —
             // the model tolerates it (sorts treat nil as oldest).
             createdAt: e.creationDate
+        )
+    }
+
+    /// The calendar identifier an `Event` mirrors as `calendarID`: nil when
+    /// the event has no resolvable calendar or the identifier is empty. The
+    /// one rule both `toEvent` and `toEventCalendar` use, so an event's
+    /// `calendarID` always equals the `EventCalendar.id` of its calendar.
+    static func calendarID(of calendar: EKCalendar?) -> String? {
+        guard let id = calendar?.calendarIdentifier, !id.isEmpty else { return nil }
+        return id
+    }
+
+    /// Convert an `EKCalendar` into the neutral `EventCalendar`. nil when the
+    /// calendar has no identifier, since no event could then match it. A
+    /// calendar with no source keeps empty account fields rather than being
+    /// dropped, so it still shows in the list.
+    static func toEventCalendar(_ calendar: EKCalendar) -> EventCalendar? {
+        guard let id = Self.calendarID(of: calendar) else { return nil }
+        let source: EKSource? = calendar.source
+        let color: CGColor? = calendar.cgColor
+        return EventCalendar(
+            id: id,
+            title: calendar.title,
+            sourceID: source?.sourceIdentifier ?? "",
+            sourceTitle: source?.title ?? "",
+            colorHex: color.flatMap(Self.hexString(from:))
         )
     }
 

@@ -924,9 +924,10 @@ extension GuessWhoSync {
 
     /// Overlay the EventKit-live values onto a cached `Event`, preserving the
     /// sidecar UUID as `id` and the EventKit pointer. Attendees and the calendar
-    /// name + color are always taken from the live EKEvent — none are cached in
-    /// the sidecar, so they must be carried through here, else an adopted/linked
-    /// event loses them the moment it resolves through this overlay.
+    /// identifier, name + color are always taken from the live EKEvent — none
+    /// are cached in the sidecar, so they must be carried through here, else an
+    /// adopted/linked event loses them the moment it resolves through this
+    /// overlay.
     private func overlay(live: Event, onto cached: Event, ekid: String) -> Event {
         Event(
             id: cached.id,
@@ -938,6 +939,7 @@ extension GuessWhoSync {
             location: live.location,
             eventKitNotes: live.eventKitNotes,
             attendees: live.attendees,
+            calendarID: live.calendarID,
             calendarName: live.calendarName,
             calendarColorHex: live.calendarColorHex,
             // "Created" prefers the calendar's own stamp (EKEvent.creationDate)

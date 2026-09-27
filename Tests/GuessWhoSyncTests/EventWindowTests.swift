@@ -172,14 +172,15 @@ struct EventWindowTests {
     }
 
     @Test
-    func eventsWindowLinkedEventRetainsCalendarNameAndColor() throws {
+    func eventsWindowLinkedEventRetainsCalendarIdentityNameAndColor() throws {
         let (sync, _, events) = makeOrchestrator()
         let now = Date()
         let from = now
         let to = now.addingTimeInterval(3600)
 
-        // A live EKEvent carrying its source calendar's name + color. Inject
-        // it directly so the fields survive (createEvent can't set them).
+        // A live EKEvent carrying its source calendar's identity, name +
+        // color. Inject it directly so the fields survive (createEvent can't
+        // set them).
         let live = Event(
             id: UUID(),
             eventKitID: "ek-cal-1",
@@ -188,6 +189,7 @@ struct EventWindowTests {
             endDate: now.addingTimeInterval(120),
             isAllDay: false,
             location: nil,
+            calendarID: "cal-family",
             calendarName: "Family",
             calendarColorHex: "#34C759"
         )
@@ -200,6 +202,7 @@ struct EventWindowTests {
         let window = try sync.eventsWindow(from: from, to: to)
         let projected = try #require(window.first(where: { $0.title == "Shared event" }))
         #expect(projected.isLinked)
+        #expect(projected.calendarID == "cal-family")
         #expect(projected.calendarName == "Family")
         #expect(projected.calendarColorHex == "#34C759")
     }

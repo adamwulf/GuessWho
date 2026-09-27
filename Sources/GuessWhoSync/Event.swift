@@ -26,6 +26,14 @@ public struct Event: Hashable, Sendable, Codable {
     /// (sidecar-only) events and for calendar events with no invitees.
     public var attendees: [EventAttendee]
 
+    /// Identifier of the calendar the event lives in
+    /// (`EKCalendar.calendarIdentifier`). Matches `EventCalendar.id` from
+    /// `EventStoreProtocol.fetchEventCalendars()`, so the app can filter
+    /// events by calendar. nil for manual (sidecar-only) events and for
+    /// calendar events whose calendar can't be resolved. Read-only mirror —
+    /// never written back or persisted in the sidecar.
+    public var calendarID: String?
+
     /// Display name of the calendar the event lives in (`EKEvent.calendar.title`).
     /// nil for manual (sidecar-only) events and for calendar events whose
     /// calendar can't be resolved. Read-only mirror — never written back.
@@ -63,6 +71,7 @@ public struct Event: Hashable, Sendable, Codable {
         location: String? = nil,
         eventKitNotes: String? = nil,
         attendees: [EventAttendee] = [],
+        calendarID: String? = nil,
         calendarName: String? = nil,
         calendarColorHex: String? = nil,
         createdAt: Date? = nil,
@@ -77,6 +86,7 @@ public struct Event: Hashable, Sendable, Codable {
         self.location = location
         self.eventKitNotes = eventKitNotes
         self.attendees = attendees
+        self.calendarID = calendarID
         self.calendarName = calendarName
         self.calendarColorHex = calendarColorHex
         self.createdAt = createdAt
@@ -95,6 +105,51 @@ public struct EventAttendee: Hashable, Sendable, Codable {
     public init(name: String, email: String? = nil) {
         self.name = name
         self.email = email?.lowercased()
+    }
+}
+
+/// One calendar that can hold events, listed by
+/// `EventStoreProtocol.fetchEventCalendars()`. A neutral mirror of
+/// `EKCalendar` and its `EKSource` so the app can list, group, and filter
+/// calendars without importing EventKit. Read-only — GuessWho never creates,
+/// renames, or deletes calendars.
+public struct EventCalendar: Hashable, Sendable, Codable, Identifiable {
+    /// Calendar identifier (`EKCalendar.calendarIdentifier`). Equals
+    /// `Event.calendarID` for every event in this calendar. Stable across
+    /// launches, but EventKit may assign a new one after a full resync of the
+    /// account, and it is not guaranteed to match on another device.
+    public var id: String
+
+    /// Calendar display name (`EKCalendar.title`).
+    public var title: String
+
+    /// Identifier of the account the calendar belongs to
+    /// (`EKSource.sourceIdentifier`). Calendars from one account share it, so
+    /// the app groups calendars by this value. Empty when EventKit reports no
+    /// source for the calendar.
+    public var sourceID: String
+
+    /// Display name of the account (`EKSource.title`), e.g. "iCloud" or
+    /// "On My Mac". Empty when EventKit reports no source for the calendar.
+    public var sourceTitle: String
+
+    /// Hex string (`#RRGGBB`) of the calendar color (`EKCalendar.cgColor`),
+    /// in the same form as `Event.calendarColorHex`. nil when no color is
+    /// available.
+    public var colorHex: String?
+
+    public init(
+        id: String,
+        title: String,
+        sourceID: String,
+        sourceTitle: String,
+        colorHex: String? = nil
+    ) {
+        self.id = id
+        self.title = title
+        self.sourceID = sourceID
+        self.sourceTitle = sourceTitle
+        self.colorHex = colorHex
     }
 }
 
