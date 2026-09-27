@@ -13,9 +13,10 @@ import GuessWhoMCPWire
 /// Catalyst-only, like the channel itself (INV-5): the backing activity log
 /// is device-local, and only the Mac host records agent writes.
 ///
-/// A pushed destination: Phase 3 moved the entry point from the File menu
-/// into the Settings sheet (a Preferences row), so this view lives inside
-/// the sheet's NavigationStack rather than wrapping its own.
+/// The Settings sheet's Recently Deleted tab: this view is the tab's whole
+/// content, inside the sheet's NavigationStack. It sets no navigation title
+/// of its own — the tab bar names it, and the sheet keeps its "Settings"
+/// title. The sheet re-creates it on each visit, so the list reloads then.
 struct RecentlyDeletedView: View {
     let service: RecentlyDeletedService
 
@@ -25,7 +26,6 @@ struct RecentlyDeletedView: View {
 
     var body: some View {
         content
-            .navigationTitle(RecentlyDeletedStrings.title)
             .task { await reload() }
     }
 
