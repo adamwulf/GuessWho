@@ -404,7 +404,8 @@ private struct PreferencesTabBar: View {
 // MARK: - Calendars
 
 /// The Calendars tab: which calendars feed the main Events section, grouped
-/// by account, with a switch per account and per calendar. Lists
+/// by account, with a switch per account and per calendar that never change
+/// each other (see `CalendarVisibilitySettings`). Lists
 /// `SyncService.availableEventCalendars()` and reads/writes the SAME
 /// `CalendarVisibilitySettings` instance `EventsRepository` filters with, so
 /// each switch applies to an open Events list immediately. Every calendar
@@ -490,38 +491,40 @@ private struct CalendarsPreferencesPane: View {
                 Section {
                     accountToggle(account)
                     ForEach(account.calendars) { calendar in
-                        calendarToggle(calendar)
+                        calendarToggle(calendar, in: account)
                     }
                 }
             }
         }
     }
 
-    /// On only when every calendar in the account is shown; a partly-shown
-    /// account reads off (its caption gives the count), and switching it on
-    /// shows them all.
+    /// The account's own switch. It never changes a calendar's switch, and a
+    /// calendar's switch never changes it: off hides the whole account and
+    /// disables its calendar switches, which keep their values so switching
+    /// the account back on restores that selection.
     private func accountToggle(_ account: CalendarAccountGroup) -> some View {
-        let shown = account.calendars.filter { visibility.isVisible(calendarID: $0.id) }.count
+        let isEnabled = visibility.isAccountEnabled(account.id)
+        let shown = account.calendars.filter { visibility.isCalendarEnabled($0.id) }.count
         let isOn = Binding(
-            get: { account.calendars.allSatisfy { visibility.isVisible(calendarID: $0.id) } },
-            set: { newValue in
-                visibility.setVisible(newValue, calendarIDs: account.calendars.map(\.id))
-            })
+            get: { visibility.isAccountEnabled(account.id) },
+            set: { visibility.setAccountEnabled($0, accountID: account.id) })
         return Toggle(isOn: isOn) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(account.title)
                     .font(.headline)
-                Text(Self.summary(shown: shown, total: account.calendars.count))
+                Text(isEnabled
+                    ? Self.summary(shown: shown, total: account.calendars.count)
+                    : "Hidden from Events")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
         }
     }
 
-    private func calendarToggle(_ calendar: EventCalendar) -> some View {
+    private func calendarToggle(_ calendar: EventCalendar, in account: CalendarAccountGroup) -> some View {
         let isOn = Binding(
-            get: { visibility.isVisible(calendarID: calendar.id) },
-            set: { visibility.setVisible($0, calendarID: calendar.id) })
+            get: { visibility.isCalendarEnabled(calendar.id) },
+            set: { visibility.setCalendarEnabled($0, calendarID: calendar.id) })
         return Toggle(isOn: isOn) {
             Label {
                 Text(calendar.title.isEmpty ? "Untitled Calendar" : calendar.title)
@@ -531,6 +534,7 @@ private struct CalendarsPreferencesPane: View {
                     .frame(width: 10, height: 10)
             }
         }
+        .disabled(!visibility.isAccountEnabled(account.id))
         .padding(.leading, 12)
     }
 
