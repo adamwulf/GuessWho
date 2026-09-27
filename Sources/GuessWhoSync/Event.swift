@@ -204,7 +204,8 @@ extension Event {
     static func primaryCalendarCopyIndex(
         calendarIDs: [String?],
         startDates: [Date],
-        allowsContentModifications: [Bool?]? = nil
+        allowsContentModifications: [Bool?]? = nil,
+        prefersLatestStart: Bool = false
     ) -> Int? {
         guard calendarIDs.count == startDates.count,
               allowsContentModifications.map({ $0.count == calendarIDs.count }) ?? true,
@@ -238,24 +239,38 @@ extension Event {
             case (nil, .some):
                 lhsPrecedes = false
             default:
-                lhsPrecedes = startDates[index] < startDates[primary]
+                lhsPrecedes = prefersLatestStart
+                    ? startDates[index] > startDates[primary]
+                    : startDates[index] < startDates[primary]
             }
             if lhsPrecedes { primary = index }
         }
         return primary
     }
 
-    /// One stable row for copies sharing an `eventKitID`. Displayed fields
-    /// come from the deterministic primary copy, while calendar membership is
-    /// the union across every copy even when their dates have drifted.
-    static func mergedCalendarRepresentative(from copies: [Event]) -> Event? {
+    /// One stable row for copies sharing an `eventKitID`. When a preferred
+    /// start range contains any candidates, an occurrence in that range wins;
+    /// callers can then prefer its latest start for a recurring-series row.
+    /// Displayed fields come from the deterministic primary copy, while
+    /// calendar membership is the union across every copy even when dates
+    /// drift.
+    public static func mergedCalendarRepresentative(
+        from copies: [Event],
+        preferredStartRange: ClosedRange<Date>? = nil,
+        prefersLatestStart: Bool = false
+    ) -> Event? {
+        let preferredCopies = preferredStartRange.map { range in
+            copies.filter { range.contains($0.startDate) }
+        } ?? []
+        let candidates = preferredCopies.isEmpty ? copies : preferredCopies
         guard let index = primaryCalendarCopyIndex(
-            calendarIDs: copies.map(\.calendarID),
-            startDates: copies.map(\.startDate),
-            allowsContentModifications: copies.map(\.calendarAllowsContentModifications)
+            calendarIDs: candidates.map(\.calendarID),
+            startDates: candidates.map(\.startDate),
+            allowsContentModifications: candidates.map(\.calendarAllowsContentModifications),
+            prefersLatestStart: prefersLatestStart
         ) else { return nil }
-        guard copies.count > 1 else { return copies[index] }
-        var representative = copies[index]
+        guard copies.count > 1 else { return candidates[index] }
+        var representative = candidates[index]
         let calendarIDs = copies.reduce(into: Set<String>()) {
             $0.formUnion($1.allCalendarIDs)
         }

@@ -222,16 +222,12 @@ extension GuessWhoSync {
     /// scoped delta refresh and a full window reload cannot disagree for the
     /// same event.
     ///
-    /// Both surfaces overlay a linked event's live EventKit values whenever the
-    /// live version OVERLAPS the inclusive window (`startDate <= to &&
-    /// endDate >= from`) — exactly the set `eventsWindow`'s single
-    /// `events(matching:)` batch surfaces. A live version that does not overlap
-    /// the window at all is invisible to that batch, so both keep the cached
-    /// projection for it. Overlaying an overlapping event shows its true (live)
-    /// start and title, so an event whose live start has moved out of the window
-    /// drops via the caller's membership filter rather than lingering with a
-    /// stale cached title/time. `includeEventKit` gates the overlay the same way
-    /// `eventsWindow`'s batch is gated on EventKit access.
+    /// Both surfaces read the same EventKit OVERLAP batch for the inclusive
+    /// window (`startDate <= to && endDate >= from`), select the same latest
+    /// occurrence whose start is in `[from, to]` (or an overlapping pre-window
+    /// fallback when none starts inside), and overlay that representative.
+    /// A live version outside the batch leaves the cached projection in place.
+    /// `includeEventKit` gates the batch the same way as `eventsWindow`.
     ///
     /// Returns nil for a missing / whole-event-deleted sidecar (no row). It does
     /// NOT itself apply the window-membership filter — the caller keeps the row
@@ -248,15 +244,13 @@ extension GuessWhoSync {
         if isEnvelopeWholeEventDeleted(envelope) { return nil }
         guard let cached = decodeCachedEvent(envelope: envelope, key: key) else { return nil }
         guard includeEventKit, let ekid = liveEventKitID(envelope: envelope) else { return cached }
-        guard let live = try events.fetch(eventKitID: ekid) else { return cached }
-        // Overlay only when the live version OVERLAPS the inclusive window —
-        // exactly what `eventsWindow`'s single `events(matching:)` batch
-        // surfaces (`ekIndex` holds every overlapping event). A live version
-        // that does not overlap the window at all is invisible to that batch, so
-        // here too the cached projection stands. Otherwise overlay the live
-        // values; the caller's start-membership filter then drops a row whose
-        // live start has moved outside the window.
-        guard live.startDate <= to, live.endDate >= from else { return cached }
+        let interval = DateInterval(start: from, end: to)
+        let copies = try events.fetchEvents(in: interval).filter { $0.eventKitID == ekid }
+        guard let live = Event.mergedCalendarRepresentative(
+            from: copies,
+            preferredStartRange: from...to,
+            prefersLatestStart: true
+        ) else { return cached }
         return overlay(live: live, onto: cached, ekid: ekid)
     }
 
@@ -587,11 +581,17 @@ extension GuessWhoSync {
         // The app presents one row per external identifier. EventKit can
         // enumerate copies in any order, and copies can temporarily disagree
         // on time (for example when a read-only shared copy cannot follow an
-        // edit). Pick the same deterministic representative as the single-ID
-        // read and union every copy's calendar membership, so full and delta
-        // reads agree and visibility never depends on enumeration order.
+        // edit). Prefer the latest occurrence whose START is actually in this
+        // window, falling back to an overlapping pre-window copy only when no
+        // in-window start exists. The watcher-delta path uses this same rule.
+        // Union every copy's calendar membership so visibility never depends
+        // on enumeration order.
         let ekIndex = copiesByEKID.compactMapValues {
-            Event.mergedCalendarRepresentative(from: $0)
+            Event.mergedCalendarRepresentative(
+                from: $0,
+                preferredStartRange: from...to,
+                prefersLatestStart: true
+            )
         }
 
         // 2. Walk sidecar events; overlay from the batch when possible.

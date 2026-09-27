@@ -430,7 +430,11 @@ final class EventsRepository: NSObject {
                     events.append(projected)
                 }
             } else if let eventKitID = previous?.eventKitID,
-                      var live = service.eventKitEvent(eventKitID: eventKitID),
+                      var live = service.eventKitEvent(
+                        eventKitID: eventKitID,
+                        from: windowStart,
+                        to: windowEnd
+                      ),
                       live.startDate >= windowStart,
                       live.startDate <= windowEnd
             {

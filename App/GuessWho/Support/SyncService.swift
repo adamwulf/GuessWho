@@ -285,6 +285,28 @@ final class SyncService {
         return (try? eventsAdapter.fetch(eventKitID: eventKitID)) ?? nil
     }
 
+    /// Window-aware EventKit projection used when deleting a sidecar exposes
+    /// the underlying calendar row. It uses the same overlap batch and
+    /// representative rule as `GuessWhoSync.eventsWindow` and watcher deltas,
+    /// so removing metadata cannot swap in a different recurring occurrence
+    /// or calendar copy.
+    func eventKitEvent(eventKitID: String, from: Date, to: Date) -> Event? {
+        guard eventsAuthorization == .authorized else { return nil }
+        do {
+            let interval = DateInterval(start: from, end: to)
+            let copies = try eventsAdapter.fetchEvents(in: interval)
+                .filter { $0.eventKitID == eventKitID }
+            return Event.mergedCalendarRepresentative(
+                from: copies,
+                preferredStartRange: from...to,
+                prefersLatestStart: true
+            )
+        } catch {
+            lastError = "Calendar event fetch failed: \(error.localizedDescription)"
+            return nil
+        }
+    }
+
     // Reverse lookup — sidecar event UUID currently pointing at `ekid`, or
     // nil. `async`: the lookup walks every event sidecar, so it rides the
     // engine's background-hop overload.

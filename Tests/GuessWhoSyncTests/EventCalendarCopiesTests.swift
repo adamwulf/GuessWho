@@ -374,6 +374,78 @@ struct EventCalendarCopiesTests {
         Self.expectMergedSharedCopy(row)
     }
 
+    @Test("A recurring row prefers an occurrence whose start is inside the window")
+    func eventsWindowPrefersInWindowOccurrenceOverOverlap() throws {
+        let from = Self.start
+        let to = from.addingTimeInterval(3_600)
+        let overlap = Self.copy(
+            calendarID: "cal-mine",
+            calendarName: "Mine",
+            start: from.addingTimeInterval(-900)
+        )
+        let inWindow = Self.copy(
+            calendarID: "cal-mine",
+            calendarName: "Mine",
+            start: from.addingTimeInterval(300)
+        )
+        let sync = makeSync(adapter: makeAdapter(batch: [inWindow, overlap], copiesByID: [:]))
+
+        let rows = try sync.eventsWindow(from: from, to: to)
+
+        #expect(rows.count == 1)
+        #expect(rows.first?.startDate == inWindow.startDate)
+    }
+
+    @Test("A recurring row uses the latest occurrence that starts inside the window")
+    func eventsWindowUsesLatestInWindowOccurrence() throws {
+        let from = Self.start
+        let to = from.addingTimeInterval(3_600)
+        let earlier = Self.copy(
+            calendarID: "cal-mine",
+            calendarName: "Mine",
+            start: from.addingTimeInterval(300)
+        )
+        let later = Self.copy(
+            calendarID: "cal-mine",
+            calendarName: "Mine",
+            start: from.addingTimeInterval(600)
+        )
+        let sync = makeSync(adapter: makeAdapter(batch: [later, earlier], copiesByID: [:]))
+
+        let rows = try sync.eventsWindow(from: from, to: to)
+
+        #expect(rows.count == 1)
+        #expect(rows.first?.startDate == later.startDate)
+    }
+
+    @Test("Window membership wins before writability when copies straddle the boundary")
+    func eventsWindowPrefersInWindowReadOnlyCopyOverWritableOverlap() throws {
+        let from = Self.start
+        let to = from.addingTimeInterval(3_600)
+        let writableOverlap = Self.copy(
+            calendarID: "cal-z",
+            calendarName: "Writable",
+            start: from.addingTimeInterval(-900),
+            allowsContentModifications: true
+        )
+        let readOnlyInWindow = Self.copy(
+            calendarID: "cal-a",
+            calendarName: "Read Only",
+            start: from.addingTimeInterval(300),
+            allowsContentModifications: false
+        )
+        let sync = makeSync(adapter: makeAdapter(
+            batch: [writableOverlap, readOnlyInWindow],
+            copiesByID: [:]
+        ))
+
+        let row = try #require(sync.eventsWindow(from: from, to: to).first)
+
+        #expect(row.startDate == readOnlyInWindow.startDate)
+        #expect(row.calendarID == "cal-a")
+        #expect(row.calendarIDs == ["cal-a", "cal-z"])
+    }
+
     @Test("A linked event's full and delta reads agree when calendar copies have drifted")
     func linkedEventProjectionsAgreeAcrossDriftedCopies() throws {
         let laterMine = Self.copy(
@@ -410,6 +482,50 @@ struct EventCalendarCopiesTests {
         #expect(windowRow.title == "Planning")
         Self.expectMergedSharedCopy(windowRow)
         #expect(single == windowRow)
+        #expect(delta == windowRow)
+    }
+
+    @Test("A linked event's full and delta reads agree when one copy moved outside the window")
+    func linkedEventProjectionsAgreeAcrossWindowEdge() throws {
+        let from = Self.start
+        let to = from.addingTimeInterval(3_600)
+        let readOnlyInWindow = Self.copy(
+            calendarID: "cal-a",
+            calendarName: "Read Only",
+            start: from.addingTimeInterval(300),
+            allowsContentModifications: false
+        )
+        let writableOutside = Self.copy(
+            calendarID: "cal-z",
+            calendarName: "Writable",
+            start: to.addingTimeInterval(3_600),
+            allowsContentModifications: true
+        )
+        // The window batch contains only the overlapping copy; the direct
+        // lookup can still see both. Full and delta projections must use the
+        // window batch and therefore agree on the in-window row.
+        let adapter = makeAdapter(
+            batch: [readOnlyInWindow],
+            copiesByID: [Self.sharedID: [writableOutside, readOnlyInWindow]]
+        )
+        let sync = makeSync(adapter: adapter)
+        let sidecarID = try sync.linkEvent(
+            toEventKitID: Self.sharedID,
+            snapshot: writableOutside
+        )
+        let key = SidecarKey(kind: .event, id: sidecarID.uuidString)
+
+        let windowRow = try #require(
+            try sync.eventsWindow(from: from, to: to).first { $0.eventKitID == Self.sharedID }
+        )
+        let delta = try sync.eventForWatcherDelta(
+            at: key,
+            from: from,
+            to: to,
+            includeEventKit: true
+        )
+
+        #expect(windowRow.startDate == readOnlyInWindow.startDate)
         #expect(delta == windowRow)
     }
 }
