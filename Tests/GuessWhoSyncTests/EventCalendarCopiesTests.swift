@@ -66,7 +66,8 @@ struct EventCalendarCopiesTests {
         calendarID: String?,
         calendarName: String?,
         start: Date = start,
-        emails: [String] = []
+        emails: [String] = [],
+        allowsContentModifications: Bool? = nil
     ) -> Event {
         Event(
             id: Event.stableID(forEventKitID: ekid),
@@ -77,6 +78,7 @@ struct EventCalendarCopiesTests {
             attendees: emails.map { EventAttendee(name: $0, email: $0) },
             calendarID: calendarID,
             calendarIDs: calendarID.map { [$0] },
+            calendarAllowsContentModifications: allowsContentModifications,
             calendarName: calendarName
         )
     }
@@ -162,17 +164,39 @@ struct EventCalendarCopiesTests {
         #expect(EKEventStoreAdapter.singleEvent(fromCopies: []) == nil)
     }
 
-    @Test("The single-event lookup merges only copies of the primary copy's occurrence")
-    func singleLookupMergesOnlyThePrimaryOccurrence() {
-        // One series per calendar, starting on different days: they are
-        // different occurrences, so the batch would not merge them either.
+    @Test("The single-event lookup unions calendars even when copies have drifted")
+    func singleLookupUnionsCalendarsAcrossDriftedCopies() {
         let laterSeries = Self.copy(
             calendarID: "cal-mine", calendarName: "Mine", start: Self.start.addingTimeInterval(86_400)
         )
 
         let single = EKEventStoreAdapter.singleEvent(fromCopies: [laterSeries, Self.family])
 
-        #expect(single == Self.family)
+        #expect(single?.calendarID == "cal-family")
+        #expect(single?.startDate == Self.start)
+        #expect(single?.calendarIDs == ["cal-family", "cal-mine"])
+    }
+
+    @Test("The representative prefers a writable copy over a smaller read-only calendar")
+    func representativePrefersWritableCopy() {
+        let readOnlyFamily = Self.copy(
+            calendarID: "cal-family",
+            calendarName: "Family",
+            allowsContentModifications: false
+        )
+        let writableMine = Self.copy(
+            calendarID: "cal-mine",
+            calendarName: "Mine",
+            allowsContentModifications: true
+        )
+
+        let representative = EKEventStoreAdapter.singleEvent(
+            fromCopies: [readOnlyFamily, writableMine]
+        )
+
+        #expect(representative?.calendarID == "cal-mine")
+        #expect(representative?.calendarName == "Mine")
+        #expect(representative?.calendarIDs == ["cal-family", "cal-mine"])
     }
 
     // MARK: - Adapter wiring
@@ -227,10 +251,66 @@ struct EventCalendarCopiesTests {
 
     @Test("The writable primary calendar uses the same deterministic ordering as reads")
     func writablePrimaryCalendarMatchesReadOrdering() {
-        #expect(EKEventStoreAdapter.primaryCalendarCopyIndex(["cal-b", "cal-a", nil]) == 1)
-        #expect(EKEventStoreAdapter.primaryCalendarCopyIndex([nil, "cal-b", "cal-a"]) == 2)
-        #expect(EKEventStoreAdapter.primaryCalendarCopyIndex([nil, nil]) == 0)
-        #expect(EKEventStoreAdapter.primaryCalendarCopyIndex([]) == nil)
+        let later = Self.start.addingTimeInterval(300)
+        #expect(Event.primaryCalendarCopyIndex(
+            calendarIDs: ["cal-b", "cal-a", nil],
+            startDates: [Self.start, later, Self.start]
+        ) == 1)
+        #expect(Event.primaryCalendarCopyIndex(
+            calendarIDs: [nil, "cal-b", "cal-a"],
+            startDates: [Self.start, Self.start, later]
+        ) == 2)
+        #expect(Event.primaryCalendarCopyIndex(
+            calendarIDs: [nil, nil],
+            startDates: [later, Self.start]
+        ) == 1)
+        #expect(Event.primaryCalendarCopyIndex(
+            calendarIDs: ["cal-a", "cal-b"],
+            startDates: [Self.start, Self.start],
+            allowsContentModifications: [false, true]
+        ) == 1)
+        #expect(Event.primaryCalendarCopyIndex(calendarIDs: [], startDates: []) == nil)
+    }
+
+    @Test("The update selection prefers writable copies and rejects an all-read-only event")
+    func updateSelectionRespectsWritabilityAndOccurrence() throws {
+        let later = Self.start.addingTimeInterval(300)
+
+        #expect(try EKEventStoreAdapter.writablePrimaryOccurrenceIndices(
+            calendarIDs: ["cal-b", "cal-a", "cal-c"],
+            startDates: [Self.start, Self.start, Self.start],
+            isWritable: [true, true, false]
+        ) == [1, 0])
+        #expect(try EKEventStoreAdapter.writablePrimaryOccurrenceIndices(
+            calendarIDs: ["cal-a", "cal-b"],
+            startDates: [Self.start, later],
+            isWritable: [true, true]
+        ) == [0])
+        #expect(try EKEventStoreAdapter.writablePrimaryOccurrenceIndices(
+            calendarIDs: ["cal-a", "cal-b"],
+            startDates: [Self.start, Self.start],
+            isWritable: [false, true]
+        ) == [1])
+        #expect(throws: EventStoreError.noWritableCalendar) {
+            try EKEventStoreAdapter.writablePrimaryOccurrenceIndices(
+                calendarIDs: ["cal-a", "cal-b"],
+                startDates: [Self.start, Self.start],
+                isWritable: [false, false]
+            )
+        }
+    }
+
+    @Test("The writable lookup deduplicates a legacy event repeated by the canonical lookup")
+    func writableLookupDeduplicatesObjects() {
+        let store = EKEventStore()
+        let first = EKEvent(eventStore: store)
+        let second = EKEvent(eventStore: store)
+
+        let unique = EKEventStoreAdapter.uniqueEventKitCopies([first, first, second, first])
+
+        #expect(unique.count == 2)
+        #expect(unique[0] === first)
+        #expect(unique[1] === second)
     }
 
     @Test("updateEvent edits and saves every calendar copy of the primary occurrence")
@@ -294,9 +374,18 @@ struct EventCalendarCopiesTests {
         Self.expectMergedSharedCopy(row)
     }
 
-    @Test("A linked event's window row, single read, and delta read agree on its calendars")
-    func linkedEventProjectionsAgree() throws {
-        let sync = makeSync(adapter: makeSharedAdapter())
+    @Test("A linked event's full and delta reads agree when calendar copies have drifted")
+    func linkedEventProjectionsAgreeAcrossDriftedCopies() throws {
+        let laterMine = Self.copy(
+            calendarID: "cal-mine",
+            calendarName: "Mine",
+            start: Self.start.addingTimeInterval(300)
+        )
+        let adapter = makeAdapter(
+            batch: [laterMine, Self.family],
+            copiesByID: [Self.sharedID: [laterMine, Self.family]]
+        )
+        let sync = makeSync(adapter: adapter)
         let sidecarID = try sync.linkEvent(
             toEventKitID: Self.sharedID,
             snapshot: Event(

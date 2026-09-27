@@ -36,8 +36,8 @@ public struct Event: Hashable, Sendable, Codable {
     /// or persisted in the sidecar.
     public var calendarID: String?
 
-    /// Identifiers of every calendar that holds a copy of this event
-    /// occurrence, sorted, primary copy included. EventKit can hold several
+    /// Identifiers of every calendar that holds a copy of this event or
+    /// recurring series, sorted, primary copy included. EventKit can hold several
     /// copies under one `eventKitID` — for example one calendar file imported
     /// into two calendars. The adapter returns those copies as ONE `Event`, so
     /// filter by calendar with `allCalendarIDs`: the event belongs to each of
@@ -46,6 +46,13 @@ public struct Event: Hashable, Sendable, Codable {
     /// `calendarID`). Read-only mirror — never written back or persisted in
     /// the sidecar.
     public var calendarIDs: [String]?
+
+    /// Whether the primary copy's calendar accepts event edits. nil for
+    /// manual events and older payloads. Live EventKit reads use this only to
+    /// prefer an editable copy as the representative when equivalent copies
+    /// span writable and read-only calendars; it is never persisted in the
+    /// sidecar or exposed as a separate user concept.
+    public var calendarAllowsContentModifications: Bool?
 
     /// Display name of the calendar the event lives in (`EKEvent.calendar.title`)
     /// — the primary copy's calendar, like `calendarID`. nil for manual
@@ -88,6 +95,7 @@ public struct Event: Hashable, Sendable, Codable {
         attendees: [EventAttendee] = [],
         calendarID: String? = nil,
         calendarIDs: [String]? = nil,
+        calendarAllowsContentModifications: Bool? = nil,
         calendarName: String? = nil,
         calendarColorHex: String? = nil,
         createdAt: Date? = nil,
@@ -104,6 +112,7 @@ public struct Event: Hashable, Sendable, Codable {
         self.attendees = attendees
         self.calendarID = calendarID
         self.calendarIDs = calendarIDs
+        self.calendarAllowsContentModifications = calendarAllowsContentModifications
         self.calendarName = calendarName
         self.calendarColorHex = calendarColorHex
         self.createdAt = createdAt
@@ -183,6 +192,75 @@ extension Event {
         var ids = Set(calendarIDs ?? [])
         if let calendarID { ids.insert(calendarID) }
         return ids
+    }
+
+    /// Deterministic representative index for several EventKit copies: an
+    /// editable calendar wins first, then an unknown writability (older
+    /// payloads), then a known read-only calendar; within that tier a resolved
+    /// calendar precedes an unresolved one, then the smaller calendar
+    /// identifier wins, then the earlier start. Exact ties keep first-seen
+    /// order. The adapter's single lookup and the orchestrator's window index
+    /// share this so a full reload and a scoped delta choose the same copy.
+    static func primaryCalendarCopyIndex(
+        calendarIDs: [String?],
+        startDates: [Date],
+        allowsContentModifications: [Bool?]? = nil
+    ) -> Int? {
+        guard calendarIDs.count == startDates.count,
+              allowsContentModifications.map({ $0.count == calendarIDs.count }) ?? true,
+              !calendarIDs.isEmpty
+        else { return nil }
+        var primary = calendarIDs.startIndex
+        for index in calendarIDs.indices.dropFirst() {
+            let lhsWritable = allowsContentModifications?[index]
+            let rhsWritable = allowsContentModifications?[primary]
+            if lhsWritable != rhsWritable {
+                // Live EventKit copies always carry true/false. Unknown is the
+                // compatibility middle ground for older payloads and fixtures.
+                let rank: (Bool?) -> Int = { value in
+                    switch value {
+                    case true: return 0
+                    case nil: return 1
+                    case false: return 2
+                    }
+                }
+                if rank(lhsWritable) < rank(rhsWritable) { primary = index }
+                continue
+            }
+            let lhsID = calendarIDs[index]
+            let rhsID = calendarIDs[primary]
+            let lhsPrecedes: Bool
+            switch (lhsID, rhsID) {
+            case let (lhs?, rhs?) where lhs != rhs:
+                lhsPrecedes = lhs < rhs
+            case (.some, nil):
+                lhsPrecedes = true
+            case (nil, .some):
+                lhsPrecedes = false
+            default:
+                lhsPrecedes = startDates[index] < startDates[primary]
+            }
+            if lhsPrecedes { primary = index }
+        }
+        return primary
+    }
+
+    /// One stable row for copies sharing an `eventKitID`. Displayed fields
+    /// come from the deterministic primary copy, while calendar membership is
+    /// the union across every copy even when their dates have drifted.
+    static func mergedCalendarRepresentative(from copies: [Event]) -> Event? {
+        guard let index = primaryCalendarCopyIndex(
+            calendarIDs: copies.map(\.calendarID),
+            startDates: copies.map(\.startDate),
+            allowsContentModifications: copies.map(\.calendarAllowsContentModifications)
+        ) else { return nil }
+        guard copies.count > 1 else { return copies[index] }
+        var representative = copies[index]
+        let calendarIDs = copies.reduce(into: Set<String>()) {
+            $0.formUnion($1.allCalendarIDs)
+        }
+        representative.calendarIDs = calendarIDs.isEmpty ? nil : calendarIDs.sorted()
+        return representative
     }
 
     /// Derive a stable placeholder UUID from an `eventKitID` string. Used by

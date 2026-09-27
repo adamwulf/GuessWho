@@ -190,6 +190,8 @@ struct EventWindowTests {
             isAllDay: false,
             location: nil,
             calendarID: "cal-family",
+            calendarIDs: ["cal-family"],
+            calendarAllowsContentModifications: true,
             calendarName: "Family",
             calendarColorHex: "#34C759"
         )
@@ -203,6 +205,8 @@ struct EventWindowTests {
         let projected = try #require(window.first(where: { $0.title == "Shared event" }))
         #expect(projected.isLinked)
         #expect(projected.calendarID == "cal-family")
+        #expect(projected.calendarIDs == ["cal-family"])
+        #expect(projected.calendarAllowsContentModifications == true)
         #expect(projected.calendarName == "Family")
         #expect(projected.calendarColorHex == "#34C759")
     }

@@ -29,6 +29,7 @@ struct EventCalendarTests {
         let decoded = try JSONDecoder().decode(Event.self, from: Data(legacy.utf8))
         #expect(decoded.calendarID == nil)
         #expect(decoded.calendarIDs == nil)
+        #expect(decoded.calendarAllowsContentModifications == nil)
         #expect(decoded.allCalendarIDs.isEmpty)
         #expect(decoded.eventKitID == "ek-legacy")
         #expect(decoded.calendarName == "Work")
@@ -51,6 +52,7 @@ struct EventCalendarTests {
         """
         let decoded = try JSONDecoder().decode(Event.self, from: Data(payload.utf8))
         #expect(decoded.calendarIDs == nil)
+        #expect(decoded.calendarAllowsContentModifications == nil)
         // The computed set falls back to the single calendar.
         #expect(decoded.allCalendarIDs == ["cal-work"])
     }
@@ -65,6 +67,7 @@ struct EventCalendarTests {
             endDate: start.addingTimeInterval(3600),
             calendarID: "cal-work",
             calendarIDs: ["cal-shared", "cal-work"],
+            calendarAllowsContentModifications: true,
             calendarName: "Work",
             calendarColorHex: "#FF9500"
         )
@@ -73,6 +76,7 @@ struct EventCalendarTests {
         #expect(decoded == original)
         #expect(decoded.calendarID == "cal-work")
         #expect(decoded.calendarIDs == ["cal-shared", "cal-work"])
+        #expect(decoded.calendarAllowsContentModifications == true)
     }
 
     @Test("A manual event has no calendarID and no calendars by default")
@@ -81,6 +85,7 @@ struct EventCalendarTests {
         let manual = Event(startDate: start, endDate: start)
         #expect(manual.calendarID == nil)
         #expect(manual.calendarIDs == nil)
+        #expect(manual.calendarAllowsContentModifications == nil)
         #expect(manual.allCalendarIDs.isEmpty)
     }
 

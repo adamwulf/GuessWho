@@ -575,14 +575,23 @@ extension GuessWhoSync {
         let interval = DateInterval(start: from, end: to)
 
         // 1. Single EventKit batch (or none when not requested).
-        var ekIndex: [String: Event] = [:]
+        var copiesByEKID: [String: [Event]] = [:]
         if includeEventKit {
             let batch = try events.fetchEvents(in: interval)
             for event in batch {
                 if let ekid = event.eventKitID {
-                    ekIndex[ekid] = event
+                    copiesByEKID[ekid, default: []].append(event)
                 }
             }
+        }
+        // The app presents one row per external identifier. EventKit can
+        // enumerate copies in any order, and copies can temporarily disagree
+        // on time (for example when a read-only shared copy cannot follow an
+        // edit). Pick the same deterministic representative as the single-ID
+        // read and union every copy's calendar membership, so full and delta
+        // reads agree and visibility never depends on enumeration order.
+        let ekIndex = copiesByEKID.compactMapValues {
+            Event.mergedCalendarRepresentative(from: $0)
         }
 
         // 2. Walk sidecar events; overlay from the batch when possible.
@@ -924,10 +933,10 @@ extension GuessWhoSync {
 
     /// Overlay the EventKit-live values onto a cached `Event`, preserving the
     /// sidecar UUID as `id` and the EventKit pointer. Attendees and the calendar
-    /// identifiers (the primary copy's and every copy's), name + color are
-    /// always taken from the live EKEvent — none are cached in the sidecar, so
-    /// they must be carried through here, else an adopted/linked event loses
-    /// them the moment it resolves through this overlay.
+    /// identifiers (the primary copy's and every copy's), editability, name +
+    /// color are always taken from the live EKEvent — none are cached in the
+    /// sidecar, so they must be carried through here, else an adopted/linked
+    /// event loses them the moment it resolves through this overlay.
     private func overlay(live: Event, onto cached: Event, ekid: String) -> Event {
         Event(
             id: cached.id,
@@ -941,6 +950,7 @@ extension GuessWhoSync {
             attendees: live.attendees,
             calendarID: live.calendarID,
             calendarIDs: live.calendarIDs,
+            calendarAllowsContentModifications: live.calendarAllowsContentModifications,
             calendarName: live.calendarName,
             calendarColorHex: live.calendarColorHex,
             // "Created" prefers the calendar's own stamp (EKEvent.creationDate)

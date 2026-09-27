@@ -24,7 +24,7 @@ public final class EKEventStoreAdapter: EventStoreProtocol, @unchecked Sendable 
     /// Injectable write seams so tests can prove edits resolve through the
     /// same deterministic primary-copy rule as reads without touching the
     /// developer's calendars.
-    typealias FetchEventsForUpdateWork = @Sendable (EKEventStore, String) -> [EKEvent]
+    typealias FetchEventsForUpdateWork = @Sendable (EKEventStore, String) throws -> [EKEvent]
     typealias SaveEventsWork = @Sendable (EKEventStore, [EKEvent]) throws -> Void
     /// Injectable only so tests can prove the calendar listing is gated on
     /// read access without reading the developer's calendars.
@@ -98,20 +98,11 @@ public final class EKEventStoreAdapter: EventStoreProtocol, @unchecked Sendable 
             EKEventStoreAdapter.fetchEventCopiesDirectly(store: store, eventKitID: eventKitID)
         },
         fetchEventsForUpdateWork: @escaping FetchEventsForUpdateWork = { store, eventKitID in
-            EKEventStoreAdapter.fetchEventsForUpdateDirectly(store: store, eventKitID: eventKitID)
+            try EKEventStoreAdapter.fetchEventsForUpdateDirectly(store: store, eventKitID: eventKitID)
         },
         saveEventsWork: @escaping SaveEventsWork = { store, events in
-            do {
-                for event in events {
-                    try store.save(event, span: .thisEvent, commit: false)
-                }
-                try store.commit()
-            } catch {
-                // None of the equivalent calendar copies should advance if
-                // another copy cannot be saved; otherwise the next read would
-                // split the one displayed event into conflicting occurrences.
-                store.reset()
-                throw error
+            for event in events {
+                try store.save(event, span: .thisEvent, commit: true)
             }
         },
         fetchCalendarsWork: @escaping FetchCalendarsWork = { store in
@@ -615,10 +606,10 @@ public final class EKEventStoreAdapter: EventStoreProtocol, @unchecked Sendable 
         location: String?
     ) throws {
         // Resolve via the same dual-namespace, primary-copy, and occurrence
-        // rules as `fetch(eventKitID:)`. Edit every calendar copy of that
-        // occurrence together, so changing its time cannot split the one
-        // displayed event into conflicting rows on the next window read.
-        let ekEvents = fetchEventsForUpdateWork(store, eventKitID)
+        // rules as `fetch(eventKitID:)`. Edit every writable calendar copy of
+        // that occurrence together; read-only mirrors remain members of the
+        // one displayed row through its unioned `calendarIDs`.
+        let ekEvents = try fetchEventsForUpdateWork(store, eventKitID)
         guard !ekEvents.isEmpty else {
             throw EventStoreError.eventNotFound(eventKitID: eventKitID)
         }
@@ -665,6 +656,7 @@ public final class EKEventStoreAdapter: EventStoreProtocol, @unchecked Sendable 
             attendees: attendees,
             calendarID: calendarID,
             calendarIDs: calendarID.map { [$0] },
+            calendarAllowsContentModifications: calendar?.allowsContentModifications,
             calendarName: calendarName,
             calendarColorHex: calendarColorHex,
             // EKEvent.creationDate is nil for some synced/imported events —
@@ -688,81 +680,100 @@ public final class EKEventStoreAdapter: EventStoreProtocol, @unchecked Sendable 
     // `calendarItemExternalIdentifier` (the `eventKitID`) — for example one
     // calendar file imported into two calendars. Rows are keyed by
     // `eventKitID` (`GuessWhoSync.eventsWindow` indexes the batch by it), so
-    // each read merges the copies of an occurrence into ONE `Event` by the
-    // rules below: the primary copy supplies every displayed value, and
-    // `calendarIDs` lists the calendars of all copies. The window batch
-    // (`collapsingCalendarCopies`) and the single-event lookup
-    // (`singleEvent(fromCopies:)`) share `primaryCalendarCopyIndex` and
-    // `mergingCalendarCopies`, so they agree on the copy and the calendars.
-
-    /// Deterministic primary-copy order shared by neutral `Event` reads and
-    /// writable `EKEvent` selection: a copy with a calendar identifier
-    /// precedes one without, and the smaller identifier wins. Calendar
-    /// identifiers are stable across launches, so every read keeps the same
-    /// calendar for display whatever order EventKit enumerates the copies in.
-    /// Copies tie only when they share that calendar or neither resolves.
-    private static func precedesAsPrimaryCalendar(_ lhs: String?, _ rhs: String?) -> Bool {
-        switch (lhs, rhs) {
-        case let (lhsID?, rhsID?): return lhsID < rhsID
-        case (.some, nil): return true
-        case (nil, _): return false
-        }
-    }
-
-    /// Index of the deterministic primary calendar in an enumeration. Ties
-    /// keep the first element.
-    static func primaryCalendarCopyIndex(_ calendarIDs: [String?]) -> Int? {
-        guard !calendarIDs.isEmpty else { return nil }
-        var primary = calendarIDs.startIndex
-        for index in calendarIDs.indices.dropFirst() where
-            precedesAsPrimaryCalendar(calendarIDs[index], calendarIDs[primary]) {
-            primary = index
-        }
-        return primary
-    }
+    // each list projection emits ONE representative `Event`: the primary copy
+    // supplies every displayed value, and `calendarIDs` lists every calendar
+    // holding the event even when copies have drifted to different starts.
+    // The raw batch still keeps recurring occurrences apart for attendee
+    // indexing; `GuessWhoSync.eventsWindow` and the single-event lookup share
+    // `Event.mergedCalendarRepresentative`, so full and delta reads agree.
 
     /// Writable counterpart of `fetchEventCopiesDirectly`: resolve every
     /// EventKit copy through the canonical or legacy namespace, identify the
-    /// same primary occurrence the merged read model displays, and return all
-    /// calendar copies of that occurrence. `internal` because the test-seam
-    /// initializer references it.
-    static func fetchEventsForUpdateDirectly(store: EKEventStore, eventKitID: String) -> [EKEvent] {
+    /// same writable primary occurrence the merged read model displays, and
+    /// return its writable calendar copies. Read-only mirrors stay untouched
+    /// but still contribute calendar membership on reads. `internal` because
+    /// the test-seam initializer references it.
+    static func fetchEventsForUpdateDirectly(
+        store: EKEventStore,
+        eventKitID: String
+    ) throws -> [EKEvent] {
         let directCopies = uniqueEventKitCopies(
             store.calendarItems(withExternalIdentifier: eventKitID).compactMap { $0 as? EKEvent }
         )
-        if !directCopies.isEmpty { return primaryEventKitOccurrence(in: directCopies) }
+        if !directCopies.isEmpty { return try writablePrimaryOccurrence(in: directCopies) }
 
         guard let legacy = store.event(withIdentifier: eventKitID) else { return [] }
         guard let canonicalID = legacy.calendarItemExternalIdentifier, !canonicalID.isEmpty else {
+            guard legacy.calendar?.allowsContentModifications == true else {
+                throw EventStoreError.noWritableCalendar
+            }
             return [legacy]
         }
         let canonicalCopies = store.calendarItems(withExternalIdentifier: canonicalID)
             .compactMap { $0 as? EKEvent }
-        return primaryEventKitOccurrence(in: uniqueEventKitCopies([legacy] + canonicalCopies))
+        return try writablePrimaryOccurrence(in: uniqueEventKitCopies([legacy] + canonicalCopies))
     }
 
-    private static func primaryEventKitOccurrence(in copies: [EKEvent]) -> [EKEvent] {
+    private static func writablePrimaryOccurrence(in copies: [EKEvent]) throws -> [EKEvent] {
         let calendarIDs = copies.map { calendarID(of: $0.calendar) }
-        guard let index = primaryCalendarCopyIndex(calendarIDs) else { return [] }
-        let primaryStart = copies[index].startDate
-        return copies.filter { $0.startDate == primaryStart }
+        // EventKit events are expected to have a start date; use distantPast
+        // only as a deterministic fallback for a malformed object.
+        let startDates = copies.map { $0.startDate ?? .distantPast }
+        let writable = copies.map { $0.calendar?.allowsContentModifications == true }
+        let indices = try writablePrimaryOccurrenceIndices(
+            calendarIDs: calendarIDs,
+            startDates: startDates,
+            isWritable: writable
+        )
+        return indices.map { copies[$0] }
     }
 
-    private static func uniqueEventKitCopies(_ copies: [EKEvent]) -> [EKEvent] {
-        var seen: Set<ObjectIdentifier> = []
-        return copies.filter { seen.insert(ObjectIdentifier($0)).inserted }
+    /// Pure selection core for the writable EventKit path. The same
+    /// writability-aware representative rule used by reads chooses an editable
+    /// primary whenever one exists. Update every writable copy of that same
+    /// pre-edit occurrence and leave read-only mirrors alone; fail only when
+    /// the event has no writable copy.
+    static func writablePrimaryOccurrenceIndices(
+        calendarIDs: [String?],
+        startDates: [Date],
+        isWritable: [Bool]
+    ) throws -> [Int] {
+        guard calendarIDs.count == startDates.count,
+              calendarIDs.count == isWritable.count,
+              let primary = Event.primaryCalendarCopyIndex(
+                calendarIDs: calendarIDs,
+                startDates: startDates,
+                allowsContentModifications: isWritable.map(Optional.some)
+              )
+        else { return [] }
+        guard isWritable[primary] else { throw EventStoreError.noWritableCalendar }
+        let primaryStart = startDates[primary]
+        let matching = calendarIDs.indices.filter {
+            startDates[$0] == primaryStart && isWritable[$0]
+        }
+        // Save the representative first. If EventKit reports an unexpected
+        // failure on a later writable mirror, the next read still displays the
+        // successfully edited primary and unions the stale mirror's calendar.
+        return [primary] + matching.filter { $0 != primary }
+    }
+
+    static func uniqueEventKitCopies(_ copies: [EKEvent]) -> [EKEvent] {
+        var seenItemIDs: Set<String> = []
+        var seenObjects: Set<ObjectIdentifier> = []
+        return copies.filter { event in
+            let itemID = event.calendarItemIdentifier
+            if !itemID.isEmpty {
+                return seenItemIDs.insert(itemID).inserted
+            }
+            return seenObjects.insert(ObjectIdentifier(event)).inserted
+        }
     }
 
     /// Merge the copies of ONE occurrence: the primary copy selected by
-    /// `primaryCalendarCopyIndex`, with `calendarIDs` replaced by the sorted
-    /// union of every copy's calendars. A lone copy is returned unchanged.
+    /// `Event.primaryCalendarCopyIndex`, with `calendarIDs` replaced by the
+    /// sorted union of every copy's calendars. A lone copy is unchanged.
     static func mergingCalendarCopies(_ copies: [Event]) -> Event? {
-        guard let primary = primaryEventCopy(in: copies) else { return nil }
-        guard copies.count > 1 else { return primary }
-        var merged = primary
-        let calendarIDs = copies.reduce(into: Set<String>()) { $0.formUnion($1.allCalendarIDs) }
-        merged.calendarIDs = calendarIDs.isEmpty ? nil : calendarIDs.sorted()
-        return merged
+        Event.mergedCalendarRepresentative(from: copies)
     }
 
     /// Collapse a raw window walk to one `Event` per occurrence, keyed by
@@ -785,19 +796,11 @@ public final class EKEventStoreAdapter: EventStoreProtocol, @unchecked Sendable 
     }
 
     /// The one `Event` `fetch(eventKitID:)` returns for every copy EventKit
-    /// holds under one identifier. The primary copy is chosen by the same
-    /// rule as the window batch, and only copies of the primary's occurrence
-    /// (same start — the batch's key) are merged into it: a copy with another
-    /// start is a different occurrence, which the batch keeps apart too.
+    /// holds under one identifier. Displayed fields come from the same
+    /// deterministic representative as the window projection; calendar
+    /// membership is the union across all copies, including drifted dates.
     static func singleEvent(fromCopies copies: [Event]) -> Event? {
-        guard let primary = primaryEventCopy(in: copies) else { return nil }
-        return Self.mergingCalendarCopies(copies.filter { $0.startDate == primary.startDate })
-    }
-
-    private static func primaryEventCopy(in copies: [Event]) -> Event? {
-        let calendarIDs = copies.map(\.calendarID)
-        guard let index = primaryCalendarCopyIndex(calendarIDs) else { return nil }
-        return copies[index]
+        Event.mergedCalendarRepresentative(from: copies)
     }
 
     /// Convert an `EKCalendar` into the neutral `EventCalendar`. nil when the
