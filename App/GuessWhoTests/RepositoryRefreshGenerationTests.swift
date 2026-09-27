@@ -163,11 +163,19 @@ struct RepositoryRefreshGenerationTests {
 
         #expect(counter.count == 1)
         #expect(repository.isLoading == false)
+
+        counter.reset()
+        visibility.setVisible(false, calendarIDs: ["work", "family", "holidays"])
+        #expect(counter.count == 1)
+
         let reloadedVisibility = CalendarVisibilitySettings(
             defaults: defaults,
             notificationCenter: center
         )
         #expect(reloadedVisibility.isVisible(calendarID: "calendar") == false)
+        #expect(reloadedVisibility.isVisible(calendarID: "work") == false)
+        #expect(reloadedVisibility.isVisible(calendarID: "family") == false)
+        #expect(reloadedVisibility.isVisible(calendarID: "holidays") == false)
         #expect(reloadedVisibility.isVisible(calendarID: "new-calendar"))
         #expect(reloadedVisibility.isVisible(calendarID: nil))
     }

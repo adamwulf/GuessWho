@@ -486,9 +486,7 @@ private struct CalendarsPreferencesPane: View {
         let isOn = Binding(
             get: { account.calendars.allSatisfy { visibility.isVisible(calendarID: $0.id) } },
             set: { newValue in
-                for calendar in account.calendars {
-                    visibility.setVisible(newValue, calendarID: calendar.id)
-                }
+                visibility.setVisible(newValue, calendarIDs: account.calendars.map(\.id))
             })
         return Toggle(isOn: isOn) {
             VStack(alignment: .leading, spacing: 2) {

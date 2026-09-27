@@ -36,11 +36,19 @@ final class CalendarVisibilitySettings {
     }
 
     func setVisible(_ isVisible: Bool, calendarID: String) {
-        let changed: Bool
-        if isVisible {
-            changed = hiddenCalendarIDs.remove(calendarID) != nil
-        } else {
-            changed = hiddenCalendarIDs.insert(calendarID).inserted
+        setVisible(isVisible, calendarIDs: [calendarID])
+    }
+
+    /// Applies an account-level selection as one persisted change and one list
+    /// refresh, even when the account contains many calendars.
+    func setVisible(_ isVisible: Bool, calendarIDs: [String]) {
+        var changed = false
+        for calendarID in calendarIDs {
+            if isVisible {
+                changed = hiddenCalendarIDs.remove(calendarID) != nil || changed
+            } else {
+                changed = hiddenCalendarIDs.insert(calendarID).inserted || changed
+            }
         }
         guard changed else { return }
 
