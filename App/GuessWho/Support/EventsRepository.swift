@@ -123,7 +123,7 @@ final class EventsRepository: NSObject {
 
     init(
         service: SyncService,
-        calendarVisibility: CalendarVisibilitySettings = CalendarVisibilitySettings(),
+        calendarVisibility: CalendarVisibilitySettings,
         notificationCenter: NotificationCenter = .default
     ) {
         self.service = service

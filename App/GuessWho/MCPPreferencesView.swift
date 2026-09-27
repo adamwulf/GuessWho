@@ -2,6 +2,7 @@
 
 import SwiftUI
 import UIKit
+import EventKit
 import GuessWhoLogging
 import GuessWhoMCPCore
 import GuessWhoMCPWire
@@ -407,9 +408,9 @@ private struct PreferencesTabBar: View {
 /// `SyncService.availableEventCalendars()` and reads/writes the SAME
 /// `CalendarVisibilitySettings` instance `EventsRepository` filters with, so
 /// each switch applies to an open Events list immediately. Every calendar
-/// is visible until the user hides it. Events on a person's or
-/// organization's page don't go through that filter, which the pane's
-/// description says.
+/// is visible until the user hides it. Related events on person,
+/// organization, or place pages don't go through that filter, which the
+/// pane's description says.
 private struct CalendarsPreferencesPane: View {
     let service: SyncService
     let visibility: CalendarVisibilitySettings
@@ -422,6 +423,12 @@ private struct CalendarsPreferencesPane: View {
             // Keyed on access so a grant that lands while the sheet is open
             // (the launch-time request resolving) loads the list.
             .task(id: service.eventsAuthorization) { reload() }
+            // Calendar.app and account sync can add, remove, or rename a
+            // calendar while this pane stays selected. Keep its controls in
+            // step with the same store-change signal the Events list observes.
+            .onReceive(NotificationCenter.default.publisher(for: .EKEventStoreChanged)) { _ in
+                reload()
+            }
     }
 
     @ViewBuilder
@@ -461,7 +468,7 @@ private struct CalendarsPreferencesPane: View {
             Section {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Choose which calendars appear in Events.")
-                    Text("People and organizations still show their related events from every calendar. New calendars are shown automatically.")
+                    Text("Pages for people, organizations, and places still show their related events from every calendar. New calendars are shown automatically.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }

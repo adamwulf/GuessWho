@@ -14,19 +14,19 @@ extension Notification.Name {
 @MainActor
 @Observable
 final class CalendarVisibilitySettings {
-    private let defaults: UserDefaults
+    private let defaults: UserDefaults?
     private let notificationCenter: NotificationCenter
 
     private(set) var hiddenCalendarIDs: Set<String>
 
     init(
-        defaults: UserDefaults = .standard,
+        defaults: UserDefaults? = .standard,
         notificationCenter: NotificationCenter = .default
     ) {
         self.defaults = defaults
         self.notificationCenter = notificationCenter
         self.hiddenCalendarIDs = Set(
-            defaults.stringArray(forKey: AppSettings.Key.hiddenEventCalendarIDs) ?? []
+            defaults?.stringArray(forKey: AppSettings.Key.hiddenEventCalendarIDs) ?? []
         )
     }
 
@@ -52,7 +52,7 @@ final class CalendarVisibilitySettings {
         }
         guard changed else { return }
 
-        defaults.set(hiddenCalendarIDs.sorted(), forKey: AppSettings.Key.hiddenEventCalendarIDs)
+        defaults?.set(hiddenCalendarIDs.sorted(), forKey: AppSettings.Key.hiddenEventCalendarIDs)
         notificationCenter.post(name: .calendarVisibilityDidChange, object: self)
     }
 }
