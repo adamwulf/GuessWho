@@ -1573,43 +1573,6 @@ struct ContactDetailView: View {
             }
         }
         .buttonStyle(.plain)
-        .contextMenu {
-            // Adoption and persistence are implementation details, not choices
-            // the user manages. An event that is already associated therefore
-            // has no reverse action here; deleting the GuessWho record is the
-            // only user-facing way to remove its private data.
-            if eventLink(for: event) == nil {
-                Button {
-                    Task { await linkRecentEvent(event) }
-                } label: {
-                    Label("Link Event", systemImage: "calendar.badge.plus")
-                }
-            }
-        }
-    }
-
-    /// Long-press "Link Event" on a recent-event row. Recent events are
-    /// EventKit-sourced, so `event.id` is the synthetic
-    /// `Event.stableID(forEventKitID:)` with no sidecar behind it — linking
-    /// that UUID directly would persist a link whose event endpoint
-    /// `service.event(uuid:)` can never resolve, rendering "(Unknown event)".
-    /// Resolve-or-mint the real sidecar UUID first (`linkEvent` dedups
-    /// against an existing sidecar internally), mirroring
-    /// `EventLinkSheet.dedupAndLink`.
-    private func linkRecentEvent(_ event: Event) async {
-        let eventUUID: String
-        if let ekid = event.eventKitID {
-            do {
-                eventUUID = try await service.linkEvent(toEventKitID: ekid).uuidString
-            } catch {
-                service.recordError("link event failed: \(error.localizedDescription)")
-                return
-            }
-        } else {
-            // Sidecar-only event — its id IS the sidecar UUID.
-            eventUUID = event.id.uuidString
-        }
-        await addEventLink(eventUUID: eventUUID, note: "")
     }
 
     @ViewBuilder
