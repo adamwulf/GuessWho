@@ -301,7 +301,10 @@ public final class ContactsRepository: NSObject {
     /// Whether the cached groups and their durable identity resolutions came
     /// from a complete winning fetch and no newer fetch is in flight.
     public var hasAuthoritativeGroupCache: Bool {
-        hasAuthoritativeGroups && !isLoadingGroups && groupsError == nil
+        hasAuthoritativeGroups
+            && hasAuthoritativeGroupIdentities
+            && !isLoadingGroups
+            && groupsError == nil
     }
 
     /// Advances after each successful group mutation. `loadGroups()` captures
@@ -318,6 +321,11 @@ public final class ContactsRepository: NSObject {
     /// update a known-good cache incrementally, but after an initial/most-recent
     /// fetch failure they must first recover the full authoritative list.
     @ObservationIgnored private var hasAuthoritativeGroups = false
+
+    /// True only after a complete durable-identity enumeration and resolution
+    /// succeeds against the current Contacts group cache. A sidecar read can
+    /// fail even when the Contacts fetch itself succeeded.
+    @ObservationIgnored private var hasAuthoritativeGroupIdentities = false
 
     /// Repository-level mutation queue. `@MainActor` methods are reentrant at
     /// each store `await`, so without this tail a rename and delete can finish
@@ -2603,16 +2611,19 @@ public final class ContactsRepository: NSObject {
         groupKeys: [SidecarKey]? = nil,
         refreshFingerprints: Bool = true
     ) async {
+        let isCompletePass = groupKeys == nil
         guard let sync else {
             if resetCache {
                 resolvedGroupsByIdentityID = [:]
                 groupIdentityIDByLocalID = [:]
             }
+            if isCompletePass { hasAuthoritativeGroupIdentities = true }
             return
         }
         if resetCache {
             resolvedGroupsByIdentityID = [:]
             groupIdentityIDByLocalID = [:]
+            hasAuthoritativeGroupIdentities = false
         }
         // Resolution compares each identity with the `groups` cache, and treats
         // a pinned local id that is absent from it as a DEAD slot to prune. That
@@ -2621,7 +2632,10 @@ public final class ContactsRepository: NSObject {
         // prune (and write) good pins that `loadGroups()` then has to re-adopt.
         // The contact reload and watcher deliveries can both get here first at
         // launch; `loadGroups()` performs the pass once the cache is real.
-        guard hasAuthoritativeGroups else { return }
+        guard hasAuthoritativeGroups else {
+            if isCompletePass { hasAuthoritativeGroupIdentities = false }
+            return
+        }
         do {
             let identities: [GroupIdentity]
             if let groupKeys {
@@ -2637,7 +2651,9 @@ public final class ContactsRepository: NSObject {
                     await refreshGroupIdentity(identityID: identity.id, group: live)
                 }
             }
+            if isCompletePass { hasAuthoritativeGroupIdentities = true }
         } catch {
+            hasAuthoritativeGroupIdentities = false
             Self.groupIdentityLog.warning(
                 "group identity startup refresh failed",
                 metadata: ["error": "\(error.localizedDescription)"])

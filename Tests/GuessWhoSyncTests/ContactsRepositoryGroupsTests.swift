@@ -152,10 +152,14 @@ struct ContactsRepositoryGroupsTests {
         await store.suspendNextGroupFetch()
         let olderLoad = Task { @MainActor in await repository.loadGroups() }
         await store.waitUntilGroupFetchIsSuspended()
+        #expect(repository.isLoadingGroups)
+        #expect(!repository.hasAuthoritativeGroupCache)
 
         _ = try await store.seedGroup(name: "Work")
         await repository.loadGroups()
         #expect(repository.groups.map(\.name) == ["Family", "Work"])
+        #expect(!repository.isLoadingGroups)
+        #expect(repository.hasAuthoritativeGroupCache)
 
         await store.resumeGroupFetch()
         await olderLoad.value
@@ -225,6 +229,33 @@ struct ContactsRepositoryGroupsTests {
         #expect(!repository.isLoadingGroups)
         #expect(repository.hasAuthoritativeGroupCache)
         #expect(repository.groups.map(\.name) == ["Family", "Work"])
+    }
+
+    @Test @MainActor
+    func groupIdentityEnumerationFailureMakesTheCombinedCacheNonAuthoritative() async {
+        let contacts = InMemoryContactStore()
+        let sidecars = ScriptedHierarchySidecarStore(wrapping: InMemorySidecarStore())
+        let sync = GuessWhoSync(
+            contacts: contacts,
+            events: InMemoryEventStore(),
+            sidecars: sidecars,
+            deviceID: "group-authority-test"
+        )
+        let repository = ContactsRepository(
+            contacts: contacts,
+            sync: sync,
+            notificationCenter: NotificationCenter()
+        )
+
+        await repository.loadGroups()
+        #expect(repository.hasAuthoritativeGroupCache)
+
+        sidecars.failEnumeration = true
+        await repository.loadGroups()
+
+        #expect(!repository.hasAuthoritativeGroupCache)
+        #expect(repository.groupsError == nil)
+        #expect(!repository.isLoadingGroups)
     }
 
     @Test @MainActor

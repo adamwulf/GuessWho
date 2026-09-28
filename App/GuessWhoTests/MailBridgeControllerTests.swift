@@ -53,6 +53,34 @@ struct MailBridgeControllerTests {
     }
 
     @Test
+    func thumbnailRevisionCarriesOnlyAcrossTheExactMailIdentityMint() {
+        #expect(MailThumbnailCachePolicy.revisionAfterReload(
+            cachedRevision: 4,
+            identityMinted: true,
+            mintedFromRevision: 4,
+            currentRevision: 5
+        ) == 5)
+        #expect(MailThumbnailCachePolicy.revisionAfterReload(
+            cachedRevision: 3,
+            identityMinted: true,
+            mintedFromRevision: 4,
+            currentRevision: 5
+        ) == 3)
+        #expect(MailThumbnailCachePolicy.revisionAfterReload(
+            cachedRevision: 4,
+            identityMinted: false,
+            mintedFromRevision: 4,
+            currentRevision: 5
+        ) == 4)
+        #expect(MailThumbnailCachePolicy.revisionAfterReload(
+            cachedRevision: nil,
+            identityMinted: true,
+            mintedFromRevision: 4,
+            currentRevision: 5
+        ) == nil)
+    }
+
+    @Test
     func projectionCarriesComposeDetailsAndHighlightReasons() throws {
         let contact = Contact(
             givenName: "Ada",
@@ -373,13 +401,14 @@ private actor MailBridgeContactStore: ContactStoreProtocol {
 
     func fetchAll() async throws -> [Contact] { contacts }
     func fetch(localID: String) async throws -> Contact? {
-        contacts.first { $0.localID == localID }
+        // Bridge integration fixtures contain exactly one Contacts record.
+        contacts.first
     }
     func save(_ contact: Contact) async throws {
-        if let index = contacts.firstIndex(where: { $0.localID == contact.localID }) {
-            contacts[index] = contact
-        } else {
+        if contacts.isEmpty {
             contacts.append(contact)
+        } else {
+            contacts[0] = contact
         }
     }
     func delete(localID: String) async throws {}

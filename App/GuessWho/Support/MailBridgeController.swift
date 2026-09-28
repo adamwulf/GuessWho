@@ -46,14 +46,12 @@ final class MailBridgeController {
     /// newer-format cache is intentionally preserved.
     private var publishedContactRevision: Int?
 
-    /// Thumbnail reads are comparatively expensive. Across contact revisions,
-    /// retain entries whose `Contact` fingerprint is unchanged and invalidate
-    /// only removed, re-keyed, or edited contacts. Membership/favorite-only
-    /// changes reuse every entry.
+    /// Thumbnail reads are comparatively expensive. Membership/favorite-only
+    /// changes reuse every entry. A contact-data reload clears the cache unless
+    /// it is the exact private-identity mint emitted by mail activity storage.
     private var photoRevision: Int?
     private var loadedPhotoIDs: Set<ContactID> = []
     private var photosByContactID: [ContactID: Data] = [:]
-    private var photoContactByID: [ContactID: Contact] = [:]
 
     init(
         service: SyncService,
@@ -138,6 +136,12 @@ final class MailBridgeController {
             ] as? Int
             MainActor.assumeIsolated {
                 guard let self else { return }
+                self.photoRevision = MailThumbnailCachePolicy.revisionAfterReload(
+                    cachedRevision: self.photoRevision,
+                    identityMinted: mailActivityIdentityMinted,
+                    mintedFromRevision: previousRevision,
+                    currentRevision: self.repository.contactDataRevision
+                )
                 if mailActivityIdentityMinted,
                    let previousRevision,
                    self.publishedContactRevision == previousRevision {
@@ -228,7 +232,8 @@ final class MailBridgeController {
     }
 
     private func recoverGroupsIfNeeded() {
-        guard repository.groupsError != nil,
+        guard !repository.hasAuthoritativeGroupCache,
+              !repository.isLoadingGroups,
               groupRecoveryTask == nil,
               !isShuttingDown
         else { return }
@@ -237,7 +242,7 @@ final class MailBridgeController {
             await repository.loadGroups()
             groupRecoveryTask = nil
             guard !Task.isCancelled, !isShuttingDown else { return }
-            if repository.groupsError == nil { schedulePublish() }
+            if repository.hasAuthoritativeGroupCache { schedulePublish() }
         }
     }
 
@@ -308,6 +313,7 @@ final class MailBridgeController {
             schedulePublishRetry()
             return
         case .preserveExisting:
+            recoverGroupsIfNeeded()
             schedulePublishRecoveryRetry()
             return
         case .ready(let candidate, let contactRevision):
@@ -410,15 +416,8 @@ final class MailBridgeController {
         else { return .retry }
         if photoRevision != contactRevision {
             photoRevision = contactRevision
-            let currentContacts = Dictionary(
-                uniqueKeysWithValues: repository.contacts.map { ($0.contactID, $0) }
-            )
-            let invalidatedIDs = loadedPhotoIDs.filter { id in
-                photoContactByID[id] != currentContacts[id]
-            }
-            loadedPhotoIDs.subtract(invalidatedIDs)
-            for id in invalidatedIDs { photosByContactID.removeValue(forKey: id) }
-            photoContactByID = currentContacts
+            loadedPhotoIDs.removeAll()
+            photosByContactID.removeAll()
         }
 
         var candidates: [MailSnapshotContact] = []
@@ -599,7 +598,7 @@ final class MailBridgeController {
 
     /// Retry releases that previously failed before claiming new work. A live
     /// five-minute lease is otherwise invisible to `claimEntries`, so merely
-    /// waking again after 30 seconds would observe an empty journal and stop.
+    /// waking again before the lease expires would observe an empty journal.
     private func releaseOutstandingClaims(from journal: MailIncomingJournal) async {
         for claim in Array(activeClaims.values) {
             do {
@@ -683,12 +682,6 @@ final class MailBridgeController {
                 addressIndex = MailContactAddressIndex(contacts: repository.contacts)
             }
             let contactIDs = addressIndex.contactIDs(matching: entry.sender)
-            guard addressIndexRevision == repository.contactDataRevision else {
-                // A contact reload interleaved with the rebuild. Do not make an
-                // absence decision from an index whose revision is ambiguous.
-                retry.insert(entry.messageID)
-                continue
-            }
             guard !contactIDs.isEmpty else {
                 if MailJournalDrainPolicy.shouldAcknowledgeUnmatched(
                     publishedContactRevision: publishedContactRevision,
@@ -782,6 +775,23 @@ enum MailJournalDrainPolicy {
     }
 }
 
+enum MailThumbnailCachePolicy {
+    static func revisionAfterReload(
+        cachedRevision: Int?,
+        identityMinted: Bool,
+        mintedFromRevision: Int?,
+        currentRevision: Int
+    ) -> Int? {
+        guard identityMinted,
+              let mintedFromRevision,
+              cachedRevision == mintedFromRevision
+        else { return cachedRevision }
+        // Repository metadata proves this exact revision changed only the
+        // private identity URL, never Contacts photo bytes.
+        return currentRevision
+    }
+}
+
 /// Exact same address canonicalization the extension cache uses. The package
 /// email index intentionally applies a narrower normalization and therefore
 /// cannot safely decide whether a journal sender is still a known contact.
@@ -849,9 +859,10 @@ enum MailContactCachePublication {
         }
 
         snapshot.generatedAt = Date()
+        let snapshotToWrite = snapshot
         do {
             try await MailBridgeBlockingIO.run {
-                try store.write(snapshot)
+                try store.write(snapshotToWrite)
             }
             return .written
         } catch {
