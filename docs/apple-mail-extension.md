@@ -51,6 +51,16 @@ formats, or the code that writes or drains them.
   (`MEExtensionCapabilities`: `MEComposeSessionHandler`,
   `MEMessageActionHandler`), with the compose button's icon (`ToolbarIcon` in
   the extension's asset catalog) and tooltip under `MEComposeSession`.
+- **MailKit calls "main-actor" protocols off the main thread.** `MEExtension`
+  and `MEComposeSessionHandler` are declared `@MainActor`, yet MailKit creates
+  the principal object, asks it for handlers, and calls
+  `annotateAddressesForSession` and the compose-session begin/end methods on
+  its NSXPC queue. Under Swift 6 a main-actor-isolated witness checks its
+  executor at entry and traps there (`_dispatch_assert_queue_fail` in the
+  crash report, which also blanks the compose popover). So `MailExtension`
+  is `nonisolated`, and those `ComposeSessionHandler` methods are
+  `nonisolated` and hop to the main queue for per-window state.
+  `viewController(for:)` has been seen on the main thread and stays isolated.
 
 ## App Group and the `Mail/` directory
 

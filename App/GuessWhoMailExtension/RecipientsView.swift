@@ -23,9 +23,7 @@ struct RecipientsView: View {
 
     @ViewBuilder
     private var content: some View {
-        if model.status == .loading {
-            ProgressView().controlSize(.small)
-        } else if model.rows.isEmpty {
+        if model.rows.isEmpty {
             Text("Add recipients to see who they are.")
                 .foregroundStyle(.secondary)
                 .padding(.horizontal)
@@ -52,7 +50,7 @@ struct RecipientsView: View {
     }
 
     private var height: CGFloat {
-        guard model.status != .loading, !model.rows.isEmpty else { return Self.messageHeight }
+        guard !model.rows.isEmpty else { return Self.messageHeight }
         let notice = model.status == .contactsUnavailable ? Self.noticeHeight + 1 : 0
         let list = CGFloat(model.rows.count) * Self.rowHeight + 2 * Self.verticalPadding
         return min(notice + list, Self.maximumHeight)

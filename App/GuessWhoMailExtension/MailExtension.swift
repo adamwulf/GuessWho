@@ -10,7 +10,13 @@ import os
 /// Both handlers are process-wide singletons: Mail may ask this factory for a
 /// handler more than once, and the compose handler keeps per-window state
 /// that has to survive that.
-final class MailExtension: NSObject, MEExtension {
+///
+/// `nonisolated`, although MailKit declares `MEExtension` `@MainActor`: MailKit
+/// creates this principal object and asks it for handlers on its XPC queue
+/// (seen in crash reports from `decideActionForMessage` and
+/// `mailComposeSessionDidEnd`). A main-actor-isolated `init` or witness would
+/// fail Swift 6's runtime executor check there and trap.
+nonisolated final class MailExtension: NSObject, MEExtension {
 
     func handlerForMessageActions() -> any MEMessageActionHandler {
         MessageActionHandler.shared
