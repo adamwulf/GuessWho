@@ -530,9 +530,21 @@ struct MailBridgeControllerTests {
         // return before independently proving the entry is retryable.
         try await waitUntil { self.journalLineIsUnclaimed(at: journalURL) }
 
-        let retryClaim = try #require(try journal.claimEntries())
+        let retryClaim = try #require(try await claimEventually(from: journal))
         #expect(retryClaim.entries.map(\.messageID) == [messageID])
         _ = try journal.release(retryClaim)
+    }
+
+    private func claimEventually(
+        from journal: MailIncomingJournal,
+        timeout: Duration = .seconds(3)
+    ) async throws -> MailIncomingJournal.Claim? {
+        let deadline = ContinuousClock.now.advanced(by: timeout)
+        repeat {
+            if let claim = try journal.claimEntries() { return claim }
+            try await Task.sleep(for: .milliseconds(10))
+        } while ContinuousClock.now < deadline
+        return nil
     }
 
     private func journalLineIsUnclaimed(at url: URL) -> Bool {
