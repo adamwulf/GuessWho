@@ -125,6 +125,18 @@ public enum ContactsRepositoryDidReloadKey {
     /// may skip invalidation when this is `false`; snapshot-applying list
     /// consumers should re-render regardless. Absent means `true`.
     public static let contactDataChanged = "contactDataChanged"
+
+    /// `Bool` — true only when the record change was the transparent identity
+    /// mint performed by `recordMailActivity`. Contact presentation data and
+    /// photos did not change, so consumers whose projection excludes the
+    /// private identity URL may retain their caches. Absent means false.
+    public static let mailActivityIdentityMinted = "mailActivityIdentityMinted"
+
+    /// `Bool` — whether this reload can change the name, organization, title,
+    /// email, photo, group resolution, or other input to the Apple Mail contact
+    /// projection. Absent means true. Presentation-only filters, timestamp
+    /// stamps, and local mail-activity writes set this false.
+    public static let mailContactProjectionChanged = "mailContactProjectionChanged"
 }
 
 /// Package-owned in-memory read repository for Contacts.
@@ -203,13 +215,13 @@ public final class ContactsRepository: NSObject {
     public var peopleFilter: LinkFilter = .all {
         didSet {
             guard peopleFilter != oldValue else { return }
-            postDidReload(contactDataChanged: false)
+            postDidReload(contactDataChanged: false, mailContactProjectionChanged: false)
         }
     }
     public var organizationsFilter: LinkFilter = .all {
         didSet {
             guard organizationsFilter != oldValue else { return }
-            postDidReload(contactDataChanged: false)
+            postDidReload(contactDataChanged: false, mailContactProjectionChanged: false)
         }
     }
 
@@ -360,7 +372,7 @@ public final class ContactsRepository: NSObject {
         didSet {
             guard sortOrder != oldValue else { return }
             // Ordering changed; every cached record is untouched.
-            postDidReload(contactDataChanged: false)
+            postDidReload(contactDataChanged: false, mailContactProjectionChanged: false)
         }
     }
 
@@ -2341,6 +2353,14 @@ public final class ContactsRepository: NSObject {
         return live
     }
 
+    /// Resolve a group favorite strictly from the cache populated by
+    /// `loadGroups()`. Unlike `group(forFavoriteID:)`, this never performs a
+    /// synchronous sidecar read and is therefore suitable for a main-actor
+    /// projection after the caller has awaited a complete group load.
+    public func cachedGroup(forFavoriteID identityID: String) -> ContactGroup? {
+        resolvedGroupsByIdentityID[identityID.lowercased()]
+    }
+
     /// The durable `GroupIdentity` UUIDs this device knows about (favorited or
     /// orphaned). The MCP layer uses these to map a favorites-list group wire id
     /// — a one-way digest of the durable UUID, which is NOT the digest of the
@@ -3291,7 +3311,9 @@ public final class ContactsRepository: NSObject {
             updateTimestampCache(.created, at: key, to: createdAt)
             updateTimestampCache(.modified, at: key, to: createdAt)
             await refreshCacheIfMinted(minted, localID: id.localID)
-            if !minted { postDidReload(contactDataChanged: false) }
+            if !minted {
+                postDidReload(contactDataChanged: false, mailContactProjectionChanged: false)
+            }
             creationTimestampRepairs.remove(localID: id.localID)
         } catch {
             Self.saveLog.error("contact timestamp write failed", metadata: [
@@ -3361,7 +3383,9 @@ public final class ContactsRepository: NSObject {
         // On mint, `refreshCacheIfMinted` posts its own reload; on the common
         // non-mint path, post so a time-ordered list re-renders. A stamp only
         // moves a timestamp — the contact records themselves are untouched.
-        if !minted { postDidReload(contactDataChanged: false) }
+        if !minted {
+            postDidReload(contactDataChanged: false, mailContactProjectionChanged: false)
+        }
     }
 
     /// Upsert the single `which` timestamp on the cache entry for `key`,
@@ -3438,8 +3462,16 @@ public final class ContactsRepository: NSObject {
         if outcome.lastInteractedChanged, let lastInteracted = outcome.lastInteracted {
             updateTimestampCache(.interacted, at: key, to: lastInteracted)
         }
-        await refreshCacheIfMinted(minted, localID: current.localID)
-        if !minted && outcome.lastInteractedChanged { postDidReload(contactDataChanged: false) }
+        if minted {
+            await applyRefresh(localID: current.localID)
+            postDidReload(
+                contactDataChanged: true,
+                mailActivityIdentityMinted: true,
+                mailContactProjectionChanged: false
+            )
+        } else if outcome.lastInteractedChanged {
+            postDidReload(contactDataChanged: false, mailContactProjectionChanged: false)
+        }
         guard outcome.activitiesChanged else { return }
         // After the mint refresh, so the cache token below carries the new
         // identity. List the caller's token too when it differs (it was
@@ -4380,7 +4412,11 @@ public final class ContactsRepository: NSObject {
         postDidReload()
     }
 
-    private func postDidReload(contactDataChanged: Bool = true) {
+    private func postDidReload(
+        contactDataChanged: Bool = true,
+        mailActivityIdentityMinted: Bool = false,
+        mailContactProjectionChanged: Bool = true
+    ) {
         // Routed through the injected center (defaults to `.default`, so the
         // app's list controllers still observe it). Outbound reload and inbound
         // change observer share one center, so a test on a fresh center sees only
@@ -4393,10 +4429,18 @@ public final class ContactsRepository: NSObject {
         // app's decoded-photo cache in particular — can skip a wholesale
         // invalidation. Defaults to `true`: any site that isn't POSITIVE the
         // records are untouched must let consumers invalidate.
+        var userInfo: [String: Any] = [
+            ContactsRepositoryDidReloadKey.contactDataChanged: contactDataChanged,
+            ContactsRepositoryDidReloadKey.mailContactProjectionChanged:
+                mailContactProjectionChanged,
+        ]
+        if mailActivityIdentityMinted {
+            userInfo[ContactsRepositoryDidReloadKey.mailActivityIdentityMinted] = true
+        }
         notificationCenter.post(
             name: .contactsRepositoryDidReload,
             object: self,
-            userInfo: [ContactsRepositoryDidReloadKey.contactDataChanged: contactDataChanged]
+            userInfo: userInfo
         )
     }
 

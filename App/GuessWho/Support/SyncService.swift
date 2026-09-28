@@ -1163,6 +1163,22 @@ final class SyncService {
         return try favoritesStore.loadAll()
     }
 
+    /// Throwing favorites read for background publication paths. The store's
+    /// coordinated read can wait up to its timeout, so callers that do not need
+    /// the result synchronously must not hold the main actor while it runs.
+    func loadFavoritesOffMain() async throws -> [Favorite] {
+        guard let favoritesStore else { throw SidecarUnavailableError() }
+        return try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                do {
+                    continuation.resume(returning: try favoritesStore.loadAll())
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
     /// `false` on error or when storage is unavailable.
     func isFavorite(kind: FavoriteKind, id: String) -> Bool {
         guard let favoritesStore else { return false }

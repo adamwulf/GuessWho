@@ -9,27 +9,21 @@ formats, or the code that writes or drains them.
 
 ## What it does
 
-- **Highlights mail from favorite people.** For each newly received message,
-  the extension looks the sender up in the contact cache. If any matching
-  contact is a favorite, belongs to a favorite group, or works at a favorite
-  organization, Mail shows the message with a blue background.
-- **Records mail from known people.** For every message whose sender is in the
-  cache, the extension appends one metadata-only entry to the journal. The app
-  drains it into its own storage.
-- **Shows who you are writing to.** In a compose window, a toolbar button
-  (tooltip "Recipient details") opens a popover listing each recipient with a
-  photo or initials, name, title, and organization. A recipient the cache
-  doesn't know gets a plain "No contact details" row.
+- **Highlights mail from favorite people.** For each newly received message, the extension looks the sender up in the contact cache. If any matching contact is a favorite, belongs to a favorite group, works at a favorite organization, or belongs to a favorite department, Mail shows the message with a blue background.
+- **Records mail from known people.** For every message whose sender is in the cache, the extension appends one metadata-only entry to the journal. The app records it under **Recent Email** on every matching contact and advances Last Interaction.
+- **Shows who you are writing to.** In a compose window, a toolbar button (tooltip **Recipient details**) opens a popover listing each recipient with a photo or initials, name, title, and organization. A recipient the cache does not know gets a plain **No contact details** row.
 
 ## The pieces
 
 | Piece | Where | Role |
-| --- | --- | --- |
+| ----- | ----- | ---- |
 | Extension target | `App/GuessWhoMailExtension/` | Native macOS app extension (`com.apple.email.extension`). Principal class `MailExtension` vends process-wide handlers. |
 | Message actions | `MessageActionHandler.swift` | `MEMessageActionHandler`: highlight + journal on each received message. |
 | Compose popover | `ComposeSessionHandler.swift`, `RecipientsModel.swift`, `RecipientsView.swift`, `RecipientsViewController.swift` | `MEComposeSessionHandler` + a SwiftUI list hosted in an `MEExtensionViewController`. |
-| Shared format | `App/GuessWhoMailShared/` | Foundation-only code compiled into **both** the extension and the app: address normalization, the cache and journal formats and stores, Message-ID handling, the App Group lookup. |
-| Tests | `App/GuessWhoTests/MailHandoffTests.swift` | The shared format, run in the app's hosted test bundle. |
+| Shared format | `App/GuessWhoMailShared/` | Foundation-only code compiled into both the extension and the app: address normalization, cache and journal formats and stores, Message-ID handling, and App Group lookup. |
+| App bridge | `App/GuessWho/Support/MailBridgeController.swift` | Publishes the contact cache, drains the journal, and records contact mail activity. |
+| Shared tests | `App/GuessWhoTests/MailHandoffTests.swift` | Cache, journal, bounds, concurrency, and forward compatibility. |
+| Bridge tests | `App/GuessWhoTests/MailBridgeControllerTests.swift` | Projection, normalization, thumbnail budget, no-op writes, and newer-format preservation. |
 
 ## Target and embedding
 
@@ -77,7 +71,7 @@ write.
 The App Group container is local to this Mac; neither file syncs.
 
 | File | Writer | Reader | Format |
-| --- | --- | --- | --- |
+| ---- | ------ | ------ | ------ |
 | `Mail/contact-cache.plist` | app (only) | extension | binary property list |
 | `Mail/incoming-messages.jsonl` | extension appends; app claims and settles | app | JSON Lines |
 
@@ -128,6 +122,8 @@ once; plain I/O errors are retried on the next read.
 With a `.newerFormat` cache, the extension still journals known senders but
 colors nothing, and the compose popover shows addresses only.
 
+**Publisher bounds.** The app projection accepts at most 256 KiB of thumbnail data from one contact and at most 8 MiB across the snapshot, charging repeated bytes once per normalized address because the plist stores one summary per address key. Contacts remain in the cache when their thumbnail is omitted. These limits keep compose lookup bounded without changing sender recognition or highlight reasons.
+
 ## The incoming-message journal (`incoming-messages.jsonl`)
 
 ### Entries
@@ -136,7 +132,7 @@ colors nothing, and the compose popover shows addresses only.
 text field is sender-controlled, so every bound is in **UTF-8 bytes**:
 
 | Field | Source | Bound |
-| --- | --- | --- |
+| ----- | ------ | ----- |
 | `version` | this build | — |
 | `sender` | normalized From address | ≤ 320 bytes (else `append` throws `invalidEntry`) |
 | `subject` | Subject, trimmed; nil when empty | clipped to 1,024 bytes at the last whole character (grapheme cluster) that fits — valid UTF-8, combining marks kept with their base; nil if even the first character doesn't fit |
@@ -200,30 +196,35 @@ metadata; the next append trims unclaimed lines again.
 ### Draining (app): the claim lifecycle
 
 1. **Claim.** `claimEntries(limit:)` atomically marks up to `limit` (default
-   50) of the oldest entries that no live claim holds with a fresh token and
+   50\) of the oldest entries that no live claim holds with a fresh token and
    returns them as a `Claim`. A second claimer — for example a Debug and an
    /Applications copy of the app — gets only entries nobody holds.
+
 2. **Work, renewing as needed.** A claim is live for `claimLease` (5 minutes)
    from its last claim or `renew(_:)`. A drain that might run longer renews.
+
 3. **Settle, whole or by subset.** `acknowledge(_:messageIDs:)` removes
    entries that were stored (or deliberately dropped — for example, a sender
    no longer matching any contact once the app's storage has loaded);
    `release(_:messageIDs:)` returns entries for a later retry. Settling by
    Message-ID subset keeps one entry that can't be stored from pinning or
    replaying the rest of the batch.
+
 4. **Fencing.** `renew`, `acknowledge`, and `release` touch only lines that
    still carry the claim's token. Each returns a `ClaimOutcome` that puts
    every Message-ID asked about in exactly one bucket:
-   - `applied` — held by this claim; the call acted on it.
-   - `lost` — in the journal but held by a **different** claim token: this
-     claim's lease lapsed and another claimer took it. A claimer with
-     `lostOwnership` must treat those entries as someone else's.
-   - `settledOrMissing` — held by no claim: already acknowledged or released
-     (by this claim or another), evicted, or never in the journal. Nothing is
-     left to do, and nobody else owns it — so a whole-claim settle after
-     earlier subset settles reports the caller's own work here, not as lost.
+
+    - `applied` — held by this claim; the call acted on it.
+    - `lost` — in the journal but held by a **different** claim token: this
+      claim's lease lapsed and another claimer took it. A claimer with
+      `lostOwnership` must treat those entries as someone else's.
+    - `settledOrMissing` — held by no claim: already acknowledged or released
+      (by this claim or another), evicted, or never in the journal. Nothing is
+      left to do, and nobody else owns it — so a whole-claim settle after
+      earlier subset settles reports the caller's own work here, not as lost.
 
    A lapsed claim whose entries nobody retook still settles them.
+
 5. **Crash recovery.** A claim that is never settled expires after the lease,
    and its entries become claimable again.
 
@@ -238,11 +239,11 @@ there. Draining on activation remains the fallback.
 
 ## App bridge lifecycle
 
-`MailBridgeController` is owned by `GuessWhoAppDelegate` on Mac Catalyst, so one instance serves every window. At launch it waits for the contacts repository to finish its initial load, loads the group identity cache once, then publishes and drains. It also publishes after contact reloads, group-membership changes, favorite changes, and app activation; Darwin journal notifications and activation trigger drains. Publication is debounced and single-flight, and draining is single-flight.
+`MailBridgeController` is owned by `GuessWhoAppDelegate` on Mac Catalyst, so one instance serves every window. At launch it waits for the contacts repository to finish its initial load, loads the group identity cache, then publishes and drains. Contact-data reloads, group-membership changes, favorite changes, and app activation schedule a debounced publication; presentation-only reloads do not. Darwin journal notifications, repository recovery, and activation trigger a single-flight drain. A failed group load is retried on a later reload or activation instead of publishing incomplete group highlights.
 
-The published snapshot includes every email-bearing contact so Mail can recognize compose recipients and journal known senders. Highlight reasons are projected from favorite contacts, favorite organization members, favorite department members, and favorite group members. Group membership reads are revision-checked and error-aware: a failed or stale read never publishes a partial snapshot. A failed favorites read and a failed contacts reload also preserve the previous cache. The publisher keeps a newer-format cache untouched and compares a current snapshot before writing, so unchanged echoes do not rewrite the App Group file.
+The published snapshot includes every email-bearing contact so Mail can recognize compose recipients and journal known senders. Highlight reasons are projected from favorite contacts, favorite organization members, favorite department members, and favorite group members. Favorites and App Group file reads run off the main actor. Group reads are revision-checked and error-aware, and the final publish gate checks contact, membership, hierarchy, load state, and reload outcome again after every suspension. A failed favorites, groups, contacts, or stale read preserves the previous cache. Newer formats, including a breaking format whose address index this build cannot decode, are never downgraded. Equivalent current snapshots are not rewritten. Snapshot sorting is computed once per contact on a utility task. Thumbnails are capped at 256 KiB each and 8 MiB total after charging the bytes once per normalized address; transient photo read failures are retried rather than cached as no photo.
 
-The drainer claims at most 50 entries, renews while processing, and resolves each sender through `ContactsRepository.contactIDs(matchingEmail:)`. It records the same message against every matching contact. Writes for a contact are awaited sequentially because the first one may mint that contact identity; `MailActivity` then de-duplicates redelivery by Message-ID. Successfully stored or deliberately obsolete entries are acknowledged, storage failures are released, and ownership lost to another app copy is never settled by this process. All cache and journal file I/O runs off the main actor.
+The drainer claims up to ten batches of 50 entries per pass and renews ownership while processing. It resolves senders through the same `MailAddressNormalizer` used by the extension cache and records one message against every matching contact. Writes for each contact are awaited sequentially because the first incoming activity can transparently mint the private GuessWho identity URL on its Contacts card; `MailActivity` then de-duplicates redelivery by Message-ID and advances Last Interaction only forward. Stored entries are acknowledged. Failed or temporarily unmatched entries stay claimed while later batches drain, then are released together and retried after a delay, so one poison entry cannot pin the backlog. Loading or failed repository state never acknowledges an entry. Shutdown best-effort releases live claims, and fencing prevents this process from settling ownership another app copy acquired.
 
 ## Privacy
 
@@ -262,14 +263,7 @@ The drainer claims at most 50 entries, renews while processing, and resolves eac
 
 ## The `message://` link is best effort
 
-Apple has never documented Mail's `message:` URL scheme. Mail has long
-answered `message://%3C<id>%3E`, but it may change or stop working in any
-release, and it only finds messages Mail still has locally.
-`MailMessageID.mailDeepLink(for:)` builds a link only from a syntactically
-safe Message-ID — exactly one `@`, both sides RFC 5322 dot-atom text in
-ASCII — and percent-encodes everything but unreserved characters and `@`.
-Journaling never depends on the link: an entry with no link is still
-recorded.
+Apple has never documented Mail’s `message:` URL scheme. Mail has long answered `message://%3C<id>%3E`, but it may change or stop working in any release, and it only finds messages Mail still has locally. `MailMessageID.mailDeepLink(for:)` builds a link only from a syntactically safe Message-ID — exactly one `@`, both sides RFC 5322 dot-atom text in ASCII — and percent-encodes everything but unreserved characters and `@`. The app rebuilds the link from the canonical Message-ID both when recording and when opening a Recent Email row; it never trusts a persisted URL or a URL supplied by another process. Journaling and activity storage never depend on the link.
 
 ## Enabling it in Mail
 
@@ -282,18 +276,13 @@ recorded.
 
 ## Human runtime checks
 
-Automated tests cover the shared format only. After enabling the extension,
-and once the app publishes the cache and drains the journal:
+Automated tests cover the shared formats, cache projection, address matching, and cache publication rules. After enabling the extension, verify the OS-hosted MailKit behavior end to end:
 
-- Mail from a favorite contact, a favorite group's member, or a favorite
-  organization's member arrives with a blue background.
-- Mail from a known, non-favorite sender arrives uncolored and produces one
-  journal entry; mail from an unknown sender produces none.
-- `~/Library/Group Containers/<TeamID>.com.milestonemade.guesswho/Mail/incoming-messages.jsonl`
-  holds only the metadata fields above.
-- A compose window shows the toolbar button; its popover lists the recipients
-  and updates as recipients are added or removed.
-- Opening a journaled `messageURL` (`open 'message://…'`) may or may not
-  select the message — both are acceptable.
-- `log stream --predicate 'subsystem == "com.milestonemade.guesswho.mail"'`
-  shows no unexpected errors.
+- Mail from a favorite contact, a favorite group member, a favorite organization member, or a member of a favorite department arrives with a blue background.
+- Mail from a known, non-favorite sender arrives uncolored and produces one journal entry; mail from an unknown sender produces none.
+- The matching contact page shows the message under **Recent Email**, advances Last Interaction, and offers **Open in Mail** only for a safe Message-ID link.
+- On the first incoming message for a known contact that has no GuessWho identity yet, the app transparently adds its private identity URL to the Contacts card before storing activity.
+- `~/Library/Group Containers/<TeamID>.com.milestonemade.guesswho/Mail/incoming-messages.jsonl` holds only the metadata fields above.
+- A compose window shows the toolbar button; its popover lists the recipients and updates as recipients are added or removed.
+- Opening a generated message link may or may not select the message — both are acceptable.
+- The Mail extension log shows no unexpected errors and never includes addresses or subjects.

@@ -11,7 +11,11 @@ import Foundation
 /// current version as authoritative and best-effort-clears the others so
 /// they don't accumulate on disk. Cross-device near-simultaneous reorders
 /// are last-writer-wins.
-public final class FavoritesStore {
+/// `@unchecked Sendable`: the instance is immutable after initialization and
+/// every operation on its one coordinated file runs through the serial
+/// `coordinatorQueue`. This lets app callers perform the bounded coordinated
+/// read away from the main actor without constructing another store.
+public final class FavoritesStore: @unchecked Sendable {
     private let root: URL
     /// Background queue the coordinator runs on so the caller (often the
     /// main thread under @MainActor SyncService) can wait with a bounded

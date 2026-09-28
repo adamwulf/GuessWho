@@ -612,12 +612,20 @@ struct ContactsRepositoryMailActivityTests {
         // nonisolated(unsafe): appended only from the notification handlers
         // on this test's main-actor flow; read after the awaited writes.
         nonisolated(unsafe) var reloadFlags: [Bool] = []
+        nonisolated(unsafe) var mailMintFlags: [Bool] = []
+        nonisolated(unsafe) var mailProjectionFlags: [Bool] = []
         nonisolated(unsafe) var activityPosts: [[ContactID]] = []
         let reloadToken = center.addObserver(
             forName: .contactsRepositoryDidReload, object: repo, queue: nil
         ) { note in
             reloadFlags.append(
                 (note.userInfo?[ContactsRepositoryDidReloadKey.contactDataChanged] as? Bool) ?? true
+            )
+            mailMintFlags.append(
+                (note.userInfo?[ContactsRepositoryDidReloadKey.mailActivityIdentityMinted] as? Bool) ?? false
+            )
+            mailProjectionFlags.append(
+                (note.userInfo?[ContactsRepositoryDidReloadKey.mailContactProjectionChanged] as? Bool) ?? true
             )
         }
         let activityToken = center.addObserver(
@@ -652,6 +660,8 @@ struct ContactsRepositoryMailActivityTests {
         let minted = try #require(repo.contact(id: id)).contactID
         #expect(minted.guessWhoID != nil)
         #expect(reloadFlags == [true, true, false])
+        #expect(mailMintFlags == [false, true, false])
+        #expect(mailProjectionFlags == [true, false, false])
         #expect(activityPosts == [[minted, id], [minted, id]])
         #expect(await repo.mailActivities(for: id).map(\.messageID)
             == ["queued-2@example.com", "queued-1@example.com"])

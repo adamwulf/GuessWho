@@ -171,6 +171,7 @@ struct ContactDetailView: View {
     // Newest-wins gate shared by full contact loads and notification-driven
     // mail-only refreshes. A slow older disk read must not restore stale rows.
     @State private var mailActivitiesLoadID = UUID()
+    @State private var coarseMailActivityReloadTask: Task<Void, Never>?
     // Imported-guide matches keyed by the individual contact street line they
     // describe. Each summary renders directly below its own address rather than
     // combining counts across a multi-address contact. Loaded async via
@@ -463,6 +464,7 @@ struct ContactDetailView: View {
             // our custom back button, so commit here too. A no-op if
             // commitActiveEdit() already ran from a button tap.
             commitActiveEdit()
+            coarseMailActivityReloadTask?.cancel()
         }
         .onReceive(NotificationCenter.default.publisher(for: .linkedInImportDidSave)) { _ in
             // A LinkedIn import just saved changes. Re-read so the open card
@@ -534,6 +536,7 @@ struct ContactDetailView: View {
             (repository.contact(id: changedID)?.contactID ?? changedID) == current
         }
         guard applies else { return }
+        coarseMailActivityReloadTask?.cancel()
         Task { await reloadMailActivities(for: current) }
     }
 
@@ -542,14 +545,22 @@ struct ContactDetailView: View {
     /// fallback required by the mail-activity notification contract.
     private func repositoryDidReloadForMailActivity(_ notification: Notification) {
         guard let postingRepository = notification.object as? ContactsRepository,
-              postingRepository === repository,
-              let current = resolvedMailActivityContactID()
+              postingRepository === repository
         else { return }
-        Task { await reloadMailActivities(for: current) }
+        coarseMailActivityReloadTask?.cancel()
+        coarseMailActivityReloadTask = Task { @MainActor in
+            do {
+                try await Task.sleep(nanoseconds: 150_000_000)
+            } catch {
+                return
+            }
+            guard let current = resolvedMailActivityContactID() else { return }
+            await reloadMailActivities(for: current)
+        }
     }
 
     private func resolvedMailActivityContactID() -> ContactID? {
-        guard let held = loadedContactID else { return nil }
+        let held = loadedContactID ?? id
         return repository.contact(id: held)?.contactID ?? held
     }
 
@@ -1695,8 +1706,7 @@ struct ContactDetailView: View {
     }
 
     private func mailURL(for activity: MailActivity) -> URL? {
-        guard let raw = activity.mailURL else { return nil }
-        return URL(string: raw)
+        MailMessageID.mailDeepLink(for: activity.messageID)
     }
 
     @ViewBuilder

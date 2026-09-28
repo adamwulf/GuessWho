@@ -38,9 +38,9 @@ struct MailContactSummary: Codable, Sendable, Equatable {
     var displayName: String
     var organization: String?
     var jobTitle: String?
-    /// Small image data (JPEG or PNG) for the compose popover. Keep it
-    /// thumbnail-sized: the same bytes repeat under every address the
-    /// contact has.
+    /// Small image data (JPEG or PNG) for the compose popover. The app-side
+    /// publisher enforces a 256 KiB per-image and 8 MiB total budget, charging
+    /// these bytes once per address because the encoded summary repeats there.
     var thumbnail: Data?
     var highlightReasons: Set<MailHighlightReason>
 
