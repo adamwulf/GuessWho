@@ -5,15 +5,15 @@ import os
 
 /// One compose window's recipient list, matched against the contact cache.
 ///
-/// `show(recipients:)` may be called on every recipient edit; each call reads
-/// the cache off the main actor, and only the newest call's result is applied.
+/// `showNow(_:)` looks the recipients up synchronously, for the popover's
+/// first layout. `show(_:)` may be called on every recipient edit; each call
+/// reads the cache off the main actor, and only the newest call's result is
+/// applied.
 @MainActor
 @Observable
 final class RecipientsModel {
 
     enum Status: Equatable {
-        /// The first lookup hasn't finished.
-        case loading
         case ready
         /// The cache couldn't be read, hasn't been published yet, or is in a
         /// newer format; every row shows only its address.
@@ -29,7 +29,14 @@ final class RecipientsModel {
         let summary: MailContactSummary?
     }
 
-    private(set) var status: Status = .loading
+    /// One recipient token from the compose window, reduced to plain values
+    /// so it can cross from MailKit's XPC queue to the main actor.
+    struct Recipient: Sendable {
+        let address: String
+        let normalized: String?
+    }
+
+    private(set) var status: Status = .ready
     private(set) var rows: [Row] = []
 
     @ObservationIgnored private let contactCache: MailContactCacheStore?
@@ -39,8 +46,17 @@ final class RecipientsModel {
         self.contactCache = contactCache
     }
 
-    func show(recipients addresses: [MEEmailAddress]) {
-        let recipients = Self.uniqueRecipients(addresses)
+    /// Looks the recipients up on the calling (main) thread. Mail sizes the
+    /// popover from the view's preferred size when it first lays it out, so
+    /// the rows must be in place before the view controller is returned. The
+    /// cache store memoizes the decoded file (warmed when the compose window
+    /// opens), so this is usually just a coordinated file stat.
+    func showNow(_ recipients: [Recipient]) {
+        generation += 1
+        apply(Self.lookUp(recipients, in: contactCache))
+    }
+
+    func show(_ recipients: [Recipient]) {
         generation += 1
         let generation = self.generation
         let contactCache = self.contactCache
@@ -49,21 +65,20 @@ final class RecipientsModel {
                 Self.lookUp(recipients, in: contactCache)
             }.value
             guard generation == self.generation else { return }
-            rows = lookup.rows
-            status = lookup.status
+            apply(lookup)
         }
     }
 
-    // MARK: - Lookup (off the main actor)
-
-    private struct Recipient: Sendable {
-        let address: String
-        let normalized: String?
+    private func apply(_ lookup: (rows: [Row], status: Status)) {
+        rows = lookup.rows
+        status = lookup.status
     }
+
+    // MARK: - Lookup (any thread)
 
     /// Recipients in window order, each address once even when it appears in
     /// both To and Cc.
-    private static func uniqueRecipients(_ addresses: [MEEmailAddress]) -> [Recipient] {
+    nonisolated static func recipients(from addresses: [MEEmailAddress]) -> [Recipient] {
         var seen = Set<String>()
         var recipients: [Recipient] = []
         for address in addresses {

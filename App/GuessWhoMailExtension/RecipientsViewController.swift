@@ -5,8 +5,9 @@ import SwiftUI
 /// The view controller Mail shows in the compose-window popover. MailKit
 /// requires an `MEExtensionViewController` subclass, so the SwiftUI list is
 /// hosted in a child `NSHostingController` whose ideal size is forwarded as
-/// this controller's `preferredContentSize` — the popover resizes as
-/// recipients come and go.
+/// this controller's `preferredContentSize`. Mail sizes the popover from it
+/// when it presents the view, so the model already holds its rows by then
+/// (see `RecipientsModel.showNow(_:)`).
 final class RecipientsViewController: MEExtensionViewController {
 
     private let hostingController: NSHostingController<RecipientsView>

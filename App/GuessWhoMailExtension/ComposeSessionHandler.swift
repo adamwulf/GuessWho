@@ -14,45 +14,73 @@ import MailKit
 /// Recipients are never annotated (the completion always gets an empty map):
 /// the cache can say who someone is, not whether an address is valid.
 ///
-/// Main-actor bound, as MailKit declares `MEComposeSessionHandler`.
+/// Main-actor bound, as MailKit declares `MEComposeSessionHandler` — but
+/// crash reports show MailKit delivering `annotateAddressesForSession` and
+/// `mailComposeSessionDidEnd` on its XPC queue, where a main-actor-isolated
+/// witness fails Swift 6's runtime executor check and traps. Those, and
+/// `mailComposeSessionDidBegin` as a precaution, are `nonisolated` and hop to
+/// the main queue for the per-window state. `viewController(for:)` has been
+/// seen on the main thread, and it stays isolated because it builds AppKit
+/// views.
 final class ComposeSessionHandler: NSObject, MEComposeSessionHandler {
 
-    static let shared = ComposeSessionHandler(contactCache: MailExtensionStorage.contactCache)
+    nonisolated static let shared = ComposeSessionHandler(contactCache: MailExtensionStorage.contactCache)
 
     private let contactCache: MailContactCacheStore?
     private var models: [UUID: RecipientsModel] = [:]
 
-    init(contactCache: MailContactCacheStore?) {
+    nonisolated init(contactCache: MailContactCacheStore?) {
         self.contactCache = contactCache
         super.init()
     }
 
-    func mailComposeSessionDidBegin(_ session: MEComposeSession) {}
+    nonisolated func mailComposeSessionDidBegin(_ session: MEComposeSession) {
+        // Decode the cache now, off the main thread, so the popover's
+        // synchronous lookup finds it memoized. User-initiated: a click that
+        // lands mid-decode waits on the store's lock from the main thread.
+        let contactCache = self.contactCache
+        DispatchQueue.global(qos: .userInitiated).async {
+            _ = try? contactCache?.read()
+        }
+    }
 
-    func mailComposeSessionDidEnd(_ session: MEComposeSession) {
-        models[session.sessionID] = nil
+    nonisolated func mailComposeSessionDidEnd(_ session: MEComposeSession) {
+        let sessionID = session.sessionID
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated {
+                self.models[sessionID] = nil
+            }
+        }
     }
 
     func viewController(for session: MEComposeSession) -> MEExtensionViewController {
         let model = models[session.sessionID] ?? RecipientsModel(contactCache: contactCache)
         models[session.sessionID] = model
-        model.show(recipients: session.mailMessage.allRecipientAddresses)
+        // Synchronous, so the rows are in place when Mail first sizes the
+        // popover from the view.
+        model.showNow(RecipientsModel.recipients(from: session.mailMessage.allRecipientAddresses))
         // MailKit's documented reload path: Mail answers by calling
         // annotateAddressesForSession for every To/Cc/Bcc address, which
-        // re-runs show(recipients:) with Mail's current list — a defensive
-        // refresh in case the session copy handed to this call is already
-        // behind an edit.
+        // re-runs show(_:) with Mail's current list — a defensive refresh in
+        // case the session copy handed to this call is already behind an edit.
         session.reload()
         return RecipientsViewController(model: model)
     }
 
-    func annotateAddressesForSession(
+    nonisolated func annotateAddressesForSession(
         _ session: MEComposeSession,
         completion completionHandler: @escaping ([MEEmailAddress: MEAddressAnnotation]) -> Void
     ) {
-        // Only windows whose popover has been opened carry a model; others
-        // skip the cache read on every keystroke.
-        models[session.sessionID]?.show(recipients: session.mailMessage.allRecipientAddresses)
+        let sessionID = session.sessionID
+        let recipients = RecipientsModel.recipients(from: session.mailMessage.allRecipientAddresses)
         completionHandler([:])
+        // The main queue runs these in the order Mail sent them, so the
+        // newest recipient list is the one shown. Only windows whose popover
+        // has been opened carry a model; others skip the cache read.
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated {
+                self.models[sessionID]?.show(recipients)
+            }
+        }
     }
 }
