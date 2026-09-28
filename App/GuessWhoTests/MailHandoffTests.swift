@@ -284,7 +284,7 @@ struct MailIncomingJournalTests {
 
         // The stale claimer is fenced off the retaken entry, and is told so.
         let staleAcknowledge = try journal.acknowledge(stale)
-        #expect(staleAcknowledge == .init(applied: [], lost: ["<one@example.com>"]))
+        #expect(staleAcknowledge == .init(applied: [], lost: ["<one@example.com>"], settledOrMissing: []))
         let staleRenew = try journal.renew(stale, now: start.addingTimeInterval(62))
         #expect(staleRenew.lostOwnership)
         let staleRelease = try journal.release(stale)
@@ -293,7 +293,11 @@ struct MailIncomingJournalTests {
 
         #expect(try journal.append(entry("one")) == .duplicate)
         let retakenAcknowledge = try journal.acknowledge(retaken)
-        #expect(retakenAcknowledge == .init(applied: ["<one@example.com>"], lost: []))
+        #expect(retakenAcknowledge == .init(applied: ["<one@example.com>"], lost: [], settledOrMissing: []))
+        // Once another claimer has settled it, the stale claim hears
+        // "settled", not "lost" — nobody owns it any more.
+        let afterSettle = try journal.acknowledge(stale)
+        #expect(afterSettle == .init(applied: [], lost: [], settledOrMissing: ["<one@example.com>"]))
         #expect(try journal.append(entry("one")) == .appended)
     }
 
@@ -308,7 +312,7 @@ struct MailIncomingJournalTests {
 
         let claim = try #require(try journal.claimEntries(now: start))
         let renewed = try journal.renew(claim, now: start.addingTimeInterval(50))
-        #expect(renewed == .init(applied: ["<one@example.com>"], lost: []))
+        #expect(renewed == .init(applied: ["<one@example.com>"], lost: [], settledOrMissing: []))
         // Without the renewal the lease would have lapsed at +60.
         #expect(try journal.claimEntries(now: start.addingTimeInterval(100)) == nil)
         // It lapses one lease after the renewal instead.
@@ -347,23 +351,55 @@ struct MailIncomingJournalTests {
         let claim = try #require(try journal.claimEntries())
 
         let stored = try journal.acknowledge(claim, messageIDs: ["<one@example.com>"])
-        #expect(stored == .init(applied: ["<one@example.com>"], lost: []))
+        #expect(stored == .init(applied: ["<one@example.com>"], lost: [], settledOrMissing: []))
         // One entry fails to store; only it goes back for a retry.
         let failed = try journal.release(claim, messageIDs: ["<two@example.com>"])
-        #expect(failed == .init(applied: ["<two@example.com>"], lost: []))
+        #expect(failed == .init(applied: ["<two@example.com>"], lost: [], settledOrMissing: []))
 
         let retry = try #require(try journal.claimEntries())
         #expect(retry.entries == [entry("two")])
 
         // Settling the rest of the batch touches only what the claim still
-        // holds, and names what it doesn't.
+        // holds. The entry it already acknowledged is "settled"; only the
+        // one another claim now holds is "lost".
         let rest = try journal.acknowledge(claim)
         #expect(rest == .init(
             applied: ["<three@example.com>"],
-            lost: ["<one@example.com>", "<two@example.com>"]))
+            lost: ["<two@example.com>"],
+            settledOrMissing: ["<one@example.com>"]))
         let retried = try journal.acknowledge(retry)
-        #expect(retried == .init(applied: ["<two@example.com>"], lost: []))
+        #expect(retried == .init(applied: ["<two@example.com>"], lost: [], settledOrMissing: []))
         #expect(try journal.claimEntries() == nil)
+    }
+
+    @Test
+    func settlingTheRestAfterSubsetsIsNotLostOwnership() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let journal = MailIncomingJournal(fileURL: directory.appendingPathComponent("journal.jsonl"))
+        try journal.append(entry("one"))
+        try journal.append(entry("two"))
+        try journal.append(entry("three"))
+        let claim = try #require(try journal.claimEntries())
+
+        try journal.acknowledge(claim, messageIDs: ["<one@example.com>"])
+        try journal.release(claim, messageIDs: ["<two@example.com>"])
+
+        // The caller can settle exactly the IDs it has left…
+        let remaining = try journal.acknowledge(claim, messageIDs: ["<three@example.com>"])
+        #expect(remaining == .init(applied: ["<three@example.com>"], lost: [], settledOrMissing: []))
+
+        // …and a later whole-claim settle reports its own earlier settlements
+        // as settled, never as someone else's.
+        let whole = try journal.acknowledge(claim)
+        #expect(whole == .init(
+            applied: [], lost: [],
+            settledOrMissing: ["<one@example.com>", "<two@example.com>", "<three@example.com>"]))
+        #expect(whole.lostOwnership == false)
+
+        // An ID that was never in the journal is missing, not lost.
+        let unknown = try journal.release(claim, messageIDs: ["<never@example.com>"])
+        #expect(unknown == .init(applied: [], lost: [], settledOrMissing: ["<never@example.com>"]))
     }
 
     @Test
@@ -414,7 +450,8 @@ struct MailIncomingJournalTests {
         #expect(try journal.append(entry("three")) == .appended)
 
         let settled = try journal.acknowledge(claim)
-        #expect(settled == .init(applied: ["<one@example.com>", "<two@example.com>"], lost: []))
+        #expect(settled == .init(
+            applied: ["<one@example.com>", "<two@example.com>"], lost: [], settledOrMissing: []))
         let rest = try #require(try journal.claimEntries())
         #expect(rest.entries == [entry("three")])
     }
@@ -461,29 +498,103 @@ struct MailIncomingJournalTests {
         #expect(try tiny.append(entry("big")) == .droppedForCapacity)
     }
 
+    private func message(
+        sender: String = "ada@example.com", subject: String? = nil, id: String, messageURL: URL? = nil
+    ) -> MailIncomingMessage {
+        MailIncomingMessage(
+            sender: sender, subject: subject, receivedAt: Date(timeIntervalSince1970: 1_700_000_000),
+            messageID: id.hasPrefix("<") ? id : "<\(id)@example.com>", messageURL: messageURL)
+    }
+
     @Test
-    func untrustedFieldsAreBounded() throws {
+    func subjectIsClippedInUTF8BytesAtCharacterBoundaries() {
+        let limit = MailIncomingMessage.maximumSubjectUTF8Length
+
+        let ascii = message(subject: String(repeating: "s", count: 2_000), id: "ascii")
+        #expect(ascii.subject == String(repeating: "s", count: limit))
+
+        // Four-byte scalars: whole emoji only, never a split scalar.
+        let emoji = message(subject: String(repeating: "😀", count: 400), id: "emoji")
+        #expect(emoji.subject == String(repeating: "😀", count: limit / 4))
+
+        // "e" + COMBINING ACUTE ACCENT is one three-byte character; the mark
+        // is never cut off its base.
+        let combining = message(subject: String(repeating: "e\u{301}", count: 400), id: "combining")
+        #expect(combining.subject == String(repeating: "e\u{301}", count: limit / 3))
+        #expect(combining.subject?.unicodeScalars.last == "\u{301}")
+        let combiningBytes = combining.subject?.utf8.count ?? 0
+        #expect(combiningBytes <= limit)
+
+        // One character bigger than the whole limit leaves no subject at all.
+        let oneHugeCharacter = message(subject: "z" + String(repeating: "\u{301}", count: limit), id: "huge")
+        #expect(oneHugeCharacter.subject == nil)
+
+        // Under the limit, the subject is kept exactly.
+        let short = message(subject: "Caf\u{E9} \u{1F600}", id: "short")
+        #expect(short.subject == "Caf\u{E9} \u{1F600}")
+    }
+
+    @Test
+    func senderAndMessageIDAreBoundedInUTF8Bytes() throws {
         let directory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let journal = MailIncomingJournal(fileURL: directory.appendingPathComponent("journal.jsonl"))
 
-        let longSubject = MailIncomingMessage(
-            sender: "ada@example.com", subject: String(repeating: "s", count: 600),
-            receivedAt: Date(), messageID: "<long-subject@example.com>",
-            messageURL: URL(string: "message://" + String(repeating: "u", count: 5_000)))
-        #expect(longSubject.subject?.count == MailIncomingMessage.maximumSubjectLength)
-        #expect(longSubject.messageURL == nil)
-        #expect(try journal.append(longSubject) == .appended)
+        // 212 characters but 412 bytes: over the 320-byte address bound.
+        let wideAddress = String(repeating: "\u{E9}", count: 200) + "@example.com"
+        #expect(wideAddress.count <= MailAddressNormalizer.maximumUTF8Length)
+        #expect(MailAddressNormalizer.normalize(wideAddress) == nil)
+        #expect(throws: MailHandoffError.invalidEntry) {
+            try journal.append(message(sender: wideAddress, id: "wide-sender"))
+        }
 
-        let longSender = MailIncomingMessage(
-            sender: String(repeating: "a", count: 400) + "@example.com", subject: nil,
-            receivedAt: Date(), messageID: "<long-sender@example.com>", messageURL: nil)
-        #expect(throws: MailHandoffError.invalidEntry) { try journal.append(longSender) }
+        // 514 characters but 1,014 bytes: over the 986-byte Message-ID bound.
+        let wideID = "<" + String(repeating: "\u{E9}", count: 500) + "@example.com>"
+        #expect(wideID.count <= MailMessageID.maximumUTF8Length)
+        #expect(MailMessageID.normalize(wideID) == nil)
+        #expect(throws: MailHandoffError.invalidEntry) { try journal.append(message(id: wideID)) }
 
-        let longID = MailIncomingMessage(
-            sender: "ada@example.com", subject: nil, receivedAt: Date(),
-            messageID: "<" + String(repeating: "i", count: 1_000) + "@example.com>", messageURL: nil)
-        #expect(throws: MailHandoffError.invalidEntry) { try journal.append(longID) }
+        let overlongLink = message(id: "link", messageURL: URL(string: "message://" + String(repeating: "u", count: 5_000)))
+        #expect(overlongLink.messageURL == nil)
+        #expect(try journal.append(overlongLink) == .appended)
+    }
+
+    @Test
+    func worstCaseEntryFitsTheLineCap() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let journal = MailIncomingJournal(fileURL: directory.appendingPathComponent("journal.jsonl"))
+
+        // Every field at its byte bound, filled with what JSON escapes most
+        // expensively: control characters (6 bytes each) and quotes (2).
+        let linkCount = (MailIncomingMessage.maximumMessageURLUTF8Length - "message://".utf8.count) / 3
+        let worst = message(
+            sender: String(repeating: "\"", count: MailAddressNormalizer.maximumUTF8Length - 12) + "@example.com",
+            subject: String(repeating: "\u{1}", count: MailIncomingMessage.maximumSubjectUTF8Length),
+            id: "<" + String(repeating: "\"", count: MailMessageID.maximumUTF8Length - 14) + "@example.com>",
+            messageURL: URL(string: "message://" + String(repeating: "%25", count: linkCount)))
+        #expect(worst.subject?.utf8.count == MailIncomingMessage.maximumSubjectUTF8Length)
+        #expect(worst.messageURL != nil)
+
+        #expect(try journal.append(worst) == .appended)
+        let lineBytes = try Data(contentsOf: journal.fileURL).count - 1
+        #expect(lineBytes <= MailIncomingJournal.defaultMaximumLineByteCount)
+    }
+
+    @Test
+    func oversizedLineIsRefusedBeforeAnyEviction() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("journal.jsonl")
+        try MailIncomingJournal(fileURL: url).append(entry("one"))
+        try MailIncomingJournal(fileURL: url).append(entry("two"))
+        let before = try Data(contentsOf: url)
+
+        // A tiny line cap stands in for an entry that slipped past the field
+        // bounds; the full journal would otherwise evict to make room.
+        let strict = MailIncomingJournal(fileURL: url, maximumEntryCount: 2, maximumLineByteCount: 64)
+        #expect(throws: MailHandoffError.entryTooLarge) { try strict.append(entry("three")) }
+        #expect(try Data(contentsOf: url) == before)
     }
 
     /// Appenders and claimers race on one file from separate threads, each

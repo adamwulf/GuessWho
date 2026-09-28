@@ -4,23 +4,26 @@ import Foundation
 /// for the app. Metadata only — never any part of the message body.
 ///
 /// Every text field comes from the message's headers, which the sender
-/// controls, so each is bounded: `init` clips the subject and drops an
-/// over-long link, and `MailIncomingJournal.append` rejects an over-long
-/// sender or Message-ID.
+/// controls, so each is bounded in UTF-8 bytes: `init` clips the subject and
+/// drops an over-long link, and `MailIncomingJournal.append` rejects an
+/// over-long sender or Message-ID.
 struct MailIncomingMessage: Codable, Sendable, Equatable {
     /// The entry format this build writes and the newest it reads. Bump it
     /// only for a breaking shape change (a field renamed, retyped, or
     /// removed); an added optional field is not breaking, because decoders
-    /// ignore unknown keys and the journal carries them through rewrites.
-    /// Entries with a newer version are left in the journal untouched (see
-    /// `MailIncomingJournal`), so an older reader never destroys them.
+    /// ignore unknown keys and claim edits carry them through. Entries with a
+    /// newer version are never claimed or rewritten by an older build (see
+    /// `MailIncomingJournal`), though retention may evict them like any other
+    /// unclaimed line.
     static let currentVersion = 1
 
-    /// The longest subject kept, in characters.
-    static let maximumSubjectLength = 512
+    /// The longest subject kept, in UTF-8 bytes. A longer subject is cut at
+    /// the last whole character (grapheme cluster) that fits, so the stored
+    /// text is always valid UTF-8 and never splits a combining sequence.
+    static let maximumSubjectUTF8Length = 1_024
     /// The longest `messageURL` kept, in UTF-8 bytes. A link built from a
     /// maximum-length Message-ID, fully percent-encoded, still fits.
-    static let maximumMessageURLLength = 4 * 1024
+    static let maximumMessageURLUTF8Length = 4 * 1_024
 
     var version: Int
     /// Normalized (`MailAddressNormalizer`) sender address.
@@ -38,11 +41,26 @@ struct MailIncomingMessage: Codable, Sendable, Equatable {
     init(sender: String, subject: String?, receivedAt: Date, messageID: String, messageURL: URL?) {
         self.version = Self.currentVersion
         self.sender = sender
-        self.subject = subject.map { String($0.prefix(Self.maximumSubjectLength)) }
+        self.subject = subject.flatMap { Self.clipped($0, toUTF8Length: Self.maximumSubjectUTF8Length) }
         self.receivedAt = receivedAt
         self.messageID = messageID
         self.messageURL = messageURL.flatMap {
-            $0.absoluteString.utf8.count <= Self.maximumMessageURLLength ? $0 : nil
+            $0.absoluteString.utf8.count <= Self.maximumMessageURLUTF8Length ? $0 : nil
         }
+    }
+
+    /// `text` cut to at most `limit` UTF-8 bytes at a character boundary, or
+    /// nil when not even its first character fits.
+    static func clipped(_ text: String, toUTF8Length limit: Int) -> String? {
+        guard text.utf8.count > limit else { return text }
+        var byteCount = 0
+        var end = text.startIndex
+        for character in text {
+            let characterBytes = character.utf8.count
+            guard byteCount + characterBytes <= limit else { break }
+            byteCount += characterBytes
+            end = text.index(after: end)
+        }
+        return end == text.startIndex ? nil : String(text[..<end])
     }
 }

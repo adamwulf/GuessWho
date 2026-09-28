@@ -52,8 +52,12 @@ enum MailHandoffContainer {
 enum MailHandoffError: Error, Equatable {
     /// The file was written by a newer build in a format this one can't read.
     case unsupportedVersion(Int)
-    /// A journal entry with an empty or over-long sender or Message-ID.
+    /// A journal entry with an empty or over-long sender or Message-ID, or an
+    /// over-long subject or link (bounds are in UTF-8 bytes).
     case invalidEntry
+    /// A journal entry whose encoded line exceeds the journal's
+    /// `maximumLineByteCount`.
+    case entryTooLarge
     /// A claim edit reached a journal line that isn't a JSON object. Only
     /// lines with a decodable entry are ever claimed, so this is a broken
     /// internal invariant, not a file condition.
@@ -80,15 +84,19 @@ enum MailFileCoordination {
     }
 
     /// Runs `body` under a coordinated write of `url`, creating the parent
-    /// directory first. `.forMerging` because every writer here reads the
-    /// current contents (or replaces them wholesale) inside the same claim.
+    /// directory first. Plain write coordination (no options): every
+    /// read-modify-write here must exclude every other coordinated reader
+    /// and writer of the file. The writing options tell file presenters how
+    /// to prepare (save first, relinquish, follow a move); this code
+    /// registers no presenters and doesn't want exclusivity to depend on
+    /// how they are handled.
     static func write<T>(_ url: URL, _ body: (URL) throws -> T) throws -> T {
         try FileManager.default.createDirectory(
             at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         var coordinationError: NSError?
         var result: Result<T, Error>?
         NSFileCoordinator(filePresenter: nil).coordinate(
-            writingItemAt: url, options: .forMerging, error: &coordinationError
+            writingItemAt: url, options: [], error: &coordinationError
         ) { coordinatedURL in
             result = Result { try body(coordinatedURL) }
         }

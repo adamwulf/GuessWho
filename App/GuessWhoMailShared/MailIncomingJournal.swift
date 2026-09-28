@@ -20,11 +20,13 @@ import Foundation
 /// again.
 ///
 /// Every settle call is fenced by the claim token: it touches only lines that
-/// still carry this claim's token, and its `ClaimOutcome` names the entries
-/// the claim no longer holds (`lost`) — its lease lapsed and another claimer
-/// took them, or they are gone. A claimer that sees `lost` entries must treat
-/// them as someone else's. A lapsed claim whose entries nobody has retaken
-/// still settles them.
+/// still carry this claim's token. Its `ClaimOutcome` sorts every Message-ID
+/// asked about into `applied` (held by this claim; acted on), `lost` (in the
+/// journal but held by a different claim token — this claim's lease lapsed
+/// and another claimer took them), and `settledOrMissing` (held by no claim:
+/// already acknowledged or released, evicted, or never there). Only `lost`
+/// entries are someone else's. A lapsed claim whose entries nobody has
+/// retaken still settles them.
 ///
 /// ## Format
 /// JSON Lines. Each line is a JSON object `{"entry": <MailIncomingMessage>,
@@ -33,18 +35,25 @@ import Foundation
 /// only the `claim` member of a line's JSON object; every other member —
 /// including keys this build doesn't know inside `entry` — is written back
 /// as it was read. A line whose `entry` this build can't decode (a newer
-/// entry version, or damage) is never claimed and is kept byte-for-byte, so
-/// an older build never destroys a newer build's entries. The `claim` shape
-/// is fixed across versions: builds read each other's claims.
+/// entry version, or damage) is never claimed and is carried byte-for-byte
+/// through every claim, settle, and append this build performs; like any
+/// unclaimed line, though, retention may evict it to make room. The `claim`
+/// shape is fixed across versions: builds read each other's claims.
 ///
 /// ## Retention
-/// The file holds at most `maximumEntryCount` lines and `maximumByteCount`
-/// bytes. Appending past either evicts the oldest lines that no live claim
+/// `append` keeps the file within `maximumEntryCount` lines and
+/// `maximumByteCount` bytes by evicting the oldest lines that no live claim
 /// holds; live claimed lines are never evicted. If the new entry can't fit
 /// even then, it is dropped (`AppendOutcome.droppedForCapacity`) and the file
-/// is left alone. Untrusted text is bounded before it gets here: subjects
-/// are clipped to `MailIncomingMessage.maximumSubjectLength`, and `append`
-/// rejects over-long senders and Message-IDs.
+/// is left alone. The caps are enforced only at append: claiming and renewing
+/// add claim metadata to lines without re-checking them, so a file full of
+/// claimed lines can briefly exceed `maximumByteCount` by that metadata.
+///
+/// Untrusted text is bounded in UTF-8 bytes before it gets here: subjects
+/// are clipped (`MailIncomingMessage.maximumSubjectUTF8Length`), and `append`
+/// rejects over-long senders and Message-IDs. As a backstop, `append` also
+/// refuses any entry whose encoded line exceeds `maximumLineByteCount`
+/// before it touches the file, so no single entry can evict the backlog.
 ///
 /// ## Concurrency
 /// Every operation is one `NSFileCoordinator` claim on the file, and every
@@ -59,10 +68,14 @@ import Foundation
 /// also de-duplicate by Message-ID.
 struct MailIncomingJournal: Sendable {
     let fileURL: URL
-    /// The most lines the file keeps.
+    /// The most lines `append` keeps.
     let maximumEntryCount: Int
-    /// The most bytes the file keeps (newlines included).
+    /// The most bytes `append` keeps (newlines included). See "Retention".
     let maximumByteCount: Int
+    /// The largest encoded line `append` accepts, in bytes (newline
+    /// excluded). Every entry within the field bounds encodes well under the
+    /// default, so this only stops an entry that slipped past them.
+    let maximumLineByteCount: Int
     /// How long a claim holds its entries without a `renew`.
     let claimLease: TimeInterval
     /// The Darwin notification posted after each successful append, or nil
@@ -70,7 +83,8 @@ struct MailIncomingJournal: Sendable {
     let changeNotificationName: String?
 
     static let defaultMaximumEntryCount = 2_000
-    static let defaultMaximumByteCount = 2 * 1024 * 1024
+    static let defaultMaximumByteCount = 2 * 1_024 * 1_024
+    static let defaultMaximumLineByteCount = 16 * 1_024
     static let defaultClaimLease: TimeInterval = 5 * 60
     static let defaultClaimLimit = 50
 
@@ -78,12 +92,14 @@ struct MailIncomingJournal: Sendable {
         fileURL: URL,
         maximumEntryCount: Int = defaultMaximumEntryCount,
         maximumByteCount: Int = defaultMaximumByteCount,
+        maximumLineByteCount: Int = defaultMaximumLineByteCount,
         claimLease: TimeInterval = defaultClaimLease,
         changeNotificationName: String? = nil
     ) {
         self.fileURL = fileURL
         self.maximumEntryCount = max(1, maximumEntryCount)
         self.maximumByteCount = max(1, maximumByteCount)
+        self.maximumLineByteCount = max(1, maximumLineByteCount)
         self.claimLease = claimLease
         self.changeNotificationName = changeNotificationName
     }
@@ -113,11 +129,14 @@ struct MailIncomingJournal: Sendable {
     /// Appends `entry` unless one with its `messageID` is already present,
     /// evicting the oldest unclaimed lines as needed, then posts the change
     /// notification. Throws `MailHandoffError.invalidEntry` for an empty or
-    /// over-long sender or Message-ID.
+    /// over-long sender, Message-ID, or subject, and
+    /// `MailHandoffError.entryTooLarge` for an encoded line over
+    /// `maximumLineByteCount` — both before the file is touched.
     @discardableResult
     func append(_ entry: MailIncomingMessage) throws -> AppendOutcome {
         try Self.validate(entry)
         let newLine = try Line(appending: entry)
+        guard newLine.raw.count <= maximumLineByteCount else { throw MailHandoffError.entryTooLarge }
         let outcome: AppendOutcome = try MailFileCoordination.write(fileURL) { url in
             let lines = try Self.lines(at: url)
             if lines.contains(where: { $0.messageID == entry.messageID }) {
@@ -144,15 +163,19 @@ struct MailIncomingJournal: Sendable {
         let entries: [MailIncomingMessage]
     }
 
-    /// What a `renew`, `acknowledge`, or `release` did.
+    /// What a `renew`, `acknowledge`, or `release` did, with every Message-ID
+    /// asked about in exactly one bucket.
     struct ClaimOutcome: Equatable, Sendable {
-        /// Message-IDs the call acted on: lines still carrying the claim's
-        /// token.
+        /// Lines still carrying this claim's token; the call acted on them.
         let applied: Set<String>
-        /// Message-IDs asked about that the claim no longer holds — the lease
-        /// lapsed and another claimer took them, or they are gone. The caller
-        /// no longer owns these and must not act on them as if it did.
+        /// Lines in the journal held by a DIFFERENT claim token: this claim's
+        /// lease lapsed and another claimer took them. The caller no longer
+        /// owns these and must not act on them as if it did.
         let lost: Set<String>
+        /// Held by no claim at all: already acknowledged or released (by this
+        /// claim or another), evicted, or never in the journal. Nothing is
+        /// left to do for these, and nobody else owns them.
+        let settledOrMissing: Set<String>
 
         var lostOwnership: Bool { !lost.isEmpty }
     }
@@ -210,22 +233,29 @@ struct MailIncomingJournal: Sendable {
         _ claim: Claim, messageIDs: Set<String>?, _ change: (inout Line) throws -> Bool
     ) throws -> ClaimOutcome {
         let targets = messageIDs ?? Set(claim.entries.map(\.messageID))
-        guard !targets.isEmpty else { return ClaimOutcome(applied: [], lost: []) }
+        guard !targets.isEmpty else { return ClaimOutcome(applied: [], lost: [], settledOrMissing: []) }
         return try MailFileCoordination.write(fileURL) { url in
             var applied = Set<String>()
+            var lost = Set<String>()
             var kept: [Line] = []
             for var line in try Self.lines(at: url) {
-                if let messageID = line.messageID, targets.contains(messageID),
-                   line.claim?.token == claim.token {
-                    applied.insert(messageID)
-                    guard try change(&line) else { continue }
+                if let messageID = line.messageID, targets.contains(messageID), let owner = line.claim {
+                    if owner.token == claim.token {
+                        applied.insert(messageID)
+                        guard try change(&line) else { continue }
+                    } else {
+                        lost.insert(messageID)
+                    }
                 }
                 kept.append(line)
             }
             if !applied.isEmpty {
                 try Self.write(kept, to: url)
             }
-            return ClaimOutcome(applied: applied, lost: targets.subtracting(applied))
+            return ClaimOutcome(
+                applied: applied,
+                lost: lost,
+                settledOrMissing: targets.subtracting(applied).subtracting(lost))
         }
     }
 
@@ -258,12 +288,15 @@ struct MailIncomingJournal: Sendable {
         return lines.indices.filter { !evicted.contains($0) }.map { lines[$0] }
     }
 
+    /// Byte bounds on every sender-controlled field (the fields are `var`, so
+    /// `MailIncomingMessage.init`'s clipping alone can't be relied on).
     private static func validate(_ entry: MailIncomingMessage) throws {
         guard !entry.sender.isEmpty,
-              entry.sender.count <= MailAddressNormalizer.maximumLength,
+              entry.sender.utf8.count <= MailAddressNormalizer.maximumUTF8Length,
               !entry.messageID.isEmpty,
-              entry.messageID.count <= MailMessageID.maximumLength,
-              (entry.subject?.count ?? 0) <= MailIncomingMessage.maximumSubjectLength
+              entry.messageID.utf8.count <= MailMessageID.maximumUTF8Length,
+              (entry.subject?.utf8.count ?? 0) <= MailIncomingMessage.maximumSubjectUTF8Length,
+              (entry.messageURL?.absoluteString.utf8.count ?? 0) <= MailIncomingMessage.maximumMessageURLUTF8Length
         else { throw MailHandoffError.invalidEntry }
     }
 

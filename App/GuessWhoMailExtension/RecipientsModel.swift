@@ -84,7 +84,7 @@ final class RecipientsModel {
             contents = try contactCache?.read()
         } catch {
             Logger.mailExtension("compose").error(
-                "contact cache read failed: \(String(describing: error), privacy: .public)")
+                "contact cache read failed: \(LoggedError.fingerprint(error), privacy: .public)")
             contents = nil
         }
         // Only a fully readable snapshot has details to show; a newer-format

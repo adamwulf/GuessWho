@@ -9,11 +9,12 @@ import Foundation
 /// native macOS Mail extension.
 enum MailAddressNormalizer {
 
-    /// The longest address accepted, in characters: RFC 5321's 64-character
-    /// local part, `@`, and 255-character domain. Real addresses are far
-    /// shorter (SMTP paths cap them at 254); anything longer is not an
+    /// The longest address accepted, in UTF-8 bytes: RFC 5321's 64-octet
+    /// local part, `@`, and 255-octet domain. Real addresses are far shorter
+    /// (SMTP paths cap them at 254 octets); anything longer is not an
     /// address, and rejecting it bounds what a sender can make us store.
-    static let maximumLength = 320
+    /// Bytes, not characters, so multi-byte text can't slip past the bound.
+    static let maximumUTF8Length = 320
 
     /// Returns the lowercased bare address (`local@domain`) from `raw`, or nil
     /// when `raw` doesn't hold a plausible address.
@@ -54,7 +55,7 @@ enum MailAddressNormalizer {
         }
 
         let lowered = candidate.lowercased()
-        guard lowered.count <= maximumLength else { return nil }
+        guard lowered.utf8.count <= maximumUTF8Length else { return nil }
         let parts = lowered.split(separator: "@", omittingEmptySubsequences: false)
         guard parts.count == 2, !parts[0].isEmpty, !parts[1].isEmpty else { return nil }
         guard !lowered.unicodeScalars.contains(where: isDisallowed) else { return nil }

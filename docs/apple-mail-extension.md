@@ -94,7 +94,7 @@ accepts a bare address, a display-name form (`"Name" <local@domain>`), or a
 `mailto:` string; trims, lowercases the whole address, and drops a trailing
 root dot. It rejects anything without exactly one `@`, with an empty side,
 with whitespace, control characters, or angle brackets, or longer than 320
-characters. A key built any other way silently never matches.
+UTF-8 bytes. A key built any other way silently never matches.
 
 ## The contact cache (`contact-cache.plist`)
 
@@ -132,16 +132,24 @@ colors nothing, and the compose popover shows addresses only.
 
 ### Entries
 
-`MailIncomingMessage` — metadata only, never any part of the body:
+`MailIncomingMessage` — metadata only, never any part of the body. Every
+text field is sender-controlled, so every bound is in **UTF-8 bytes**:
 
 | Field | Source | Bound |
 | --- | --- | --- |
 | `version` | this build | — |
-| `sender` | normalized From address | ≤ 320 characters (else `append` throws `invalidEntry`) |
-| `subject` | Subject, trimmed; nil when empty | clipped to 512 characters |
+| `sender` | normalized From address | ≤ 320 bytes (else `append` throws `invalidEntry`) |
+| `subject` | Subject, trimmed; nil when empty | clipped to 1,024 bytes at the last whole character (grapheme cluster) that fits — valid UTF-8, combining marks kept with their base; nil if even the first character doesn't fit |
 | `receivedAt` | Mail's received date (now, when absent) | — |
-| `messageID` | canonical `<…>` Message-ID; the de-duplication key | ≤ 986 characters (else `invalidEntry`) |
+| `messageID` | canonical `<…>` Message-ID; the de-duplication key | ≤ 986 bytes (else `invalidEntry`) |
 | `messageURL` | best-effort `message://` link, may be nil | dropped when over 4 KiB |
+
+`append` re-checks all four bounds (the fields are mutable), then refuses
+any entry whose **encoded line** exceeds 16 KiB (`maximumLineByteCount`,
+error `entryTooLarge`) before it touches the file, so a single crafted entry
+can never evict the backlog. Every entry within the field bounds — even one
+built from the characters JSON escapes most expensively — encodes under the
+line cap (`worstCaseEntryFitsTheLineCap`), so the cap is a backstop.
 
 Bump `MailIncomingMessage.currentVersion` only for a breaking shape change.
 
@@ -159,8 +167,11 @@ reads every other build's claims. Claiming, renewing, and releasing rewrite
 **only** the `claim` member of a line's JSON object; every other member —
 including keys this build doesn't know, inside `entry` or beside it — is
 written back as read. A line whose `entry` this build can't decode (a newer
-entry version, or damage) is never claimed and is kept byte-for-byte, though
-its `messageID` still counts for de-duplication.
+entry version, or damage) is never claimed and is carried byte-for-byte
+through every claim, settle, and append; its `messageID` still counts for
+de-duplication. Like any unclaimed line, though, it can be evicted by
+retention when an append needs room — preserved from rewrites, not from
+capacity limits.
 
 ### Appending (extension)
 
@@ -171,11 +182,16 @@ is appended again: **the app's store must also de-duplicate by Message-ID.**
 
 ### Retention
 
-The file holds at most 2,000 lines and 2 MiB (`maximumEntryCount`,
-`maximumByteCount`). Appending past either evicts the oldest lines that no
-live claim holds. **Live claimed lines are never evicted.** If the new entry
-can't fit even then, it is dropped (`.droppedForCapacity`) and the file is
-left unchanged; the extension logs that and still applies the highlight.
+`append` keeps the file within 2,000 lines and 2 MiB (`maximumEntryCount`,
+`maximumByteCount`) by evicting the oldest lines that no live claim holds.
+**Live claimed lines are never evicted.** If the new entry can't fit even
+then, it is dropped (`.droppedForCapacity`) and the file is left unchanged;
+the extension logs that and still applies the highlight.
+
+The caps are enforced only at append. Claiming and renewing add claim
+metadata (under 100 bytes a line) without re-checking them, so a file that
+is mostly claimed lines can briefly exceed `maximumByteCount` by that
+metadata; the next append trims unclaimed lines again.
 
 ### Draining (app): the claim lifecycle
 
@@ -192,11 +208,18 @@ left unchanged; the extension logs that and still applies the highlight.
    Message-ID subset keeps one entry that can't be stored from pinning or
    replaying the rest of the batch.
 4. **Fencing.** `renew`, `acknowledge`, and `release` touch only lines that
-   still carry the claim's token. Each returns a `ClaimOutcome`: `applied`
-   (Message-IDs it acted on) and `lost` (ones the claim no longer holds — the
-   lease lapsed and another claimer took them, or they are gone). A claimer
-   with `lostOwnership` must treat those entries as someone else's. A lapsed
-   claim whose entries nobody retook still settles them.
+   still carry the claim's token. Each returns a `ClaimOutcome` that puts
+   every Message-ID asked about in exactly one bucket:
+   - `applied` — held by this claim; the call acted on it.
+   - `lost` — in the journal but held by a **different** claim token: this
+     claim's lease lapsed and another claimer took it. A claimer with
+     `lostOwnership` must treat those entries as someone else's.
+   - `settledOrMissing` — held by no claim: already acknowledged or released
+     (by this claim or another), evicted, or never in the journal. Nothing is
+     left to do, and nobody else owns it — so a whole-claim settle after
+     earlier subset settles reports the caller's own work here, not as lost.
+
+   A lapsed claim whose entries nobody retook still settles them.
 5. **Crash recovery.** A claim that is never settled expires after the lease,
    and its entries become claimable again.
 
@@ -219,7 +242,9 @@ there. Draining on activation remains the fallback.
   fields above. Unknown senders leave no trace.
 - It never annotates compose recipients; the popover only displays what the
   cache holds.
-- Its log lines carry errors and outcomes, never addresses or subjects.
+- Its log lines carry fixed messages and, for failures, only the error's
+  type, `NSError` domain, and code (`LoggedError.fingerprint`) — never an
+  error description, file path, coding path, address, or subject.
 - Any cache or journal failure leaves the message exactly as Mail delivered
   it.
 

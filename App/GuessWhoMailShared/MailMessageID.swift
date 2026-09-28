@@ -3,9 +3,10 @@ import Foundation
 /// RFC 5322 `Message-ID` handling for the incoming-message journal.
 enum MailMessageID {
 
-    /// The longest id we accept: RFC 5322's 998-character line limit, less
-    /// the `Message-ID: ` field name.
-    static let maximumLength = 986
+    /// The longest canonical id we accept, in UTF-8 bytes (brackets
+    /// included): RFC 5322's 998-octet line limit, less the `Message-ID: `
+    /// field name.
+    static let maximumUTF8Length = 986
 
     /// The canonical `<id-left@id-right>` form of a `Message-ID` header value,
     /// or nil when the value holds no usable id. This is the journal's
@@ -26,7 +27,7 @@ enum MailMessageID {
             body = Substring(trimmed)
         }
         guard !body.isEmpty,
-              body.count + 2 <= maximumLength,
+              body.utf8.count + 2 <= maximumUTF8Length,
               !body.unicodeScalars.contains(where: isDisallowedInID)
         else { return nil }
         return "<\(body)>"
@@ -37,7 +38,7 @@ enum MailMessageID {
     /// ASCII (no quoted strings, no domain literals, no empty dot segments).
     static func isSyntacticallySafe(_ messageID: String) -> Bool {
         guard messageID.hasPrefix("<"), messageID.hasSuffix(">"),
-              messageID.count <= maximumLength
+              messageID.utf8.count <= maximumUTF8Length
         else { return false }
         let body = messageID.dropFirst().dropLast()
         let sides = body.split(separator: "@", omittingEmptySubsequences: false)

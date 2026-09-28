@@ -53,7 +53,7 @@ final class MessageActionHandler: NSObject, MEMessageActionHandler, Sendable {
             guard let read = try contactCache.read() else { return nil }
             contents = read
         } catch {
-            Self.log.error("contact cache read failed; leaving message unchanged: \(String(describing: error), privacy: .public)")
+            Self.log.error("contact cache read failed; leaving message unchanged: \(LoggedError.fingerprint(error), privacy: .public)")
             return nil
         }
         guard contents.isKnown(address: sender) else { return nil }
@@ -63,7 +63,7 @@ final class MessageActionHandler: NSObject, MEMessageActionHandler, Sendable {
         do {
             try record(message, sender: sender, in: journal)
         } catch {
-            Self.log.error("journal append failed; leaving message unchanged: \(String(describing: error), privacy: .public)")
+            Self.log.error("journal append failed; leaving message unchanged: \(LoggedError.fingerprint(error), privacy: .public)")
             return nil
         }
 

@@ -42,3 +42,16 @@ extension Logger {
         Logger(subsystem: "com.milestonemade.guesswho.mail", category: category)
     }
 }
+
+/// A loggable fingerprint of an error: its Swift type and its `NSError`
+/// domain and code — never its description. Descriptions of the errors these
+/// paths can throw carry file paths (the App Group container sits under the
+/// user's home folder), decoding coding paths (normalized addresses are
+/// dictionary keys in the contact cache), and underlying messages, none of
+/// which belong in the unified log.
+enum LoggedError {
+    static func fingerprint(_ error: any Error) -> String {
+        let nsError = error as NSError
+        return "\(type(of: error)) domain=\(nsError.domain) code=\(nsError.code)"
+    }
+}
