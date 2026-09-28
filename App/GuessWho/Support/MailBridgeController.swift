@@ -236,10 +236,11 @@ final class MailBridgeController {
 
     private func schedulePublishRecoveryRetry() {
         guard !isShuttingDown else { return }
+        let delay = publishRecoveryRetryNanoseconds
         publishDebounceTask?.cancel()
         publishDebounceTask = Task { @MainActor [weak self] in
             do {
-                try await Task.sleep(nanoseconds: publishRecoveryRetryNanoseconds)
+                try await Task.sleep(nanoseconds: delay)
             } catch {
                 return
             }

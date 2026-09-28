@@ -523,6 +523,12 @@ struct MailBridgeControllerTests {
 
         try await waitUntil { await store.saveAttemptCount() > 0 }
         try await waitUntil { self.journalLineIsUnclaimed(at: journalURL) }
+        controller.shutdown()
+        // A publication wake-up may have queued a second drain while the
+        // failed write was being released. Shutdown cancels that pass and
+        // best-effort releases any claim it acquired; wait for ownership to
+        // return before independently proving the entry is retryable.
+        try await waitUntil { self.journalLineIsUnclaimed(at: journalURL) }
 
         let retryClaim = try #require(try journal.claimEntries())
         #expect(retryClaim.entries.map(\.messageID) == [messageID])
