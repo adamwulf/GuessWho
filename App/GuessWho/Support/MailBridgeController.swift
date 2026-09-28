@@ -134,27 +134,39 @@ final class MailBridgeController {
             let previousRevision = notification.userInfo?[
                 ContactsRepositoryDidReloadKey.mailActivityIdentityMintedFromContactRevision
             ] as? Int
+            let mintedRevision = notification.userInfo?[
+                ContactsRepositoryDidReloadKey.mailActivityIdentityMintedToContactRevision
+            ] as? Int
             MainActor.assumeIsolated {
                 guard let self else { return }
-                self.photoRevision = MailThumbnailCachePolicy.revisionAfterReload(
-                    cachedRevision: self.photoRevision,
+                let isExactIdentityMint = MailIdentityMintRevisionPolicy.isExact(
                     identityMinted: mailActivityIdentityMinted,
-                    mintedFromRevision: previousRevision,
+                    fromRevision: previousRevision,
+                    toRevision: mintedRevision,
                     currentRevision: self.repository.contactDataRevision
                 )
-                if mailActivityIdentityMinted,
+                self.photoRevision = MailThumbnailCachePolicy.revisionAfterReload(
+                    cachedRevision: self.photoRevision,
+                    isExactIdentityMint: isExactIdentityMint,
+                    mintedFromRevision: previousRevision,
+                    mintedToRevision: mintedRevision
+                )
+                if isExactIdentityMint,
                    let previousRevision,
+                   let mintedRevision,
                    self.publishedContactRevision == previousRevision {
                     // Addresses and compose fields are unchanged by the
                     // private identity URL. Carry the publication marker only
                     // from the exact revision the mint replaced.
-                    self.publishedContactRevision = self.repository.contactDataRevision
-                } else if mailContactProjectionChanged {
+                    self.publishedContactRevision = mintedRevision
+                } else if mailContactProjectionChanged || mailActivityIdentityMinted {
                     self.publishedContactRevision = nil
                     self.schedulePublish()
                 }
-                self.recoverGroupsIfNeeded()
-                if mailContactProjectionChanged { self.requestDrain() }
+                if mailContactProjectionChanged
+                    || (mailActivityIdentityMinted && !isExactIdentityMint) {
+                    self.requestDrain()
+                }
             }
         })
         notificationTokens.append(notificationCenter.addObserver(
@@ -775,20 +787,36 @@ enum MailJournalDrainPolicy {
     }
 }
 
+enum MailIdentityMintRevisionPolicy {
+    static func isExact(
+        identityMinted: Bool,
+        fromRevision: Int?,
+        toRevision: Int?,
+        currentRevision: Int
+    ) -> Bool {
+        guard identityMinted,
+              let fromRevision,
+              let toRevision
+        else { return false }
+        return toRevision == (fromRevision &+ 1) && currentRevision == toRevision
+    }
+}
+
 enum MailThumbnailCachePolicy {
     static func revisionAfterReload(
         cachedRevision: Int?,
-        identityMinted: Bool,
+        isExactIdentityMint: Bool,
         mintedFromRevision: Int?,
-        currentRevision: Int
+        mintedToRevision: Int?
     ) -> Int? {
-        guard identityMinted,
+        guard isExactIdentityMint,
               let mintedFromRevision,
+              let mintedToRevision,
               cachedRevision == mintedFromRevision
         else { return cachedRevision }
         // Repository metadata proves this exact revision changed only the
         // private identity URL, never Contacts photo bytes.
-        return currentRevision
+        return mintedToRevision
     }
 }
 

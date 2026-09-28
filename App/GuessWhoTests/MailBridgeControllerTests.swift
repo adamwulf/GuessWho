@@ -54,29 +54,47 @@ struct MailBridgeControllerTests {
 
     @Test
     func thumbnailRevisionCarriesOnlyAcrossTheExactMailIdentityMint() {
+        #expect(MailIdentityMintRevisionPolicy.isExact(
+            identityMinted: true,
+            fromRevision: 4,
+            toRevision: 5,
+            currentRevision: 5
+        ))
+        #expect(!MailIdentityMintRevisionPolicy.isExact(
+            identityMinted: true,
+            fromRevision: 4,
+            toRevision: 6,
+            currentRevision: 6
+        ))
+        #expect(!MailIdentityMintRevisionPolicy.isExact(
+            identityMinted: true,
+            fromRevision: 4,
+            toRevision: 5,
+            currentRevision: 6
+        ))
         #expect(MailThumbnailCachePolicy.revisionAfterReload(
             cachedRevision: 4,
-            identityMinted: true,
+            isExactIdentityMint: true,
             mintedFromRevision: 4,
-            currentRevision: 5
+            mintedToRevision: 5
         ) == 5)
         #expect(MailThumbnailCachePolicy.revisionAfterReload(
             cachedRevision: 3,
-            identityMinted: true,
+            isExactIdentityMint: true,
             mintedFromRevision: 4,
-            currentRevision: 5
+            mintedToRevision: 5
         ) == 3)
         #expect(MailThumbnailCachePolicy.revisionAfterReload(
             cachedRevision: 4,
-            identityMinted: false,
+            isExactIdentityMint: false,
             mintedFromRevision: 4,
-            currentRevision: 5
+            mintedToRevision: 5
         ) == 4)
         #expect(MailThumbnailCachePolicy.revisionAfterReload(
             cachedRevision: nil,
-            identityMinted: true,
+            isExactIdentityMint: false,
             mintedFromRevision: 4,
-            currentRevision: 5
+            mintedToRevision: 6
         ) == nil)
     }
 

@@ -614,6 +614,7 @@ struct ContactsRepositoryMailActivityTests {
         nonisolated(unsafe) var reloadFlags: [Bool] = []
         nonisolated(unsafe) var mailMintFlags: [Bool] = []
         nonisolated(unsafe) var mintSourceRevisions: [Int?] = []
+        nonisolated(unsafe) var mintDestinationRevisions: [Int?] = []
         nonisolated(unsafe) var mailProjectionFlags: [Bool] = []
         nonisolated(unsafe) var activityPosts: [[ContactID]] = []
         let reloadToken = center.addObserver(
@@ -628,6 +629,11 @@ struct ContactsRepositoryMailActivityTests {
             mintSourceRevisions.append(
                 note.userInfo?[
                     ContactsRepositoryDidReloadKey.mailActivityIdentityMintedFromContactRevision
+                ] as? Int
+            )
+            mintDestinationRevisions.append(
+                note.userInfo?[
+                    ContactsRepositoryDidReloadKey.mailActivityIdentityMintedToContactRevision
                 ] as? Int
             )
             mailProjectionFlags.append(
@@ -668,6 +674,7 @@ struct ContactsRepositoryMailActivityTests {
         #expect(reloadFlags == [true, true, false])
         #expect(mailMintFlags == [false, true, false])
         #expect(mintSourceRevisions == [nil, 1, nil])
+        #expect(mintDestinationRevisions == [nil, 2, nil])
         #expect(mailProjectionFlags == [true, false, false])
         #expect(activityPosts == [[minted, id], [minted, id]])
         #expect(await repo.mailActivities(for: id).map(\.messageID)

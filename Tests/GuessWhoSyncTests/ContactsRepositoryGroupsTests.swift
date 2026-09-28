@@ -241,14 +241,28 @@ struct ContactsRepositoryGroupsTests {
             sidecars: sidecars,
             deviceID: "group-authority-test"
         )
+        let center = NotificationCenter()
         let repository = ContactsRepository(
             contacts: contacts,
             sync: sync,
-            notificationCenter: NotificationCenter()
+            notificationCenter: center
         )
+        nonisolated(unsafe) var mailProjectionFlags: [Bool] = []
+        let token = center.addObserver(
+            forName: .contactsRepositoryDidReload,
+            object: repository,
+            queue: nil
+        ) { note in
+            mailProjectionFlags.append(
+                note.userInfo?[ContactsRepositoryDidReloadKey.mailContactProjectionChanged]
+                    as? Bool ?? true
+            )
+        }
+        defer { center.removeObserver(token) }
 
         await repository.loadGroups()
         #expect(repository.hasAuthoritativeGroupCache)
+        #expect(mailProjectionFlags == [true])
 
         sidecars.failEnumeration = true
         await repository.loadGroups()
@@ -256,6 +270,7 @@ struct ContactsRepositoryGroupsTests {
         #expect(!repository.hasAuthoritativeGroupCache)
         #expect(repository.groupsError == nil)
         #expect(!repository.isLoadingGroups)
+        #expect(mailProjectionFlags == [true, false])
     }
 
     @Test @MainActor

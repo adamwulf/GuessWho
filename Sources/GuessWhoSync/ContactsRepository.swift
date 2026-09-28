@@ -139,6 +139,13 @@ public enum ContactsRepositoryDidReloadKey {
     public static let mailActivityIdentityMintedFromContactRevision =
         "mailActivityIdentityMintedFromContactRevision"
 
+    /// `Int` — the contact-data revision immediately after the transparent
+    /// mail-activity identity refresh. Consumers may carry projection state
+    /// only when this is exactly one greater than the source revision and is
+    /// still the repository's current revision.
+    public static let mailActivityIdentityMintedToContactRevision =
+        "mailActivityIdentityMintedToContactRevision"
+
     /// `Bool` — whether this reload can change the name, organization, title,
     /// email, photo, group resolution, or other input to the Apple Mail contact
     /// projection. Absent means true. Presentation-only filters, timestamp
@@ -753,7 +760,10 @@ public final class ContactsRepository: NSObject {
         guard loadGeneration == groupLoadRequestGeneration,
               mutationGeneration == groupMutationGeneration else { return }
         isLoadingGroups = false
-        postDidReload(contactDataChanged: false)
+        postDidReload(
+            contactDataChanged: false,
+            mailContactProjectionChanged: hasAuthoritativeGroupCache
+        )
     }
 
     /// Creates a Contacts group and inserts it into the alphabetized cache.
@@ -1121,14 +1131,20 @@ public final class ContactsRepository: NSObject {
             guard loadGeneration == groupLoadRequestGeneration,
                   mutationGeneration == groupMutationGeneration else { return true }
             isLoadingGroups = false
-            postDidReload(contactDataChanged: false)
+            postDidReload(
+                contactDataChanged: false,
+                mailContactProjectionChanged: hasAuthoritativeGroupCache
+            )
         } catch {
             guard loadGeneration == groupLoadRequestGeneration,
                   mutationGeneration == groupMutationGeneration else { return true }
             groupsError = error.localizedDescription
             lastError = "Groups fetch failed: \(error.localizedDescription)"
             isLoadingGroups = false
-            postDidReload(contactDataChanged: false)
+            postDidReload(
+                contactDataChanged: false,
+                mailContactProjectionChanged: false
+            )
         }
         return true
     }
@@ -3516,11 +3532,14 @@ public final class ContactsRepository: NSObject {
         if minted {
             let revisionBeforeMint = contactDataRevision
             await applyRefresh(localID: current.localID)
+            let revisionAfterMint = contactDataRevision
+            let isExactIdentityOnlyRevision = revisionAfterMint == revisionBeforeMint &+ 1
             postDidReload(
                 contactDataChanged: true,
                 mailActivityIdentityMinted: true,
                 mailActivityIdentityMintedFromContactRevision: revisionBeforeMint,
-                mailContactProjectionChanged: false
+                mailActivityIdentityMintedToContactRevision: revisionAfterMint,
+                mailContactProjectionChanged: !isExactIdentityOnlyRevision
             )
         } else if outcome.lastInteractedChanged {
             postDidReload(contactDataChanged: false, mailContactProjectionChanged: false)
@@ -4469,6 +4488,7 @@ public final class ContactsRepository: NSObject {
         contactDataChanged: Bool = true,
         mailActivityIdentityMinted: Bool = false,
         mailActivityIdentityMintedFromContactRevision: Int? = nil,
+        mailActivityIdentityMintedToContactRevision: Int? = nil,
         mailContactProjectionChanged: Bool = true
     ) {
         // Routed through the injected center (defaults to `.default`, so the
@@ -4494,6 +4514,10 @@ public final class ContactsRepository: NSObject {
         if let mailActivityIdentityMintedFromContactRevision {
             userInfo[ContactsRepositoryDidReloadKey.mailActivityIdentityMintedFromContactRevision] =
                 mailActivityIdentityMintedFromContactRevision
+        }
+        if let mailActivityIdentityMintedToContactRevision {
+            userInfo[ContactsRepositoryDidReloadKey.mailActivityIdentityMintedToContactRevision] =
+                mailActivityIdentityMintedToContactRevision
         }
         notificationCenter.post(
             name: .contactsRepositoryDidReload,
