@@ -236,6 +236,14 @@ subscribes to it. Darwin notifications carry no payload and may coalesce: an
 observer treats one as "the journal may have changed" and claims whatever is
 there. Draining on activation remains the fallback.
 
+## App bridge lifecycle
+
+`MailBridgeController` is owned by `GuessWhoAppDelegate` on Mac Catalyst, so one instance serves every window. At launch it waits for the contacts repository to finish its initial load, loads the group identity cache once, then publishes and drains. It also publishes after contact reloads, group-membership changes, favorite changes, and app activation; Darwin journal notifications and activation trigger drains. Publication is debounced and single-flight, and draining is single-flight.
+
+The published snapshot includes every email-bearing contact so Mail can recognize compose recipients and journal known senders. Highlight reasons are projected from favorite contacts, favorite organization members, favorite department members, and favorite group members. Group membership reads are revision-checked and error-aware: a failed or stale read never publishes a partial snapshot. A failed favorites read and a failed contacts reload also preserve the previous cache. The publisher keeps a newer-format cache untouched and compares a current snapshot before writing, so unchanged echoes do not rewrite the App Group file.
+
+The drainer claims at most 50 entries, renews while processing, and resolves each sender through `ContactsRepository.contactIDs(matchingEmail:)`. It records the same message against every matching contact. Writes for a contact are awaited sequentially because the first one may mint that contact identity; `MailActivity` then de-duplicates redelivery by Message-ID. Successfully stored or deliberately obsolete entries are acknowledged, storage failures are released, and ownership lost to another app copy is never settled by this process. All cache and journal file I/O runs off the main actor.
+
 ## Privacy
 
 - The extension reads the From address, Subject, received date, and
