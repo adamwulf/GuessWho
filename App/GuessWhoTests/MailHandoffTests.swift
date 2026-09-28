@@ -27,6 +27,7 @@ struct MailAddressNormalizerTests {
     @Test(arguments: [
         "", "   ", "jane", "@example.com", "jane@", "jane@@example.com", "a@b@example.com",
         "jane doe@example.com", "Jane <jane@example.com", "jane@example.com>",
+        String(repeating: "a", count: 310) + "@example.com",
     ])
     func rejects(_ raw: String) {
         #expect(MailAddressNormalizer.normalize(raw) == nil)
@@ -78,29 +79,76 @@ struct MailContactSnapshotTests {
         var first = MailContactSnapshot(generatedAt: Date(timeIntervalSince1970: 1_000))
         first.add(ada, forAddresses: ["ada@example.com"])
         try store.write(first)
-        #expect(try store.read() == first)
+        #expect(try store.read() == .current(first))
         // A second read with no rewrite answers from the memo; still equal.
-        #expect(try store.read() == first)
+        #expect(try store.read() == .current(first))
 
         var second = first
         second.add(charles, forAddresses: ["charles@example.com"])
         try store.write(second)
-        #expect(try store.read() == second)
+        #expect(try store.read() == .current(second))
     }
 
     @Test
-    func storeRefusesANewerFormat() throws {
+    func unknownHighlightReasonStillHighlights() throws {
         let directory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
-        let store = MailContactCacheStore(fileURL: directory.appendingPathComponent("contact-cache.plist"))
+        let url = directory.appendingPathComponent("contact-cache.plist")
+        try writePropertyList([
+            "version": MailContactSnapshot.currentVersion,
+            "generatedAt": Date(timeIntervalSince1970: 0),
+            "summariesByAddress": [
+                "grace@example.com": [
+                    ["displayName": "Grace Hopper", "highlightReasons": ["favoriteTeam"], "pronouns": "she/her"],
+                ],
+            ],
+        ], to: url)
 
-        var future = MailContactSnapshot(generatedAt: Date(timeIntervalSince1970: 0))
-        future.version = MailContactSnapshot.currentVersion + 1
-        try store.write(future)
+        let contents = try #require(try MailContactCacheStore(fileURL: url).read())
+        let summaries = contents.summaries(forAddress: "grace@example.com")
+        #expect(summaries.count == 1)
+        #expect(summaries.first?.highlightReasons == [MailHighlightReason(rawValue: "favoriteTeam")])
+        #expect(summaries.first?.isHighlighted == true)
+    }
 
-        #expect(throws: MailHandoffError.unsupportedVersion(MailContactSnapshot.currentVersion + 1)) {
-            try store.read()
-        }
+    @Test
+    func newerFormatStillNamesKnownAddresses() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("contact-cache.plist")
+        try writePropertyList([
+            "version": 99,
+            "summariesByAddress": ["ada@example.com": ["reshaped": true]],
+        ], to: url)
+
+        let contents = try #require(try MailContactCacheStore(fileURL: url).read())
+        #expect(contents == .newerFormat(version: 99, knownAddresses: ["ada@example.com"]))
+        #expect(contents.isKnown(address: "Ada <ADA@example.com>"))
+        #expect(contents.isKnown(address: "stranger@example.com") == false)
+        #expect(contents.summaries(forAddress: "ada@example.com").isEmpty)
+    }
+
+    @Test
+    func newerFormatWithoutAnAddressIndexIsUnsupported() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("contact-cache.plist")
+        try writePropertyList(["version": 99, "people": [String]()], to: url)
+        let store = MailContactCacheStore(fileURL: url)
+
+        #expect(throws: MailHandoffError.unsupportedVersion(99)) { try store.read() }
+        // The failure is remembered for this file version…
+        #expect(throws: MailHandoffError.unsupportedVersion(99)) { try store.read() }
+
+        // …but a republished file is decoded afresh.
+        var snapshot = MailContactSnapshot(generatedAt: Date(timeIntervalSince1970: 0))
+        snapshot.add(ada, forAddresses: ["ada@example.com"])
+        try store.write(snapshot)
+        #expect(try store.read() == .current(snapshot))
+    }
+
+    private func writePropertyList(_ plist: [String: Any], to url: URL) throws {
+        try PropertyListSerialization.data(fromPropertyList: plist, format: .binary, options: 0).write(to: url)
     }
 }
 
@@ -234,11 +282,264 @@ struct MailIncomingJournalTests {
         let retaken = try #require(try journal.claimEntries(now: start.addingTimeInterval(61)))
         #expect(retaken.entries == [entry("one")])
 
-        // The stale claimer's late acknowledgement leaves the retaken entry.
-        try journal.acknowledge(stale)
+        // The stale claimer is fenced off the retaken entry, and is told so.
+        let staleAcknowledge = try journal.acknowledge(stale)
+        #expect(staleAcknowledge == .init(applied: [], lost: ["<one@example.com>"]))
+        let staleRenew = try journal.renew(stale, now: start.addingTimeInterval(62))
+        #expect(staleRenew.lostOwnership)
+        let staleRelease = try journal.release(stale)
+        #expect(staleRelease.lostOwnership)
+        #expect(try journal.claimEntries(now: start.addingTimeInterval(63)) == nil)
+
         #expect(try journal.append(entry("one")) == .duplicate)
-        try journal.acknowledge(retaken)
+        let retakenAcknowledge = try journal.acknowledge(retaken)
+        #expect(retakenAcknowledge == .init(applied: ["<one@example.com>"], lost: []))
         #expect(try journal.append(entry("one")) == .appended)
+    }
+
+    @Test
+    func renewalKeepsTheLease() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let journal = MailIncomingJournal(
+            fileURL: directory.appendingPathComponent("journal.jsonl"), claimLease: 60)
+        try journal.append(entry("one"))
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+
+        let claim = try #require(try journal.claimEntries(now: start))
+        let renewed = try journal.renew(claim, now: start.addingTimeInterval(50))
+        #expect(renewed == .init(applied: ["<one@example.com>"], lost: []))
+        // Without the renewal the lease would have lapsed at +60.
+        #expect(try journal.claimEntries(now: start.addingTimeInterval(100)) == nil)
+        // It lapses one lease after the renewal instead.
+        #expect(try journal.claimEntries(now: start.addingTimeInterval(111)) != nil)
+    }
+
+    @Test
+    func claimsAreBounded() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let journal = MailIncomingJournal(fileURL: directory.appendingPathComponent("journal.jsonl"))
+        for index in 0..<60 {
+            try journal.append(entry("m\(index)"))
+        }
+
+        let small = try #require(try journal.claimEntries(limit: 2))
+        let smallIDs = small.entries.map { $0.messageID }
+        #expect(smallIDs == ["<m0@example.com>", "<m1@example.com>"])
+
+        let standard = try #require(try journal.claimEntries())
+        #expect(standard.entries.count == MailIncomingJournal.defaultClaimLimit)
+        #expect(standard.entries.first?.messageID == "<m2@example.com>")
+
+        let rest = try #require(try journal.claimEntries())
+        #expect(rest.entries.count == 60 - 2 - MailIncomingJournal.defaultClaimLimit)
+    }
+
+    @Test
+    func settlesByMessageIDSubset() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let journal = MailIncomingJournal(fileURL: directory.appendingPathComponent("journal.jsonl"))
+        try journal.append(entry("one"))
+        try journal.append(entry("two"))
+        try journal.append(entry("three"))
+        let claim = try #require(try journal.claimEntries())
+
+        let stored = try journal.acknowledge(claim, messageIDs: ["<one@example.com>"])
+        #expect(stored == .init(applied: ["<one@example.com>"], lost: []))
+        // One entry fails to store; only it goes back for a retry.
+        let failed = try journal.release(claim, messageIDs: ["<two@example.com>"])
+        #expect(failed == .init(applied: ["<two@example.com>"], lost: []))
+
+        let retry = try #require(try journal.claimEntries())
+        #expect(retry.entries == [entry("two")])
+
+        // Settling the rest of the batch touches only what the claim still
+        // holds, and names what it doesn't.
+        let rest = try journal.acknowledge(claim)
+        #expect(rest == .init(
+            applied: ["<three@example.com>"],
+            lost: ["<one@example.com>", "<two@example.com>"]))
+        let retried = try journal.acknowledge(retry)
+        #expect(retried == .init(applied: ["<two@example.com>"], lost: []))
+        #expect(try journal.claimEntries() == nil)
+    }
+
+    @Test
+    func claimEditsKeepKeysThisBuildDoesNotKnow() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("journal.jsonl")
+        let known = entry("one")
+        // A current-version line from a newer build that added keys.
+        var entryObject = try #require(
+            try JSONSerialization.jsonObject(with: JSONEncoder().encode(known)) as? [String: Any])
+        entryObject["futureField"] = "kept"
+        let line: [String: Any] = ["entry": entryObject, "futureTop": ["nested": 1]]
+        try (JSONSerialization.data(withJSONObject: line) + Data("\n".utf8)).write(to: url)
+        let journal = MailIncomingJournal(fileURL: url)
+
+        let claim = try #require(try journal.claimEntries())
+        #expect(claim.entries == [known])
+        let claimed = try onlyLineObject(at: url)
+        #expect(claimed["claim"] != nil)
+        #expect((claimed["entry"] as? [String: Any])?["futureField"] as? String == "kept")
+        #expect((claimed["futureTop"] as? [String: Any])?["nested"] as? Int == 1)
+
+        try journal.renew(claim)
+        try journal.release(claim)
+        let released = try onlyLineObject(at: url)
+        #expect(released["claim"] == nil)
+        #expect((released["entry"] as? [String: Any])?["futureField"] as? String == "kept")
+        #expect((released["futureTop"] as? [String: Any])?["nested"] as? Int == 1)
+
+        let again = try #require(try journal.claimEntries())
+        #expect(again.entries == [known])
+    }
+
+    @Test
+    func retentionNeverEvictsLiveClaims() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let journal = MailIncomingJournal(
+            fileURL: directory.appendingPathComponent("journal.jsonl"), maximumEntryCount: 3)
+        try journal.append(entry("one"))
+        try journal.append(entry("two"))
+        try journal.append(entry("three"))
+        let claim = try #require(try journal.claimEntries(limit: 2))
+
+        // Over the cap, the oldest UNCLAIMED line goes: three, then four.
+        #expect(try journal.append(entry("four")) == .appended)
+        #expect(try journal.append(entry("three")) == .appended)
+
+        let settled = try journal.acknowledge(claim)
+        #expect(settled == .init(applied: ["<one@example.com>", "<two@example.com>"], lost: []))
+        let rest = try #require(try journal.claimEntries())
+        #expect(rest.entries == [entry("three")])
+    }
+
+    @Test
+    func appendIsDroppedWhenOnlyLiveClaimsRemain() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("journal.jsonl")
+        let journal = MailIncomingJournal(fileURL: url, maximumEntryCount: 2)
+        try journal.append(entry("one"))
+        try journal.append(entry("two"))
+        let claim = try #require(try journal.claimEntries())
+        let before = try Data(contentsOf: url)
+
+        #expect(try journal.append(entry("three")) == .droppedForCapacity)
+        #expect(try Data(contentsOf: url) == before)
+
+        try journal.acknowledge(claim)
+        #expect(try journal.append(entry("three")) == .appended)
+    }
+
+    @Test
+    func byteCapBoundsTheFile() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("journal.jsonl")
+        try MailIncomingJournal(fileURL: url).append(entry("m0"))
+        let lineBytes = try Data(contentsOf: url).count
+        try FileManager.default.removeItem(at: url)
+
+        let journal = MailIncomingJournal(fileURL: url, maximumByteCount: lineBytes * 3 + lineBytes / 2)
+        for index in 0..<10 {
+            #expect(try journal.append(entry("m\(index)")) == .appended)
+        }
+        #expect(try Data(contentsOf: url).count <= journal.maximumByteCount)
+        let claim = try #require(try journal.claimEntries())
+        let claimedIDs = claim.entries.map { $0.messageID }
+        #expect(claimedIDs == ["<m7@example.com>", "<m8@example.com>", "<m9@example.com>"])
+
+        // A single entry bigger than the whole cap is dropped, not written.
+        let tiny = MailIncomingJournal(
+            fileURL: directory.appendingPathComponent("tiny.jsonl"), maximumByteCount: lineBytes / 2)
+        #expect(try tiny.append(entry("big")) == .droppedForCapacity)
+    }
+
+    @Test
+    func untrustedFieldsAreBounded() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let journal = MailIncomingJournal(fileURL: directory.appendingPathComponent("journal.jsonl"))
+
+        let longSubject = MailIncomingMessage(
+            sender: "ada@example.com", subject: String(repeating: "s", count: 600),
+            receivedAt: Date(), messageID: "<long-subject@example.com>",
+            messageURL: URL(string: "message://" + String(repeating: "u", count: 5_000)))
+        #expect(longSubject.subject?.count == MailIncomingMessage.maximumSubjectLength)
+        #expect(longSubject.messageURL == nil)
+        #expect(try journal.append(longSubject) == .appended)
+
+        let longSender = MailIncomingMessage(
+            sender: String(repeating: "a", count: 400) + "@example.com", subject: nil,
+            receivedAt: Date(), messageID: "<long-sender@example.com>", messageURL: nil)
+        #expect(throws: MailHandoffError.invalidEntry) { try journal.append(longSender) }
+
+        let longID = MailIncomingMessage(
+            sender: "ada@example.com", subject: nil, receivedAt: Date(),
+            messageID: "<" + String(repeating: "i", count: 1_000) + "@example.com>", messageURL: nil)
+        #expect(throws: MailHandoffError.invalidEntry) { try journal.append(longID) }
+    }
+
+    /// Appenders and claimers race on one file from separate threads, each
+    /// with its own journal value — and every call its own
+    /// `NSFileCoordinator` — the way the extension and two app copies would.
+    @Test
+    func concurrentAppendsAndClaimsNeitherLoseNorDoubleClaim() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("journal.jsonl")
+        let total = 120
+        let appenderCount = 4
+        let claimerCount = 3
+        let recorder = ConcurrencyRecorder()
+
+        DispatchQueue.concurrentPerform(iterations: appenderCount + claimerCount) { worker in
+            let journal = MailIncomingJournal(fileURL: url)
+            do {
+                if worker < appenderCount {
+                    for index in stride(from: worker, to: total, by: appenderCount) {
+                        recorder.recordAppend(try journal.append(entry("c\(index)")))
+                    }
+                    recorder.finishAppender()
+                } else {
+                    while true {
+                        // Read before claiming: once every append has landed,
+                        // an empty claim means nothing unclaimed is left.
+                        let appendsDone = recorder.finishedAppenders == appenderCount
+                        guard let claim = try journal.claimEntries(limit: 7) else {
+                            if appendsDone { break }
+                            Thread.sleep(forTimeInterval: 0.001)
+                            continue
+                        }
+                        recorder.recordClaim(claim.entries.map { $0.messageID })
+                        recorder.recordLost(try journal.acknowledge(claim).lost)
+                    }
+                }
+            } catch {
+                recorder.recordError(error)
+            }
+        }
+
+        let result = recorder.result()
+        #expect(result.errors.isEmpty)
+        #expect(result.appended == total)
+        #expect(result.claimed.count == total)
+        #expect(Set(result.claimed) == Set((0..<total).map { "<c\($0)@example.com>" }))
+        #expect(result.lost.isEmpty)
+        #expect(try MailIncomingJournal(fileURL: url).claimEntries() == nil)
+    }
+
+    private func onlyLineObject(at url: URL) throws -> [String: Any] {
+        let lines = try String(contentsOf: url, encoding: .utf8).split(separator: "\n")
+        #expect(lines.count == 1)
+        let line = try #require(lines.first)
+        return try #require(try JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any])
     }
 
     @Test
@@ -307,6 +608,45 @@ struct MailIncomingJournalTests {
             return first
         }
         #expect(received)
+    }
+}
+
+/// Thread-safe tally for the concurrency test. `@unchecked Sendable`: every
+/// stored property is read and written only while holding `lock`.
+private final class ConcurrencyRecorder: @unchecked Sendable {
+    struct Result {
+        let appended: Int
+        let claimed: [String]
+        let lost: Set<String>
+        let errors: [String]
+    }
+
+    private let lock = NSLock()
+    private var appended = 0
+    private var finished = 0
+    private var claimed: [String] = []
+    private var lost: Set<String> = []
+    private var errors: [String] = []
+
+    var finishedAppenders: Int { lock.withLock { finished } }
+
+    func recordAppend(_ outcome: MailIncomingJournal.AppendOutcome) {
+        lock.withLock {
+            if outcome == .appended {
+                appended += 1
+            } else {
+                errors.append("append outcome \(outcome)")
+            }
+        }
+    }
+
+    func finishAppender() { lock.withLock { finished += 1 } }
+    func recordClaim(_ ids: [String]) { lock.withLock { claimed += ids } }
+    func recordLost(_ ids: Set<String>) { lock.withLock { lost.formUnion(ids) } }
+    func recordError(_ error: any Error) { lock.withLock { errors.append(String(describing: error)) } }
+
+    func result() -> Result {
+        lock.withLock { Result(appended: appended, claimed: claimed, lost: lost, errors: errors) }
     }
 }
 

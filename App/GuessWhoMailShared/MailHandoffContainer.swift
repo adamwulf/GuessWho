@@ -8,6 +8,12 @@ import Foundation
 /// it always matches that process's signed entitlement. There is no literal
 /// fallback: a missing or empty key means "no shared storage", and callers
 /// fail open.
+///
+/// On macOS, `containerURL(forSecurityApplicationGroupIdentifier:)` returns a
+/// path whether or not the process is entitled to the group, so a nil URL
+/// here effectively means the Info.plist key is missing. A missing or wrong
+/// entitlement surfaces later, as a permission error from the first read or
+/// write, which callers treat like any other I/O failure.
 enum MailHandoffContainer {
     static let appGroupInfoPlistKey = "GuessWhoAppGroup"
     static let directoryName = "Mail"
@@ -19,9 +25,10 @@ enum MailHandoffContainer {
             .flatMap { $0.isEmpty ? nil : $0 }
     }
 
-    /// The shared `Mail` directory, or nil when the group id is missing or
-    /// the process isn't entitled to that container. Not created here —
-    /// writers create it on demand.
+    /// The shared `Mail` directory, or nil when the bundle has no
+    /// `GuessWhoAppGroup` value (or the system returns no container URL).
+    /// A non-nil URL does not prove access — see the type comment. Not
+    /// created here; writers create it on demand.
     static func directoryURL(in bundle: Bundle = .main, fileManager: FileManager = .default) -> URL? {
         guard let groupID = appGroupIdentifier(in: bundle),
               let container = fileManager.containerURL(forSecurityApplicationGroupIdentifier: groupID)
@@ -45,6 +52,12 @@ enum MailHandoffContainer {
 enum MailHandoffError: Error, Equatable {
     /// The file was written by a newer build in a format this one can't read.
     case unsupportedVersion(Int)
+    /// A journal entry with an empty or over-long sender or Message-ID.
+    case invalidEntry
+    /// A claim edit reached a journal line that isn't a JSON object. Only
+    /// lines with a decodable entry are ever claimed, so this is a broken
+    /// internal invariant, not a file condition.
+    case malformedJournalLine
 }
 
 /// Cross-process file access for the Mail handoff files.

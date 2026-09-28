@@ -5,27 +5,52 @@ import Foundation
 /// it with a claim → store → acknowledge transaction.
 ///
 /// ## Draining
-/// `claimEntries()` atomically marks every unclaimed entry with a fresh claim
-/// token and returns them. A second claimer — say, a Debug and an
-/// /Applications copy of the app sharing the App Group — gets only entries
-/// nobody holds, so the two never process the same entry. After storing (or
-/// deliberately dropping) the entries, the claimer calls `acknowledge(_:)`,
-/// which removes them; if it can't finish, `release(_:)` hands them back. A
-/// claim that is never acknowledged or released (the app quit mid-drain)
-/// expires after `claimLease`, and the entries become claimable again.
+/// `claimEntries(limit:)` atomically marks up to `limit` of the oldest
+/// entries that no live claim holds with a fresh claim token and returns
+/// them. A second claimer — say, a Debug and an /Applications copy of the app
+/// sharing the App Group — gets only entries nobody holds, so the two never
+/// process the same entry at once.
+///
+/// The claimer then settles each entry, all at once or by Message-ID subset
+/// (so one entry that can't be stored doesn't hold back or replay the rest):
+/// `acknowledge` removes entries it has stored or deliberately dropped,
+/// `release` hands entries back for a later claim, and `renew` restarts the
+/// lease during a long drain. A claim that is never settled (the app quit
+/// mid-drain) expires after `claimLease`, and its entries become claimable
+/// again.
+///
+/// Every settle call is fenced by the claim token: it touches only lines that
+/// still carry this claim's token, and its `ClaimOutcome` names the entries
+/// the claim no longer holds (`lost`) — its lease lapsed and another claimer
+/// took them, or they are gone. A claimer that sees `lost` entries must treat
+/// them as someone else's. A lapsed claim whose entries nobody has retaken
+/// still settles them.
 ///
 /// ## Format
-/// JSON Lines. Each line is `{"entry": <MailIncomingMessage>, "claim": …}`
-/// (`claim` absent when unclaimed). A line this build can't decode — a newer
-/// entry version, or damage — is carried through every rewrite byte-for-byte
-/// instead of being dropped, so an older build never destroys a newer build's
-/// entries; it is never claimed by this build.
+/// JSON Lines. Each line is a JSON object `{"entry": <MailIncomingMessage>,
+/// "claim": {"token": <UUID>, "claimedAt": <seconds since 2001>}}`, with
+/// `claim` absent when unclaimed. Claiming, renewing, and releasing change
+/// only the `claim` member of a line's JSON object; every other member —
+/// including keys this build doesn't know inside `entry` — is written back
+/// as it was read. A line whose `entry` this build can't decode (a newer
+/// entry version, or damage) is never claimed and is kept byte-for-byte, so
+/// an older build never destroys a newer build's entries. The `claim` shape
+/// is fixed across versions: builds read each other's claims.
+///
+/// ## Retention
+/// The file holds at most `maximumEntryCount` lines and `maximumByteCount`
+/// bytes. Appending past either evicts the oldest lines that no live claim
+/// holds; live claimed lines are never evicted. If the new entry can't fit
+/// even then, it is dropped (`AppendOutcome.droppedForCapacity`) and the file
+/// is left alone. Untrusted text is bounded before it gets here: subjects
+/// are clipped to `MailIncomingMessage.maximumSubjectLength`, and `append`
+/// rejects over-long senders and Message-IDs.
 ///
 /// ## Concurrency
 /// Every operation is one `NSFileCoordinator` claim on the file, and every
 /// change is a read-modify-write inside a single coordinated write that
-/// replaces the file atomically. Concurrent appends and claims from different
-/// processes serialize; none loses another's change.
+/// replaces the file atomically. Concurrent appends, claims, and settles —
+/// from any process or thread — serialize; none loses another's change.
 ///
 /// ## De-duplication
 /// Entries are unique by `messageID` among the lines currently in the file,
@@ -34,33 +59,38 @@ import Foundation
 /// also de-duplicate by Message-ID.
 struct MailIncomingJournal: Sendable {
     let fileURL: URL
-    /// The journal keeps only the newest this-many lines, so it stays bounded
-    /// if the app goes a long time without draining it.
+    /// The most lines the file keeps.
     let maximumEntryCount: Int
-    /// How long an unacknowledged claim holds its entries.
+    /// The most bytes the file keeps (newlines included).
+    let maximumByteCount: Int
+    /// How long a claim holds its entries without a `renew`.
     let claimLease: TimeInterval
     /// The Darwin notification posted after each successful append, or nil
     /// to post nothing (tests). See `MailJournalChangeNotification`.
     let changeNotificationName: String?
 
     static let defaultMaximumEntryCount = 2_000
+    static let defaultMaximumByteCount = 2 * 1024 * 1024
     static let defaultClaimLease: TimeInterval = 5 * 60
+    static let defaultClaimLimit = 50
 
     init(
         fileURL: URL,
         maximumEntryCount: Int = defaultMaximumEntryCount,
+        maximumByteCount: Int = defaultMaximumByteCount,
         claimLease: TimeInterval = defaultClaimLease,
         changeNotificationName: String? = nil
     ) {
         self.fileURL = fileURL
         self.maximumEntryCount = max(1, maximumEntryCount)
+        self.maximumByteCount = max(1, maximumByteCount)
         self.claimLease = claimLease
         self.changeNotificationName = changeNotificationName
     }
 
     /// The journal at the shared App Group location, posting the App Group's
-    /// change notification, or nil when this bundle has no usable
-    /// `GuessWhoAppGroup` container.
+    /// change notification, or nil when this bundle has no `GuessWhoAppGroup`
+    /// Info.plist value.
     static func shared(in bundle: Bundle = .main) -> MailIncomingJournal? {
         guard let url = MailHandoffContainer.incomingJournalURL(in: bundle) else { return nil }
         return MailIncomingJournal(
@@ -75,22 +105,28 @@ struct MailIncomingJournal: Sendable {
         /// An entry with the same `messageID` is already in the journal; the
         /// file was left unchanged and no notification was posted.
         case duplicate
+        /// The entry can't fit without evicting live claimed lines; the file
+        /// was left unchanged and no notification was posted.
+        case droppedForCapacity
     }
 
     /// Appends `entry` unless one with its `messageID` is already present,
-    /// then posts the change notification.
+    /// evicting the oldest unclaimed lines as needed, then posts the change
+    /// notification. Throws `MailHandoffError.invalidEntry` for an empty or
+    /// over-long sender or Message-ID.
     @discardableResult
     func append(_ entry: MailIncomingMessage) throws -> AppendOutcome {
+        try Self.validate(entry)
+        let newLine = try Line(appending: entry)
         let outcome: AppendOutcome = try MailFileCoordination.write(fileURL) { url in
-            var lines = try Self.lines(at: url)
+            let lines = try Self.lines(at: url)
             if lines.contains(where: { $0.messageID == entry.messageID }) {
                 return .duplicate
             }
-            lines.append(try Line(StoredLine(entry: entry, claim: nil)))
-            if lines.count > maximumEntryCount {
-                lines.removeFirst(lines.count - maximumEntryCount)
+            guard let retained = retaining(lines + [newLine], now: Date()) else {
+                return .droppedForCapacity
             }
-            try Self.write(lines, to: url)
+            try Self.write(retained, to: url)
             return .appended
         }
         if outcome == .appended, let changeNotificationName {
@@ -101,26 +137,39 @@ struct MailIncomingJournal: Sendable {
 
     // MARK: - Draining (app)
 
-    /// Entries held by one `claimEntries()` call.
+    /// Entries held by one `claimEntries(limit:now:)` call.
     struct Claim: Sendable {
         let token: UUID
         /// Oldest first.
         let entries: [MailIncomingMessage]
     }
 
-    /// Atomically claims every entry that no live claim holds. Nil when there
-    /// is nothing to claim.
-    func claimEntries(now: Date = Date()) throws -> Claim? {
+    /// What a `renew`, `acknowledge`, or `release` did.
+    struct ClaimOutcome: Equatable, Sendable {
+        /// Message-IDs the call acted on: lines still carrying the claim's
+        /// token.
+        let applied: Set<String>
+        /// Message-IDs asked about that the claim no longer holds — the lease
+        /// lapsed and another claimer took them, or they are gone. The caller
+        /// no longer owns these and must not act on them as if it did.
+        let lost: Set<String>
+
+        var lostOwnership: Bool { !lost.isEmpty }
+    }
+
+    /// Atomically claims up to `limit` of the oldest entries that no live
+    /// claim holds. Nil when there is nothing to claim.
+    func claimEntries(limit: Int = defaultClaimLimit, now: Date = Date()) throws -> Claim? {
+        let limit = max(1, limit)
         let token = UUID()
         return try MailFileCoordination.write(fileURL) { url in
             var lines = try Self.lines(at: url)
             var claimed: [MailIncomingMessage] = []
             for index in lines.indices {
-                guard var stored = lines[index].stored else { continue }
-                if let claim = stored.claim, !isExpired(claim, now: now) { continue }
-                stored.claim = StoredClaim(token: token, claimedAt: now)
-                lines[index] = try Line(stored)
-                claimed.append(stored.entry)
+                guard claimed.count < limit else { break }
+                guard let entry = lines[index].entry, !isLive(lines[index], now: now) else { continue }
+                try lines[index].setClaim(StoredClaim(token: token, claimedAt: now))
+                claimed.append(entry)
             }
             guard !claimed.isEmpty else { return nil }
             try Self.write(lines, to: url)
@@ -128,85 +177,173 @@ struct MailIncomingJournal: Sendable {
         }
     }
 
-    /// Removes every entry `claim` still holds. Call after storing the
-    /// entries, or after deciding to drop them. Entries whose claim expired
-    /// and was taken by another claimer are left to that claimer.
-    func acknowledge(_ claim: Claim) throws {
-        try rewrite { lines in
-            lines.removeAll { $0.stored?.claim?.token == claim.token }
+    /// Restarts the lease on the claim's entries (or the `messageIDs` subset
+    /// of them) that it still holds.
+    @discardableResult
+    func renew(_ claim: Claim, messageIDs: Set<String>? = nil, now: Date = Date()) throws -> ClaimOutcome {
+        try settle(claim, messageIDs: messageIDs) { line in
+            try line.setClaim(StoredClaim(token: claim.token, claimedAt: now))
+            return true
         }
     }
 
-    /// Returns every entry `claim` still holds to the unclaimed pool, for a
-    /// claimer that couldn't finish.
-    func release(_ claim: Claim) throws {
-        try rewrite { lines in
-            for index in lines.indices {
-                guard var stored = lines[index].stored,
-                      stored.claim?.token == claim.token else { continue }
-                stored.claim = nil
-                lines[index] = try Line(stored)
-            }
+    /// Removes the claim's entries (or the `messageIDs` subset of them) that
+    /// it still holds. Call once they are stored, or deliberately dropped.
+    @discardableResult
+    func acknowledge(_ claim: Claim, messageIDs: Set<String>? = nil) throws -> ClaimOutcome {
+        try settle(claim, messageIDs: messageIDs) { _ in false }
+    }
+
+    /// Returns the claim's entries (or the `messageIDs` subset of them) that
+    /// it still holds to the unclaimed pool, for a later claim to retry.
+    @discardableResult
+    func release(_ claim: Claim, messageIDs: Set<String>? = nil) throws -> ClaimOutcome {
+        try settle(claim, messageIDs: messageIDs) { line in
+            try line.setClaim(nil)
+            return true
         }
     }
+
+    /// Applies `change` to each targeted line that still carries the claim's
+    /// token; `change` returns whether to keep the line.
+    private func settle(
+        _ claim: Claim, messageIDs: Set<String>?, _ change: (inout Line) throws -> Bool
+    ) throws -> ClaimOutcome {
+        let targets = messageIDs ?? Set(claim.entries.map(\.messageID))
+        guard !targets.isEmpty else { return ClaimOutcome(applied: [], lost: []) }
+        return try MailFileCoordination.write(fileURL) { url in
+            var applied = Set<String>()
+            var kept: [Line] = []
+            for var line in try Self.lines(at: url) {
+                if let messageID = line.messageID, targets.contains(messageID),
+                   line.claim?.token == claim.token {
+                    applied.insert(messageID)
+                    guard try change(&line) else { continue }
+                }
+                kept.append(line)
+            }
+            if !applied.isEmpty {
+                try Self.write(kept, to: url)
+            }
+            return ClaimOutcome(applied: applied, lost: targets.subtracting(applied))
+        }
+    }
+
+    // MARK: - Claims and retention
 
     /// A claim is live for `claimLease` either side of `now`, so a clock that
     /// jumps backwards can't pin entries for longer than one lease.
-    private func isExpired(_ claim: StoredClaim, now: Date) -> Bool {
-        abs(now.timeIntervalSince(claim.claimedAt)) >= claimLease
+    private func isLive(_ line: Line, now: Date) -> Bool {
+        guard let claim = line.claim else { return false }
+        return abs(now.timeIntervalSince(claim.claimedAt)) < claimLease
     }
 
-    private func rewrite(_ change: (inout [Line]) throws -> Void) throws {
-        try MailFileCoordination.write(fileURL) { url in
-            let original = try Self.lines(at: url)
-            var lines = original
-            try change(&lines)
-            guard lines.map(\.raw) != original.map(\.raw) else { return }
-            try Self.write(lines, to: url)
+    /// `lines` (the new line last) trimmed to the caps by evicting the oldest
+    /// lines no live claim holds, or nil when that can't make room without
+    /// evicting the new line or a live claim.
+    private func retaining(_ lines: [Line], now: Date) -> [Line]? {
+        var count = lines.count
+        var bytes = lines.reduce(0) { $0 + $1.byteCount }
+        func fits() -> Bool { count <= maximumEntryCount && bytes <= maximumByteCount }
+        guard !fits() else { return lines }
+
+        var evicted = IndexSet()
+        for index in lines.indices.dropLast() where !isLive(lines[index], now: now) {
+            evicted.insert(index)
+            count -= 1
+            bytes -= lines[index].byteCount
+            if fits() { break }
         }
+        guard fits() else { return nil }
+        return lines.indices.filter { !evicted.contains($0) }.map { lines[$0] }
+    }
+
+    private static func validate(_ entry: MailIncomingMessage) throws {
+        guard !entry.sender.isEmpty,
+              entry.sender.count <= MailAddressNormalizer.maximumLength,
+              !entry.messageID.isEmpty,
+              entry.messageID.count <= MailMessageID.maximumLength,
+              (entry.subject?.count ?? 0) <= MailIncomingMessage.maximumSubjectLength
+        else { throw MailHandoffError.invalidEntry }
     }
 
     // MARK: - Lines
 
-    private struct StoredClaim: Codable, Equatable {
-        var token: UUID
-        var claimedAt: Date
-    }
+    private struct StoredClaim: Equatable {
+        let token: UUID
+        let claimedAt: Date
 
-    private struct StoredLine: Codable {
-        var entry: MailIncomingMessage
-        var claim: StoredClaim?
+        init(token: UUID, claimedAt: Date) {
+            self.token = token
+            self.claimedAt = claimedAt
+        }
+
+        /// Nil for a missing or unreadable `claim` member, which counts as
+        /// unclaimed.
+        init?(jsonValue: Any?) {
+            guard let object = jsonValue as? [String: Any],
+                  let tokenString = object["token"] as? String,
+                  let token = UUID(uuidString: tokenString),
+                  let seconds = (object["claimedAt"] as? NSNumber)?.doubleValue
+            else { return nil }
+            self.token = token
+            self.claimedAt = Date(timeIntervalSinceReferenceDate: seconds)
+        }
+
+        var jsonValue: [String: Any] {
+            ["token": token.uuidString, "claimedAt": claimedAt.timeIntervalSinceReferenceDate]
+        }
     }
 
     private struct Line {
         /// The exact bytes of the line, without its newline.
-        let raw: Data
-        /// Nil when this build can't decode the line.
-        let stored: StoredLine?
-        /// Present even for an undecodable line when it still carries a
+        private(set) var raw: Data
+        /// The line's top-level JSON object; nil when the line isn't one.
+        private var object: [String: Any]?
+        /// Nil when this build can't decode the line's entry.
+        let entry: MailIncomingMessage?
+        /// Present even for an undecodable entry that still carries a
         /// readable `messageID`, so de-duplication covers newer entries too.
         let messageID: String?
+        private(set) var claim: StoredClaim?
 
-        init(_ stored: StoredLine) throws {
-            self.raw = try MailIncomingJournal.encoder.encode(stored)
-            self.stored = stored
-            self.messageID = stored.entry.messageID
+        var byteCount: Int { raw.count + 1 }
+
+        init(parsing raw: Data) {
+            self.raw = raw
+            let object = (try? JSONSerialization.jsonObject(with: raw)) as? [String: Any]
+            self.object = object
+            let entryObject = object?["entry"] as? [String: Any]
+            if let version = entryObject?["version"] as? Int, version <= MailIncomingMessage.currentVersion {
+                entry = (try? JSONDecoder().decode(EntryEnvelope.self, from: raw))?.entry
+            } else {
+                entry = nil
+            }
+            messageID = entry?.messageID ?? entryObject?["messageID"] as? String
+            claim = StoredClaim(jsonValue: object?["claim"])
         }
 
-        init(raw: Data, stored: StoredLine?, messageID: String?) {
-            self.raw = raw
-            self.stored = stored
-            self.messageID = messageID
+        init(appending entry: MailIncomingMessage) throws {
+            self.init(parsing: try MailIncomingJournal.encoder.encode(EntryEnvelope(entry: entry)))
+        }
+
+        /// Rewrites only the `claim` member of the line's JSON object.
+        mutating func setClaim(_ newClaim: StoredClaim?) throws {
+            guard var object else { throw MailHandoffError.malformedJournalLine }
+            if let newClaim {
+                object["claim"] = newClaim.jsonValue
+            } else {
+                object.removeValue(forKey: "claim")
+            }
+            raw = try JSONSerialization.data(
+                withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes])
+            self.object = object
+            claim = newClaim
         }
     }
 
-    /// Just enough of any line version to de-duplicate and gate on version.
-    private struct Probe: Decodable {
-        struct Entry: Decodable {
-            let version: Int
-            let messageID: String?
-        }
-        let entry: Entry
+    private struct EntryEnvelope: Codable {
+        let entry: MailIncomingMessage
     }
 
     private static let encoder: JSONEncoder = {
@@ -217,18 +354,12 @@ struct MailIncomingJournal: Sendable {
 
     private static func lines(at url: URL) throws -> [Line] {
         guard let data = try MailFileCoordination.contentsIfPresent(of: url) else { return [] }
-        let decoder = JSONDecoder()
         return data.split(separator: UInt8(ascii: "\n")).compactMap { slice in
             let raw = Data(slice)
             guard raw.contains(where: { $0 != UInt8(ascii: " ") && $0 != UInt8(ascii: "\r") }) else {
                 return nil
             }
-            let probe = try? decoder.decode(Probe.self, from: raw)
-            var stored: StoredLine?
-            if let probe, probe.entry.version <= MailIncomingMessage.currentVersion {
-                stored = try? decoder.decode(StoredLine.self, from: raw)
-            }
-            return Line(raw: raw, stored: stored, messageID: stored?.entry.messageID ?? probe?.entry.messageID)
+            return Line(parsing: raw)
         }
     }
 

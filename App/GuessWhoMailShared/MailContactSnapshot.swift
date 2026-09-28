@@ -2,15 +2,33 @@ import Foundation
 
 /// Why a contact's incoming mail is highlighted in Apple Mail.
 ///
-/// Adding a case is a format change: an older reader cannot decode an
-/// unknown raw value, so bump `MailContactSnapshot.currentVersion` with it.
-enum MailHighlightReason: String, Codable, Sendable, CaseIterable {
+/// An open set rather than an enum: a reason this build doesn't recognize
+/// still decodes (and round-trips), and — because any reason at all means
+/// "highlight" — still counts as highlighted. A newer app can therefore add
+/// reasons without a snapshot version bump, and an older extension errs on
+/// the side of highlighting.
+struct MailHighlightReason: RawRepresentable, Hashable, Codable, Sendable {
+    let rawValue: String
+
+    init(rawValue: String) {
+        self.rawValue = rawValue
+    }
+
     /// The contact itself is a favorite.
-    case favoriteContact
+    static let favoriteContact = MailHighlightReason(rawValue: "favoriteContact")
     /// The contact belongs to a favorite group.
-    case favoriteGroupMember
+    static let favoriteGroupMember = MailHighlightReason(rawValue: "favoriteGroupMember")
     /// The contact works at a favorite organization.
-    case favoriteOrganizationMember
+    static let favoriteOrganizationMember = MailHighlightReason(rawValue: "favoriteOrganizationMember")
+
+    init(from decoder: any Decoder) throws {
+        rawValue = try decoder.singleValueContainer().decode(String.self)
+    }
+
+    func encode(to encoder: any Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
 }
 
 /// What the Mail extension may show about one contact. Deliberately small:
@@ -40,6 +58,7 @@ struct MailContactSummary: Codable, Sendable, Equatable {
         self.highlightReasons = highlightReasons
     }
 
+    /// True for any reason, including ones this build doesn't recognize.
     var isHighlighted: Bool { !highlightReasons.isEmpty }
 }
 
@@ -49,10 +68,17 @@ struct MailContactSummary: Codable, Sendable, Equatable {
 /// One address can map to several summaries — two contact cards may share an
 /// address — so every lookup returns an array and callers treat "any summary
 /// is highlighted" as highlighted.
+///
+/// ## Version rules
+/// `currentVersion` changes only for a breaking shape change (a field
+/// renamed, retyped, or removed). Adding an optional field or a highlight
+/// reason is not breaking: decoders ignore unknown keys, and unknown reasons
+/// decode. Every version, breaking or not, keeps a top-level
+/// `summariesByAddress` dictionary keyed by normalized address, so an older
+/// reader can still tell which senders are known
+/// (`MailContactCacheContents.newerFormat`).
 struct MailContactSnapshot: Codable, Sendable, Equatable {
-    /// The format this build writes and the newest it reads. A reader that
-    /// meets a newer version treats the cache as unavailable instead of
-    /// guessing at its meaning.
+    /// The format this build writes and the newest it reads fully.
     static let currentVersion = 1
 
     var version: Int
@@ -85,5 +111,37 @@ struct MailContactSnapshot: Codable, Sendable, Equatable {
     func summaries(forAddress address: String) -> [MailContactSummary] {
         guard let key = MailAddressNormalizer.normalize(address) else { return [] }
         return summariesByAddress[key] ?? []
+    }
+}
+
+/// The published cache as this build can use it.
+enum MailContactCacheContents: Sendable, Equatable {
+    /// A snapshot in a format this build reads fully.
+    case current(MailContactSnapshot)
+    /// A snapshot from a newer build in a breaking format. Only its address
+    /// index is readable: which addresses are known, not who they are or
+    /// whether they're highlighted.
+    case newerFormat(version: Int, knownAddresses: Set<String>)
+
+    /// True when the cache knows `address` (any shape
+    /// `MailAddressNormalizer.normalize(_:)` accepts).
+    func isKnown(address: String) -> Bool {
+        guard let key = MailAddressNormalizer.normalize(address) else { return false }
+        switch self {
+        case .current(let snapshot):
+            return !(snapshot.summariesByAddress[key] ?? []).isEmpty
+        case .newerFormat(_, let knownAddresses):
+            return knownAddresses.contains(key)
+        }
+    }
+
+    /// The summaries for `address`; always empty for `.newerFormat`.
+    func summaries(forAddress address: String) -> [MailContactSummary] {
+        switch self {
+        case .current(let snapshot):
+            return snapshot.summaries(forAddress: address)
+        case .newerFormat:
+            return []
+        }
     }
 }

@@ -4,10 +4,12 @@ import Foundation
 /// writer) and the Mail extension (a reader on every incoming message).
 ///
 /// The file is a binary property list, so thumbnail bytes are stored raw
-/// rather than base64-inflated. `read()` keeps the last decoded snapshot and
-/// only decodes again when the file on disk changed (inode, size, or
-/// modification date), because Mail can deliver hundreds of messages in a
-/// burst and each one asks for the same snapshot.
+/// rather than base64-inflated. `read()` remembers its last outcome — the
+/// decoded contents or the decode failure — for one on-disk version of the
+/// file (inode, size, modification date) and only decodes again when the file
+/// changes, because Mail can deliver hundreds of messages in a burst and each
+/// one asks for the same snapshot. Plain I/O errors are not remembered; the
+/// next read retries them.
 ///
 /// `@unchecked Sendable`: the only mutable state is `memo`, and every access
 /// to it holds `lock`.
@@ -15,22 +17,25 @@ final class MailContactCacheStore: @unchecked Sendable {
     let fileURL: URL
 
     private let lock = NSLock()
-    private var memo: (stamp: FileStamp, snapshot: MailContactSnapshot)?
+    private var memo: (stamp: FileStamp, result: Result<MailContactCacheContents, any Error>)?
 
     init(fileURL: URL) {
         self.fileURL = fileURL
     }
 
     /// The store at the shared App Group location, or nil when this bundle has
-    /// no usable `GuessWhoAppGroup` container.
+    /// no `GuessWhoAppGroup` Info.plist value.
     static func shared(in bundle: Bundle = .main) -> MailContactCacheStore? {
         MailHandoffContainer.contactCacheURL(in: bundle).map(MailContactCacheStore.init(fileURL:))
     }
 
-    /// The current snapshot, or nil when the app hasn't published one yet.
-    /// Throws when the file can't be read or decoded, or was written by a
-    /// newer build (`MailHandoffError.unsupportedVersion`).
-    func read() throws -> MailContactSnapshot? {
+    /// The published cache, or nil when the app hasn't published one yet.
+    ///
+    /// A snapshot from a newer build in a breaking format still yields its
+    /// address index (`.newerFormat`) when that is readable; otherwise this
+    /// throws `MailHandoffError.unsupportedVersion`. Also throws when the
+    /// file can't be read or decoded.
+    func read() throws -> MailContactCacheContents? {
         lock.lock()
         defer { lock.unlock() }
         return try MailFileCoordination.read(fileURL) { url in
@@ -39,15 +44,15 @@ final class MailContactCacheStore: @unchecked Sendable {
                 return nil
             }
             if let memo, memo.stamp == stamp {
-                return memo.snapshot
+                return try memo.result.get()
             }
             guard let data = try MailFileCoordination.contentsIfPresent(of: url) else {
                 memo = nil
                 return nil
             }
-            let snapshot = try Self.decode(data)
-            memo = (stamp, snapshot)
-            return snapshot
+            let result = Result { try Self.decode(data) }
+            memo = (stamp, result)
+            return try result.get()
         }
     }
 
@@ -61,17 +66,30 @@ final class MailContactCacheStore: @unchecked Sendable {
         }
     }
 
-    private static func decode(_ data: Data) throws -> MailContactSnapshot {
+    private static func decode(_ data: Data) throws -> MailContactCacheContents {
         let decoder = PropertyListDecoder()
         let probe = try decoder.decode(VersionProbe.self, from: data)
-        guard probe.version <= MailContactSnapshot.currentVersion else {
+        if probe.version <= MailContactSnapshot.currentVersion {
+            return .current(try decoder.decode(MailContactSnapshot.self, from: data))
+        }
+        guard let index = try? decoder.decode(AddressIndexProbe.self, from: data) else {
             throw MailHandoffError.unsupportedVersion(probe.version)
         }
-        return try decoder.decode(MailContactSnapshot.self, from: data)
+        return .newerFormat(version: probe.version, knownAddresses: Set(index.summariesByAddress.keys))
     }
 
     private struct VersionProbe: Decodable {
         let version: Int
+    }
+
+    /// The part of every snapshot version that stays stable: the address
+    /// keys of `summariesByAddress`, whatever their values look like.
+    private struct AddressIndexProbe: Decodable {
+        let summariesByAddress: [String: Ignored]
+    }
+
+    private struct Ignored: Decodable {
+        init(from decoder: any Decoder) throws {}
     }
 
     /// Identifies one on-disk version of the file. An atomic replace always

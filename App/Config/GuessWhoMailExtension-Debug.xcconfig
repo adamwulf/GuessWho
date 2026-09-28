@@ -9,6 +9,9 @@
 // Bundle id — must stay prefixed by the app bundle id (…guesswho ⊃ …guesswho.mail).
 PRODUCT_BUNDLE_IDENTIFIER = com.milestonemade.guesswho.mail
 
-// Display name in Mail's Settings → Extensions. "Debug"-suffixed so an
-// Xcode-installed extension is obvious next to an installed release build.
+// Display name in Mail's Settings → Extensions. Debug and Release share the
+// bundle id above, so when both builds are installed PlugInKit registers only
+// one of the two extensions — Mail never lists them side by side. The "Debug"
+// suffix tells you which copy PlugInKit elected, and so which build Mail is
+// running.
 GUESSWHO_MAIL_EXTENSION_DISPLAY_NAME = GuessWho Debug

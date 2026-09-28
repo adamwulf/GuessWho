@@ -22,8 +22,10 @@ final class MailExtension: NSObject, MEExtension {
 }
 
 /// The shared files this process reads and writes, resolved once from the
-/// extension's `GuessWhoAppGroup` Info.plist key. Nil when the key is missing
-/// or the container isn't granted; every caller then leaves Mail untouched.
+/// extension's `GuessWhoAppGroup` Info.plist key. Nil only when that key is
+/// missing; a container the process can't actually use shows up as an I/O
+/// error on first access instead. Either way every caller leaves Mail
+/// untouched.
 enum MailExtensionStorage {
     static let contactCache = MailContactCacheStore.shared()
     static let journal = MailIncomingJournal.shared()

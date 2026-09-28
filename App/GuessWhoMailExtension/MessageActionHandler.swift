@@ -48,16 +48,18 @@ final class MessageActionHandler: NSObject, MEMessageActionHandler, Sendable {
             return nil
         }
 
-        let summaries: [MailContactSummary]
+        let contents: MailContactCacheContents
         do {
-            guard let snapshot = try contactCache.read() else { return nil }
-            summaries = snapshot.summaries(forAddress: sender)
+            guard let read = try contactCache.read() else { return nil }
+            contents = read
         } catch {
             Self.log.error("contact cache read failed; leaving message unchanged: \(String(describing: error), privacy: .public)")
             return nil
         }
-        guard !summaries.isEmpty else { return nil }
+        guard contents.isKnown(address: sender) else { return nil }
 
+        // Journal every known sender — even from a newer-format cache, whose
+        // address index is all this build can read.
         do {
             try record(message, sender: sender, in: journal)
         } catch {
@@ -65,13 +67,16 @@ final class MessageActionHandler: NSObject, MEMessageActionHandler, Sendable {
             return nil
         }
 
-        guard summaries.contains(where: \.isHighlighted) else { return nil }
+        // A newer-format cache yields no summaries, so the message is left
+        // uncolored rather than guessed at.
+        guard contents.summaries(forAddress: sender).contains(where: \.isHighlighted) else { return nil }
         return .action(.setBackgroundColor(.blue))
     }
 
     /// Appends the message's metadata. A message with no usable Message-ID has
-    /// no de-duplication key, so it isn't journaled (and that isn't a
-    /// failure — the highlight still applies).
+    /// no de-duplication key, so it isn't journaled; neither is one the
+    /// journal has no room for. Neither is a failure — the highlight still
+    /// applies.
     private func record(_ message: MEMessage, sender: String, in journal: MailIncomingJournal) throws {
         guard let messageID = Self.messageIDHeader(of: message).flatMap(MailMessageID.normalize) else {
             Self.log.notice("known sender but no usable Message-ID; not journaled")
@@ -87,7 +92,9 @@ final class MessageActionHandler: NSObject, MEMessageActionHandler, Sendable {
             // not resolve (see MailMessageID.mailDeepLink). A nil link never
             // blocks the entry.
             messageURL: MailMessageID.mailDeepLink(for: messageID))
-        try journal.append(entry)
+        if try journal.append(entry) == .droppedForCapacity {
+            Self.log.notice("journal full of claimed entries; message not journaled")
+        }
     }
 
     private static func normalizedSender(of message: MEMessage) -> String? {

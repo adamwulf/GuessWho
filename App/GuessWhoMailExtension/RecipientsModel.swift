@@ -15,8 +15,8 @@ final class RecipientsModel {
         /// The first lookup hasn't finished.
         case loading
         case ready
-        /// The cache couldn't be read (or hasn't been published yet); every
-        /// row shows only its address.
+        /// The cache couldn't be read, hasn't been published yet, or is in a
+        /// newer format; every row shows only its address.
         case contactsUnavailable
     }
 
@@ -79,12 +79,20 @@ final class RecipientsModel {
     private nonisolated static func lookUp(
         _ recipients: [Recipient], in contactCache: MailContactCacheStore?
     ) -> (rows: [Row], status: Status) {
-        let snapshot: MailContactSnapshot?
+        let contents: MailContactCacheContents?
         do {
-            snapshot = try contactCache?.read()
+            contents = try contactCache?.read()
         } catch {
             Logger.mailExtension("compose").error(
                 "contact cache read failed: \(String(describing: error), privacy: .public)")
+            contents = nil
+        }
+        // Only a fully readable snapshot has details to show; a newer-format
+        // cache knows addresses but not people.
+        let snapshot: MailContactSnapshot?
+        if case .current(let current) = contents {
+            snapshot = current
+        } else {
             snapshot = nil
         }
 
