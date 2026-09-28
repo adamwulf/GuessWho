@@ -5,11 +5,11 @@ import Foundation
 /// the Mail action handler reports and the contact card lists.
 ///
 /// Stored as ONE additive cell on the contact's sidecar envelope, keyed
-/// `mailActivity:<id>` (see `cellKey`). The key is not a bare UUID, so the
-/// field-instance reads (`GuessWhoSync.fields(at:)`, notes, custom fields)
-/// never see these cells, and an older build that has never heard of them
-/// carries them through its raw-cell read-modify-write untouched
-/// (docs/sidecar-compatibility.md).
+/// `mailActivity:<id>` (see `cellKey`). `GuessWhoSync.fields(at:)` skips
+/// that key prefix explicitly, so the field-instance reads built on it (notes,
+/// custom fields, the CLI/MCP field tools) never see these cells. An older
+/// build that has never heard of them carries them through its raw-cell
+/// read-modify-write untouched (docs/sidecar-compatibility.md).
 ///
 /// `id` is DETERMINISTIC: derived from the normalized RFC 5322 Message-ID, so
 /// a message the handler delivers twice lands on the same cell (idempotent),
@@ -142,6 +142,12 @@ extension MailActivity {
     /// The fixed cell key this activity occupies on the contact envelope.
     var cellKey: String { Self.cellKeyPrefix + id.uuidString.lowercased() }
 
+    /// Whether `cellKey` names a mail activity cell. Generic cell readers use
+    /// this to keep these cells out of their projections.
+    static func isCellKey(_ cellKey: String) -> Bool {
+        cellKey.hasPrefix(cellKeyPrefix)
+    }
+
     /// The cell's opaque value object. Optional members are omitted when nil.
     var cellValue: JSONValue {
         var object: [String: JSONValue] = [
@@ -160,7 +166,7 @@ extension MailActivity {
     /// does not know. Nil only hides the activity from reads; the cell stays
     /// in the envelope. Soft-deleted cells decode like live ones; callers filter.
     init?(cellKey: String, cell: SidecarCell) {
-        guard cellKey.hasPrefix(Self.cellKeyPrefix),
+        guard Self.isCellKey(cellKey),
               let id = UUID(uuidString: String(cellKey.dropFirst(Self.cellKeyPrefix.count))),
               case .object(let object) = cell.value,
               case .string(let directionRaw) = object[Self.directionKey] ?? .null,

@@ -306,7 +306,8 @@ struct MailActivityTests {
 }
 
 /// The `ContactID`-keyed repository surface: writes resolve-or-mint, reads
-/// never mint, and the timestamp cache and reload posts follow the stamp verbs.
+/// never mint, the timestamp cache follows the stamp verbs, and a changed
+/// activity posts the scoped `.contactsRepositoryMailActivityDidChange`.
 @Suite("ContactsRepository mail activity")
 @MainActor
 struct ContactsRepositoryMailActivityTests {
@@ -336,9 +337,22 @@ struct ContactsRepositoryMailActivityTests {
         let store = InMemoryContactStore(contacts: [Contact(localID: "TARGET", givenName: "Ada")])
         let sidecars = InMemorySidecarStore()
         let sync = makeSync(store, sidecars)
-        let repo = ContactsRepository(contacts: store, sync: sync)
-        await repo.reload()
+        let center = NotificationCenter()
+        let repo = ContactsRepository(contacts: store, sync: sync, notificationCenter: center)
 
+        // nonisolated(unsafe): appended only from the notification handler on
+        // this test's main-actor flow; read after the awaited write.
+        nonisolated(unsafe) var posted: [[ContactID]] = []
+        let token = center.addObserver(
+            forName: .contactsRepositoryMailActivityDidChange, object: repo, queue: nil
+        ) { note in
+            posted.append(
+                (note.userInfo?[ContactsRepositoryMailActivityDidChangeKey.contactIDs] as? [ContactID]) ?? []
+            )
+        }
+        defer { center.removeObserver(token) }
+
+        await repo.reload()
         let id = try #require(repo.contact(localID: "TARGET")).contactID
         #expect(id.guessWhoID == nil)
         let message = try activity("<first@example.com>", receivedAt: Date(timeIntervalSince1970: 1_790_000_000))
@@ -346,15 +360,21 @@ struct ContactsRepositoryMailActivityTests {
         try await repo.recordMailActivity(message, for: id)
 
         // The write minted a GuessWho URL onto the record and keyed the data
-        // on it; the app re-resolves its held token to read it back.
+        // on it.
         let saved = try #require(try await store.fetch(localID: "TARGET"))
         let guessWhoID = try #require(saved.contactID.guessWhoID)
         let refreshed = try #require(repo.contact(id: id)).contactID
         #expect(refreshed.guessWhoID == guessWhoID)
-        #expect(repo.mailActivities(for: refreshed) == [message])
+        #expect(refreshed != id)
         let stamps = try sync.contactTimestamps(at: SidecarKey(kind: .contact, id: guessWhoID))
         #expect(stamps.lastInteracted == message.receivedAt)
         #expect(stamps.lastViewed == nil)
+
+        // The scoped post lists both tokens, and both read the activity back:
+        // an open detail holding the pre-mint token needs no re-resolve.
+        #expect(posted == [[refreshed, id]])
+        #expect(await repo.mailActivities(for: refreshed) == [message])
+        #expect(await repo.mailActivities(for: id) == [message])
     }
 
     @Test
@@ -365,7 +385,7 @@ struct ContactsRepositoryMailActivityTests {
         await repo.reload()
 
         let id = try #require(repo.contact(localID: "TARGET")).contactID
-        #expect(repo.mailActivities(for: id).isEmpty)
+        #expect(await repo.mailActivities(for: id).isEmpty)
 
         let stored = try #require(try await store.fetch(localID: "TARGET"))
         #expect(stored.contactID.guessWhoID == nil)
@@ -406,36 +426,90 @@ struct ContactsRepositoryMailActivityTests {
             notificationCenter: center
         )
 
-        // nonisolated(unsafe): appended only from the notification handler on
-        // this test's main-actor flow; read after removeObserver.
-        nonisolated(unsafe) var flags: [Bool] = []
-        let token = center.addObserver(
+        // nonisolated(unsafe): appended only from the notification handlers
+        // on this test's main-actor flow; read after the awaited writes.
+        nonisolated(unsafe) var reloadFlags: [Bool] = []
+        nonisolated(unsafe) var activityPosts: [[ContactID]] = []
+        let reloadToken = center.addObserver(
             forName: .contactsRepositoryDidReload, object: repo, queue: nil
         ) { note in
-            flags.append(
+            reloadFlags.append(
                 (note.userInfo?[ContactsRepositoryDidReloadKey.contactDataChanged] as? Bool) ?? true
             )
         }
-        defer { center.removeObserver(token) }
+        let activityToken = center.addObserver(
+            forName: .contactsRepositoryMailActivityDidChange, object: repo, queue: nil
+        ) { note in
+            activityPosts.append(
+                (note.userInfo?[ContactsRepositoryMailActivityDidChangeKey.contactIDs] as? [ContactID]) ?? []
+            )
+        }
+        defer {
+            center.removeObserver(reloadToken)
+            center.removeObserver(activityToken)
+        }
 
         await repo.reload()
         let id = try #require(repo.contact(localID: "RECON")).contactID
         let message = try activity("<post@example.com>", receivedAt: Date(timeIntervalSince1970: 1_790_000_000))
 
+        // New activity that also moves lastInteracted: the scoped post for the
+        // detail, and a presentation-only reload for time-sorted lists.
         try await repo.recordMailActivity(message, for: id)
-        #expect(flags == [true, false])
+        #expect(reloadFlags == [true, false])
+        #expect(activityPosts == [[id]])
 
         // Duplicate delivery: nothing written, nothing posted.
         try await repo.recordMailActivity(message, for: id)
-        #expect(flags == [true, false])
+        #expect(reloadFlags == [true, false])
+        #expect(activityPosts == [[id]])
 
-        // An older message still records an activity, so it posts.
+        // An older message records an activity but leaves lastInteracted, so
+        // only the scoped post fires — no global reload.
         try await repo.recordMailActivity(
             try activity("<older@example.com>", receivedAt: Date(timeIntervalSince1970: 1_780_000_000)),
             for: id
         )
-        #expect(flags == [true, false, false])
-        #expect(repo.mailActivities(for: id).map(\.messageID) == ["post@example.com", "older@example.com"])
+        #expect(reloadFlags == [true, false])
+        #expect(activityPosts == [[id], [id]])
+        #expect(await repo.mailActivities(for: id).map(\.messageID) == ["post@example.com", "older@example.com"])
+    }
+
+    @Test
+    func mailActivityNeverAppearsAsACustomField() async throws {
+        let uuid = "70000000-0000-0000-0000-000000000001"
+        let store = InMemoryContactStore(contacts: [reconciled("RECON", "Grace", uuid: uuid)])
+        let sidecars = InMemorySidecarStore()
+        let sync = makeSync(store, sidecars)
+        let repo = ContactsRepository(contacts: store, sync: sync)
+        await repo.reload()
+        let id = try #require(repo.contact(localID: "RECON")).contactID
+
+        let fieldID = try await repo.upsertField(for: id, field: "Team", value: "Platform")
+        try await repo.recordMailActivity(
+            try activity("<field@example.com>", receivedAt: Date(timeIntervalSince1970: 1_790_000_000)),
+            for: id
+        )
+
+        // A mail activity cell whose payload is shaped exactly like a live
+        // custom field, so only its key keeps it out of the field reads.
+        let key = SidecarKey(kind: .contact, id: uuid)
+        let envelope = try #require(try sidecars.read(key))
+        var fields = envelope.fields
+        fields[MailActivity.cellKeyPrefix + "80000000-0000-0000-0000-000000000001"] = SidecarCell(
+            value: SidecarField.makeInnerValue(
+                field: "Subject", type: .note, value: .string("Lunch?"), createdAt: Date()),
+            modifiedAt: Date(),
+            modifiedBy: "future-device"
+        )
+        try sidecars.write(SidecarEnvelope(entityID: envelope.entityID, fields: fields), at: key)
+
+        // The engine funnel, the custom-field read, and the recovery read the
+        // CLI/MCP field tools use all show only the real field.
+        #expect(try sync.fields(at: key).map(\.id) == [fieldID])
+        #expect(repo.fields(for: id).map(\.id) == [fieldID])
+        #expect(repo.allFields(for: id).map(\.id) == [fieldID])
+        #expect(await repo.mailActivities(for: id).map(\.messageID) == ["field@example.com"])
     }
 
     @Test
@@ -449,6 +523,6 @@ struct ContactsRepositoryMailActivityTests {
         await #expect(throws: SidecarUnavailableError.self) {
             try await repo.recordMailActivity(message, for: id)
         }
-        #expect(repo.mailActivities(for: id).isEmpty)
+        #expect(await repo.mailActivities(for: id).isEmpty)
     }
 }

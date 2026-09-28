@@ -47,6 +47,40 @@ public extension Notification.Name {
     /// a thrown error — means it did not.
     static let contactsRepositoryGroupMembershipDidChange =
         Notification.Name("ContactsRepositoryGroupMembershipDidChange")
+
+    /// Posted after `ContactsRepository.recordMailActivity(_:for:)` changed a
+    /// contact's stored mail activity — a new message, or a changed payload
+    /// for one already recorded. Not posted for a duplicate delivery that
+    /// changed nothing.
+    ///
+    /// Like `.contactsRepositoryGroupMembershipDidChange`, this is NOT
+    /// `.contactsRepositoryDidReload`: a new mail activity moves no cached
+    /// contact record, so an open contact detail observes this and re-reads
+    /// `mailActivities(for:)` instead of waiting on a global reload. When the
+    /// write also moved `lastInteracted`, the repository ALSO posts
+    /// `.contactsRepositoryDidReload` (`contactDataChanged: false`) so
+    /// time-sorted lists re-render.
+    ///
+    /// **userInfo** — see `ContactsRepositoryMailActivityDidChangeKey`:
+    /// - `.contactIDs` (`[ContactID]`) — the contact whose activity changed.
+    ///   When the write minted the contact's identity, the list holds BOTH the
+    ///   token the caller passed and the re-keyed token from the cache, so an
+    ///   observer holding either one matches. Compare against the `ContactID`
+    ///   you hold; never a raw identifier.
+    ///
+    /// Metadata only: the post never carries message content. `object` is the
+    /// posting `ContactsRepository`, on its injected notification center
+    /// (`.default` in production).
+    static let contactsRepositoryMailActivityDidChange =
+        Notification.Name("ContactsRepositoryMailActivityDidChange")
+}
+
+/// userInfo keys for `.contactsRepositoryMailActivityDidChange`.
+public enum ContactsRepositoryMailActivityDidChangeKey {
+    /// `[ContactID]` — the contact whose mail activity changed, as the app's
+    /// opaque identity token (see the notification for why a minting write
+    /// lists two tokens for one contact).
+    public static let contactIDs = "contactIDs"
 }
 
 /// userInfo keys for `.contactsRepositoryGroupMembershipDidChange`.
@@ -3334,12 +3368,20 @@ public final class ContactsRepository: NSObject {
     // MARK: - Mail activity
 
     /// Live mail activities recorded on the contact identified by `id`, newest
-    /// first. Returns `[]` when the contact is unreconciled (no sidecar yet) or
-    /// the engine is unavailable; a read NEVER reconciles or mints.
-    public func mailActivities(for id: ContactID) -> [MailActivity] {
-        guard let sync, let guessWhoID = id.guessWhoID else { return [] }
+    /// first. The sidecar read runs off the main actor. Returns `[]` when the
+    /// contact is unreconciled (no sidecar yet) or the engine is unavailable;
+    /// a read NEVER reconciles or mints.
+    ///
+    /// A token captured before the contact's first GuessWho write (no
+    /// GuessWho ID yet) resolves through the cache like `contact(id:)`, so an
+    /// open detail holding it still reads the activity a later write minted
+    /// the identity for.
+    public func mailActivities(for id: ContactID) async -> [MailActivity] {
+        guard let sync,
+              let guessWhoID = id.guessWhoID ?? contact(id: id)?.contactID.guessWhoID
+        else { return [] }
         do {
-            return try sync.mailActivities(at: SidecarKey(kind: .contact, id: guessWhoID))
+            return try await sync.mailActivities(at: SidecarKey(kind: .contact, id: guessWhoID))
         } catch {
             lastError = "mail activity read failed: \(error.localizedDescription)"
             return []
@@ -3348,26 +3390,41 @@ public final class ContactsRepository: NSObject {
 
     /// Records `activity` on the contact identified by `id` and advances its
     /// `lastInteracted` to the message's received time (never backward), in
-    /// one sidecar write. Like every write here it resolves-or-mints first,
-    /// so the first write to an unreconciled contact mints its GuessWho ID.
-    /// A repeat delivery of an already-recorded message writes and posts
-    /// nothing. Throws `SidecarUnavailableError` when the engine is unavailable.
+    /// one sidecar write that runs off the main actor. Recording mail is an
+    /// intentional write, so like every write here it resolves-or-mints
+    /// first: the first write to an unreconciled contact mints its GuessWho
+    /// ID. Throws `SidecarUnavailableError` when the engine is unavailable.
+    ///
+    /// **Notifications.** A changed activity posts
+    /// `.contactsRepositoryMailActivityDidChange` for this contact. A moved
+    /// `lastInteracted` posts `.contactsRepositoryDidReload`
+    /// (`contactDataChanged: false`) so time-sorted lists re-render; a minting
+    /// write posts its reload through `refreshCacheIfMinted` instead. A
+    /// repeat delivery that changed nothing posts nothing.
     public func recordMailActivity(_ activity: MailActivity, for id: ContactID) async throws {
         guard let sync else { throw SidecarUnavailableError() }
         let minted = id.guessWhoID == nil
         let guessWhoID = try await resolveOrMintGuessWhoID(for: id)
         let key = SidecarKey(kind: .contact, id: guessWhoID)
-        let outcome = try sync.recordMailActivity(activity, at: key)
+        let outcome = try await sync.recordMailActivity(activity, at: key)
         // Mirror the cell just written into the cache in place, like the stamp
         // verbs, so a Last Interacted sort sees it without a disk rescan.
         if outcome.lastInteractedChanged, let lastInteracted = outcome.lastInteracted {
             updateTimestampCache(.interacted, at: key, to: lastInteracted)
         }
         await refreshCacheIfMinted(minted, localID: id.localID)
-        // On mint, `refreshCacheIfMinted` posts its own reload. Otherwise post
-        // only when the write changed something; the contact records
-        // themselves are untouched either way.
-        if !minted && outcome.didWrite { postDidReload(contactDataChanged: false) }
+        if !minted && outcome.lastInteractedChanged { postDidReload(contactDataChanged: false) }
+        guard outcome.activityChanged else { return }
+        // After the mint refresh, so the cache token below carries the new
+        // identity. List the caller's token too when it differs (it was
+        // captured before the mint) so an observer holding either matches.
+        var changedIDs = [contact(id: id)?.contactID ?? id]
+        if !changedIDs.contains(id) { changedIDs.append(id) }
+        notificationCenter.post(
+            name: .contactsRepositoryMailActivityDidChange,
+            object: self,
+            userInfo: [ContactsRepositoryMailActivityDidChangeKey.contactIDs: changedIDs]
+        )
     }
 
     /// All live (non-deleted) USER-VISIBLE sidecar fields on the contact, by

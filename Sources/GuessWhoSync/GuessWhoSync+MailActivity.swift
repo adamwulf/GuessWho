@@ -82,6 +82,24 @@ extension GuessWhoSync {
         }
     }
 
+    /// Async overload of `recordMailActivity(_:at:)` that hops the coordinated
+    /// read-modify-write to a background queue, so a batch of queued messages
+    /// never blocks the caller's actor. Same continuation pattern as
+    /// `links(at:)`.
+    @discardableResult
+    public func recordMailActivity(_ activity: MailActivity, at key: SidecarKey) async throws -> MailActivityWriteOutcome {
+        try await withCheckedThrowingContinuation { [self] continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    let result: MailActivityWriteOutcome = try self.recordMailActivity(activity, at: key)
+                    continuation.resume(returning: result)
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
     /// Live (non-deleted) mail activities on the envelope at `key`, newest
     /// `receivedAt` first; ties break on `id` for a stable order across
     /// devices. A pure read: a missing envelope returns `[]` and mints nothing.
@@ -94,6 +112,21 @@ extension GuessWhoSync {
         return live.sorted { lhs, rhs in
             if lhs.receivedAt != rhs.receivedAt { return lhs.receivedAt > rhs.receivedAt }
             return lhs.id.uuidString < rhs.id.uuidString
+        }
+    }
+
+    /// Async overload of `mailActivities(at:)` that hops the coordinated read
+    /// to a background queue, off the caller's actor.
+    public func mailActivities(at key: SidecarKey) async throws -> [MailActivity] {
+        try await withCheckedThrowingContinuation { [self] continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    let result: [MailActivity] = try self.mailActivities(at: key)
+                    continuation.resume(returning: result)
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
         }
     }
 }
