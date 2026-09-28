@@ -100,18 +100,25 @@ Each contact keeps at most `MailActivity.retentionLimit` (100) activities[^reten
   set.
 - The write physically removes every counted cell beyond the limit. A delivery
   that would rank outside the window is not added.
-- Removal is physical, not a tombstone. A merge can therefore leave more than
-  the limit: a device that still has a removed cell brings it back, and a
-  Case-D collapse unions two contacts' activities. Reads return every decodable
-  live activity until the next mail-activity write on that contact trims the
-  set again; because the order is deterministic, devices converge on the same
-  set.
-- **The limit is part of the synced format.** Every build physically prunes to
-  its OWN limit, and a removed cell is gone for every peer once the prune
-  syncs. So while any device still runs a build with a lower limit, that build
-  keeps trimming contacts back to its limit, and raising the limit in a newer
-  build has no lasting effect. Lowering it takes effect at once and destroys
-  data other peers kept. Change it only as a deliberate format decision.
+- Removal is physical, not a tombstone, and the sidecar merge is a
+  cell-by-cell union. A peer whose version still holds a removed cell can
+  bring it back when the versions merge, and a Case-D collapse unions two
+  contacts' activities; either can leave more than the limit. Reads return
+  every decodable live activity until the next mail-activity write for that
+  contact prunes that build's copy again. Builds with the same limit rank the
+  same set, so they converge on it.
+- **The limit is part of the synced format.** Each build prunes its own copy
+  to its OWN limit on the next mail-activity write for that contact. With
+  mixed limits the set churns: a lower-limit build re-trims it, and a
+  higher-limit peer's version can re-add those cells during a merge. A pruned
+  cell is permanently lost only after every device holding it has pruned it.
+  - Raising the limit is durable only once no build with a lower limit still
+    writes.
+  - Lowering the limit makes each build discard its excess on its next
+    mail-activity write for a contact; the excess is gone once every device
+    holding it has done so.
+
+  Change the limit only as a deliberate format decision.
 
 ## Deletion
 
