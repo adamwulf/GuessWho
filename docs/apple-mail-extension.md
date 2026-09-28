@@ -195,38 +195,21 @@ metadata; the next append trims unclaimed lines again.
 
 ### Draining (app): the claim lifecycle
 
-1. **Claim.** `claimEntries(limit:)` atomically marks up to `limit` (default
-   50\) of the oldest entries that no live claim holds with a fresh token and
-   returns them as a `Claim`. A second claimer — for example a Debug and an
-   /Applications copy of the app — gets only entries nobody holds.
+1. **Claim.** `claimEntries(limit:)` atomically marks up to `limit` (default 50) of the oldest entries that no live claim holds with a fresh token and returns them as a `Claim`. A second claimer — for example a Debug and an /Applications copy of the app — gets only entries nobody holds.
 
-2. **Work, renewing as needed.** A claim is live for `claimLease` (5 minutes)
-   from its last claim or `renew(_:)`. A drain that might run longer renews.
+2. **Work, renewing as needed.** A claim is live for `claimLease` (5 minutes) from its last claim or `renew(_:)`. The app renews the active batch and every failed entry it is deferring while later batches drain.
 
-3. **Settle, whole or by subset.** `acknowledge(_:messageIDs:)` removes
-   entries that were stored (or deliberately dropped — for example, a sender
-   no longer matching any contact once the app's storage has loaded);
-   `release(_:messageIDs:)` returns entries for a later retry. Settling by
-   Message-ID subset keeps one entry that can't be stored from pinning or
-   replaying the rest of the batch.
+3. **Settle, whole or by subset.** `acknowledge(_:messageIDs:)` removes entries that were stored or whose sender is proven absent after the current contacts revision was successfully published. `release(_:messageIDs:)` returns failures and temporarily unmatched entries for a later retry. Settling by Message-ID subset keeps one entry that cannot be stored from pinning or replaying the rest of the batch.
 
-4. **Fencing.** `renew`, `acknowledge`, and `release` touch only lines that
-   still carry the claim's token. Each returns a `ClaimOutcome` that puts
-   every Message-ID asked about in exactly one bucket:
+4. **Fencing.** `renew`, `acknowledge`, and `release` touch only lines that still carry the claim token. Each returns a `ClaimOutcome` that puts every Message-ID asked about in exactly one bucket:
 
     - `applied` — held by this claim; the call acted on it.
-    - `lost` — in the journal but held by a **different** claim token: this
-      claim's lease lapsed and another claimer took it. A claimer with
-      `lostOwnership` must treat those entries as someone else's.
-    - `settledOrMissing` — held by no claim: already acknowledged or released
-      (by this claim or another), evicted, or never in the journal. Nothing is
-      left to do, and nobody else owns it — so a whole-claim settle after
-      earlier subset settles reports the caller's own work here, not as lost.
+    - `lost` — in the journal but held by a different claim token: this claim lease lapsed and another claimer took it. A claimer with `lostOwnership` must treat those entries as someone else’s.
+    - `settledOrMissing` — held by no claim: already acknowledged or released, evicted, or never present. A whole-claim settle after earlier subset settles reports the caller work here, not as lost.
 
    A lapsed claim whose entries nobody retook still settles them.
 
-5. **Crash recovery.** A claim that is never settled expires after the lease,
-   and its entries become claimable again.
+5. **Crash recovery.** A claim that is never settled expires after the lease, and its entries become claimable again.
 
 ### Change notification
 
@@ -243,7 +226,7 @@ there. Draining on activation remains the fallback.
 
 The published snapshot includes every email-bearing contact so Mail can recognize compose recipients and journal known senders. Highlight reasons are projected from favorite contacts, favorite organization members, favorite department members, and favorite group members. Favorites and App Group file reads run off the main actor. Group reads are revision-checked and error-aware, and the final publish gate checks contact, membership, hierarchy, load state, and reload outcome again after every suspension. A failed favorites, groups, contacts, or stale read preserves the previous cache. Newer formats, including a breaking format whose address index this build cannot decode, are never downgraded. Equivalent current snapshots are not rewritten. Snapshot sorting is computed once per contact on a utility task. Thumbnails are capped at 256 KiB each and 8 MiB total after charging the bytes once per normalized address; transient photo read failures are retried rather than cached as no photo.
 
-The drainer claims up to ten batches of 50 entries per pass and renews ownership while processing. It resolves senders through the same `MailAddressNormalizer` used by the extension cache and records one message against every matching contact. Writes for each contact are awaited sequentially because the first incoming activity can transparently mint the private GuessWho identity URL on its Contacts card; `MailActivity` then de-duplicates redelivery by Message-ID and advances Last Interaction only forward. Stored entries are acknowledged. Failed or temporarily unmatched entries stay claimed while later batches drain, then are released together and retried after a delay, so one poison entry cannot pin the backlog. Loading or failed repository state never acknowledges an entry. Shutdown best-effort releases live claims, and fencing prevents this process from settling ownership another app copy acquired.
+The drainer claims up to ten batches of 50 entries per pass and renews both active and deferred ownership while processing. It builds the contact-address index only after finding work, uses the same `MailAddressNormalizer` as the extension cache, and records one message against every matching contact. Writes for each contact are awaited sequentially because the first incoming activity can transparently mint the private GuessWho identity URL on its Contacts card; `MailActivity` then de-duplicates redelivery by Message-ID and advances Last Interaction only forward. Stored entries are acknowledged. An unmatched sender is acknowledged only when the current contact revision has been successfully published, proving the extension cache and repository agree that the address is gone; otherwise it is released for retry. Failed entries stay claimed while later batches drain, then are released together and retried after a delay, so one poison entry cannot pin the backlog. Claim, renewal, and release failures also schedule retries; a later pass first retries any release that previously failed. Loading or failed repository state never acknowledges an entry. Shutdown best-effort releases live claims, and fencing prevents this process from settling ownership another app copy acquired.
 
 ## Privacy
 

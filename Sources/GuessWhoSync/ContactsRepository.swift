@@ -132,6 +132,13 @@ public enum ContactsRepositoryDidReloadKey {
     /// private identity URL may retain their caches. Absent means false.
     public static let mailActivityIdentityMinted = "mailActivityIdentityMinted"
 
+    /// `Int` — the contact-data revision immediately before the transparent
+    /// mail-activity identity mint. Present only with
+    /// `mailActivityIdentityMinted`, so caches can carry forward state only
+    /// when they know they represented that exact prior revision.
+    public static let mailActivityIdentityMintedFromContactRevision =
+        "mailActivityIdentityMintedFromContactRevision"
+
     /// `Bool` — whether this reload can change the name, organization, title,
     /// email, photo, group resolution, or other input to the Apple Mail contact
     /// projection. Absent means true. Presentation-only filters, timestamp
@@ -287,6 +294,15 @@ public final class ContactsRepository: NSObject {
     /// the repository-wide `lastError` so an unrelated contact refresh cannot
     /// erase or replace the actionable Groups empty state.
     public private(set) var groupsError: String?
+
+    /// True while the newest direct Contacts group fetch is in flight.
+    public private(set) var isLoadingGroups = false
+
+    /// Whether the cached groups and their durable identity resolutions came
+    /// from a complete winning fetch and no newer fetch is in flight.
+    public var hasAuthoritativeGroupCache: Bool {
+        hasAuthoritativeGroups && !isLoadingGroups && groupsError == nil
+    }
 
     /// Advances after each successful group mutation. `loadGroups()` captures
     /// this before its store fetch and discards a result that returns after a
@@ -702,6 +718,12 @@ public final class ContactsRepository: NSObject {
         groupLoadRequestGeneration &+= 1
         let loadGeneration = groupLoadRequestGeneration
         let mutationGeneration = groupMutationGeneration
+        isLoadingGroups = true
+        defer {
+            if loadGeneration == groupLoadRequestGeneration {
+                isLoadingGroups = false
+            }
+        }
         do {
             let fetched = try await contactsStore.fetchAllGroups()
             guard loadGeneration == groupLoadRequestGeneration,
@@ -720,6 +742,7 @@ public final class ContactsRepository: NSObject {
             lastError = "Groups fetch failed: \(error.localizedDescription)"
         }
         // Groups moved; the CONTACT records in the cache are untouched.
+        isLoadingGroups = false
         postDidReload(contactDataChanged: false)
     }
 
@@ -1827,7 +1850,7 @@ public final class ContactsRepository: NSObject {
     /// guessWhoID strings off disk and resolves them here — the bridge that lets
     /// it resolve a link endpoint / favorite without an app-side `uuid → Contact`
     /// map.
-    package func contact(guessWhoID: String) -> Contact? {
+    public func contact(guessWhoID: String) -> Contact? {
         guard let lid = guessWhoIDToLocalID[guessWhoID.lowercased()] else { return nil }
         return contactsByLocalID[lid]
     }
@@ -3463,10 +3486,12 @@ public final class ContactsRepository: NSObject {
             updateTimestampCache(.interacted, at: key, to: lastInteracted)
         }
         if minted {
+            let revisionBeforeMint = contactDataRevision
             await applyRefresh(localID: current.localID)
             postDidReload(
                 contactDataChanged: true,
                 mailActivityIdentityMinted: true,
+                mailActivityIdentityMintedFromContactRevision: revisionBeforeMint,
                 mailContactProjectionChanged: false
             )
         } else if outcome.lastInteractedChanged {
@@ -4415,6 +4440,7 @@ public final class ContactsRepository: NSObject {
     private func postDidReload(
         contactDataChanged: Bool = true,
         mailActivityIdentityMinted: Bool = false,
+        mailActivityIdentityMintedFromContactRevision: Int? = nil,
         mailContactProjectionChanged: Bool = true
     ) {
         // Routed through the injected center (defaults to `.default`, so the
@@ -4436,6 +4462,10 @@ public final class ContactsRepository: NSObject {
         ]
         if mailActivityIdentityMinted {
             userInfo[ContactsRepositoryDidReloadKey.mailActivityIdentityMinted] = true
+        }
+        if let mailActivityIdentityMintedFromContactRevision {
+            userInfo[ContactsRepositoryDidReloadKey.mailActivityIdentityMintedFromContactRevision] =
+                mailActivityIdentityMintedFromContactRevision
         }
         notificationCenter.post(
             name: .contactsRepositoryDidReload,
@@ -4765,7 +4795,7 @@ public final class ContactsRepository: NSObject {
             guard generation == refreshGeneration else { return }
         }
         isLoading = false
-        postDidReload(contactDataChanged: false)
+        postDidReload(contactDataChanged: false, mailContactProjectionChanged: folderChanged)
         // Exact remote contact keys: tell an open detail showing mail activity
         // without making it wait on (or re-read for) the global reload.
         postMailActivityDidChange(forContactKeys: contactKeys)
@@ -4777,7 +4807,7 @@ public final class ContactsRepository: NSObject {
         await reloadGroupHierarchy()
         guard generation == refreshGeneration else { return }
         isLoading = false
-        postDidReload(contactDataChanged: false)
+        postDidReload(contactDataChanged: false, mailContactProjectionChanged: false)
     }
 
     /// How much group-identity work one sidecar projection refresh performs.
@@ -4813,7 +4843,17 @@ public final class ContactsRepository: NSObject {
         await refreshFullSidecarProjectionCaches(generation: generation, groupIdentities: pass)
         guard generation == refreshGeneration else { return }
         isLoading = false
-        postDidReload(contactDataChanged: false)
+        let affectsMailProjection: Bool
+        switch pass {
+        case .resolve, .resolveAll, .resolveAndRefreshAll:
+            affectsMailProjection = true
+        case .none, .hierarchyOnly:
+            affectsMailProjection = false
+        }
+        postDidReload(
+            contactDataChanged: false,
+            mailContactProjectionChanged: affectsMailProjection
+        )
     }
 
     /// Refresh just the contact timestamp entries named by a watcher delta.

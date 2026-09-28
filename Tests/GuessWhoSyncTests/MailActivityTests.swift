@@ -613,6 +613,7 @@ struct ContactsRepositoryMailActivityTests {
         // on this test's main-actor flow; read after the awaited writes.
         nonisolated(unsafe) var reloadFlags: [Bool] = []
         nonisolated(unsafe) var mailMintFlags: [Bool] = []
+        nonisolated(unsafe) var mintSourceRevisions: [Int?] = []
         nonisolated(unsafe) var mailProjectionFlags: [Bool] = []
         nonisolated(unsafe) var activityPosts: [[ContactID]] = []
         let reloadToken = center.addObserver(
@@ -623,6 +624,11 @@ struct ContactsRepositoryMailActivityTests {
             )
             mailMintFlags.append(
                 (note.userInfo?[ContactsRepositoryDidReloadKey.mailActivityIdentityMinted] as? Bool) ?? false
+            )
+            mintSourceRevisions.append(
+                note.userInfo?[
+                    ContactsRepositoryDidReloadKey.mailActivityIdentityMintedFromContactRevision
+                ] as? Int
             )
             mailProjectionFlags.append(
                 (note.userInfo?[ContactsRepositoryDidReloadKey.mailContactProjectionChanged] as? Bool) ?? true
@@ -661,6 +667,7 @@ struct ContactsRepositoryMailActivityTests {
         #expect(minted.guessWhoID != nil)
         #expect(reloadFlags == [true, true, false])
         #expect(mailMintFlags == [false, true, false])
+        #expect(mintSourceRevisions == [nil, 1, nil])
         #expect(mailProjectionFlags == [true, false, false])
         #expect(activityPosts == [[minted, id], [minted, id]])
         #expect(await repo.mailActivities(for: id).map(\.messageID)

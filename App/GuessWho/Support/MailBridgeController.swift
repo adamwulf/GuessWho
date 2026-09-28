@@ -39,6 +39,10 @@ final class MailBridgeController {
     private var drainPending = false
     private var isShuttingDown = false
     private var activeClaims: [UUID: MailIncomingJournal.Claim] = [:]
+    /// Contact-data revision known to be represented by a successfully written
+    /// or byte-equivalent current cache. Nil while publication is pending or a
+    /// newer-format cache is intentionally preserved.
+    private var publishedContactRevision: Int?
 
     /// Thumbnail reads are comparatively expensive. The cache is valid for one
     /// contact-data revision; membership/favorite-only changes reuse it.
@@ -126,15 +130,21 @@ final class MailBridgeController {
                 let mailActivityIdentityMinted = notification.userInfo?[
                     ContactsRepositoryDidReloadKey.mailActivityIdentityMinted
                 ] as? Bool ?? false
-                if mailActivityIdentityMinted {
-                    // The only contact change was the private identity URL.
-                    // Preserve already-read thumbnails across that revision.
-                    self.photoRevision = self.repository.contactDataRevision
+                if mailActivityIdentityMinted,
+                   let previousRevision = notification.userInfo?[
+                    ContactsRepositoryDidReloadKey.mailActivityIdentityMintedFromContactRevision
+                   ] as? Int,
+                   self.publishedContactRevision == previousRevision {
+                    // Addresses and compose fields are unchanged by the
+                    // private identity URL. Carry the publication marker only
+                    // from the exact revision the mint replaced.
+                    self.publishedContactRevision = self.repository.contactDataRevision
                 } else if mailContactProjectionChanged {
+                    self.publishedContactRevision = nil
                     self.schedulePublish()
                 }
                 self.recoverGroupsIfNeeded()
-                self.requestDrain()
+                if mailContactProjectionChanged { self.requestDrain() }
             }
         })
         notificationTokens.append(notificationCenter.addObserver(
@@ -157,6 +167,7 @@ final class MailBridgeController {
             queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated {
+                self?.publishedContactRevision = nil
                 self?.schedulePublish()
                 self?.recoverGroupsIfNeeded()
                 self?.requestDrain()
@@ -190,6 +201,19 @@ final class MailBridgeController {
         publishDebounceTask = Task { @MainActor [weak self] in
             do {
                 try await Task.sleep(nanoseconds: Self.retryNanoseconds)
+            } catch {
+                return
+            }
+            self?.requestPublish()
+        }
+    }
+
+    private func schedulePublishRecoveryRetry() {
+        guard !isShuttingDown else { return }
+        publishDebounceTask?.cancel()
+        publishDebounceTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: Self.drainRetryNanoseconds)
             } catch {
                 return
             }
@@ -260,7 +284,7 @@ final class MailBridgeController {
     // MARK: - Contact cache publication
 
     private enum SnapshotBuildResult {
-        case ready(MailContactSnapshot)
+        case ready(MailContactSnapshot, contactRevision: Int)
         case retry
         case preserveExisting
     }
@@ -278,11 +302,16 @@ final class MailBridgeController {
             schedulePublishRetry()
             return
         case .preserveExisting:
+            schedulePublishRecoveryRetry()
             return
-        case .ready(let candidate):
+        case .ready(let candidate, let contactRevision):
             switch await MailContactCachePublication.publish(candidate, to: cacheStore) {
             case .written, .unchanged:
-                break
+                if !repository.isLoading,
+                   case .published = repository.lastReloadOutcome,
+                   repository.contactDataRevision == contactRevision {
+                    publishedContactRevision = contactRevision
+                }
             case .preservedNewer(let version):
                 Self.log.notice("mail contact cache is from a newer app; preserving it", [
                     "version": "\(version)"
@@ -317,7 +346,8 @@ final class MailBridgeController {
         // from that cache would silently drop a newly favorited group whose
         // identity could not be resolved during the failed load, so a group
         // favorite plus any group error is an incomplete projection.
-        if favorites.contains(where: { $0.kind == .group }), repository.groupsError != nil {
+        if favorites.contains(where: { $0.kind == .group }),
+           !repository.hasAuthoritativeGroupCache {
             return .preserveExisting
         }
 
@@ -385,6 +415,11 @@ final class MailBridgeController {
             if loadedPhotoIDs.contains(id) {
                 thumbnail = photosByContactID[id]
             } else {
+                // Do not gate this read on `imageDataAvailable`: the Contacts
+                // adapter documents that flag as a hint, never a veto, because
+                // thumbnail-only cards can report false. Each id is read at
+                // most once per contact-data revision and the repository moves
+                // the actual Contacts fetch off the main actor.
                 do {
                     thumbnail = try await repository.contactPhotoData(for: id, kind: .thumbnail)?.data
                     loadedPhotoIDs.insert(id)
@@ -416,7 +451,7 @@ final class MailBridgeController {
               repository.contactDataRevision == contactRevision,
               repository.memberRevisions == memberRevisions
         else { return .retry }
-        return .ready(snapshot)
+        return .ready(snapshot, contactRevision: contactRevision)
     }
 
     // MARK: - Incoming journal drain
@@ -428,9 +463,16 @@ final class MailBridgeController {
               let journal
         else { return }
 
-        let addressIndex = MailContactAddressIndex(contacts: repository.contacts)
-        var deferred: [(claim: MailIncomingJournal.Claim, messageIDs: Set<String>)] = []
+        await releaseOutstandingClaims(from: journal)
+        guard activeClaims.isEmpty else {
+            scheduleDrainRetry()
+            return
+        }
+
+        var addressIndex: MailContactAddressIndex?
+        var deferred: [DeferredClaim] = []
         var batchCount = 0
+        var stopAfterCurrentBatch = false
         while !Task.isCancelled,
               !isShuttingDown,
               !repository.isLoading,
@@ -445,17 +487,55 @@ final class MailBridgeController {
                 Self.log.error("mail journal claim failed", [
                     "errorType": String(reflecting: type(of: error))
                 ])
+                scheduleDrainRetry()
                 break
             }
             guard let claim else { break }
             batchCount += 1
             activeClaims[claim.token] = claim
-            switch await drain(claim, from: journal, addressIndex: addressIndex) {
+            let index: MailContactAddressIndex
+            if let addressIndex {
+                index = addressIndex
+            } else {
+                index = MailContactAddressIndex(contacts: repository.contacts)
+                addressIndex = index
+            }
+            switch await drain(claim, from: journal, addressIndex: index) {
             case .settled:
                 activeClaims.removeValue(forKey: claim.token)
             case .deferred(let messageIDs):
-                deferred.append((claim, messageIDs))
+                deferred.append(DeferredClaim(claim: claim, messageIDs: messageIDs))
             }
+
+            // Keep poison entries out of the unclaimed pool while later
+            // batches drain, but extend their leases so a long pass cannot
+            // reclaim its own deferred work.
+            var renewed: [DeferredClaim] = []
+            for item in deferred {
+                do {
+                    let claim = item.claim
+                    let messageIDs = item.messageIDs
+                    let outcome = try await Task.detached(priority: .utility) {
+                        try journal.renew(claim, messageIDs: messageIDs)
+                    }.value
+                    if !outcome.applied.isEmpty {
+                        renewed.append(DeferredClaim(
+                            claim: claim,
+                            messageIDs: outcome.applied
+                        ))
+                    } else {
+                        activeClaims.removeValue(forKey: claim.token)
+                    }
+                } catch {
+                    renewed.append(item)
+                    stopAfterCurrentBatch = true
+                    Self.log.error("mail journal deferred renewal failed", [
+                        "errorType": String(reflecting: type(of: error))
+                    ])
+                }
+            }
+            deferred = renewed
+            if stopAfterCurrentBatch { break }
         }
 
         var needsRetry = !deferred.isEmpty
@@ -476,6 +556,29 @@ final class MailBridgeController {
         }
         if needsRetry || batchCount == Self.maximumDrainBatchesPerPass {
             scheduleDrainRetry()
+        }
+    }
+
+    private struct DeferredClaim {
+        let claim: MailIncomingJournal.Claim
+        let messageIDs: Set<String>
+    }
+
+    /// Retry releases that previously failed before claiming new work. A live
+    /// five-minute lease is otherwise invisible to `claimEntries`, so merely
+    /// waking again after 30 seconds would observe an empty journal and stop.
+    private func releaseOutstandingClaims(from journal: MailIncomingJournal) async {
+        for claim in Array(activeClaims.values) {
+            do {
+                _ = try await Task.detached(priority: .utility) {
+                    try journal.release(claim)
+                }.value
+                activeClaims.removeValue(forKey: claim.token)
+            } catch {
+                Self.log.error("mail journal outstanding release failed", [
+                    "errorType": String(reflecting: type(of: error))
+                ])
+            }
         }
     }
 
@@ -541,11 +644,20 @@ final class MailBridgeController {
 
             let contactIDs = addressIndex.contactIDs(matching: entry.sender)
             guard !contactIDs.isEmpty else {
-                // The Mail cache and the repository can briefly straddle a
-                // contact change. Preserve the message until a later pass can
-                // prove a match rather than treating that race as deletion.
-                retry.insert(entry.messageID)
-                schedulePublish()
+                if MailJournalDrainPolicy.shouldAcknowledgeUnmatched(
+                    publishedContactRevision: publishedContactRevision,
+                    currentContactRevision: repository.contactDataRevision
+                ) {
+                    // The extension saw the sender in an older cache, while a
+                    // successful publication proves the current cache and
+                    // repository now agree that the address is gone.
+                    acknowledge.insert(entry.messageID)
+                } else {
+                    // Publication is pending or a newer-format cache is being
+                    // preserved. Keep the message until absence is proven.
+                    retry.insert(entry.messageID)
+                    schedulePublish()
+                }
                 continue
             }
 
@@ -589,6 +701,15 @@ final class MailBridgeController {
 }
 
 private struct MailBridgeRepositoryUnavailableError: Error {}
+
+enum MailJournalDrainPolicy {
+    static func shouldAcknowledgeUnmatched(
+        publishedContactRevision: Int?,
+        currentContactRevision: Int
+    ) -> Bool {
+        publishedContactRevision == currentContactRevision
+    }
+}
 
 /// Exact same address canonicalization the extension cache uses. The package
 /// email index intentionally applies a narrower normalization and therefore

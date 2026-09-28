@@ -5,8 +5,40 @@ import Testing
 import GuessWhoSync
 @testable import GuessWho
 
+@MainActor
 @Suite("Mail contact snapshot projection")
 struct MailBridgeControllerTests {
+    @Test
+    func recordedActivityBuildsASafeMailLink() throws {
+        let activity = try #require(MailActivity(
+            senderAddress: "ada@example.com",
+            subject: "Hello",
+            receivedAt: Date(timeIntervalSince1970: 1_000),
+            messageID: "<ABC.123@Example.COM>",
+            mailURL: "https://attacker.invalid/not-used"
+        ))
+
+        let link = try #require(MailActivityMailLink.url(for: activity))
+        #expect(link.scheme == "message")
+        #expect(link.absoluteString == "message://%3CABC.123@example.com%3E")
+    }
+
+    @Test
+    func unmatchedMailIsDroppedOnlyAfterTheCurrentContactsWerePublished() {
+        #expect(!MailJournalDrainPolicy.shouldAcknowledgeUnmatched(
+            publishedContactRevision: nil,
+            currentContactRevision: 3
+        ))
+        #expect(!MailJournalDrainPolicy.shouldAcknowledgeUnmatched(
+            publishedContactRevision: 2,
+            currentContactRevision: 3
+        ))
+        #expect(MailJournalDrainPolicy.shouldAcknowledgeUnmatched(
+            publishedContactRevision: 3,
+            currentContactRevision: 3
+        ))
+    }
+
     @Test
     func projectionCarriesComposeDetailsAndHighlightReasons() throws {
         let contact = Contact(
@@ -174,6 +206,161 @@ struct MailBridgeControllerTests {
         #expect(outcome == .preservedNewer(version: 999))
         #expect(try Data(contentsOf: url) == data)
     }
+
+    @Test
+    func bridgePublishesContactsAndDrainsKnownSender() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gw-mail-bridge-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let guessWhoID = "10000000-0000-4000-8000-000000000001"
+        let contact = Contact(
+            givenName: "Ada",
+            familyName: "Lovelace",
+            emailAddresses: [LabeledValue(label: "work", value: "Ada <ADA@example.com.>")],
+            urlAddresses: [
+                LabeledValue(label: "GuessWho", value: "guesswho://contact/\(guessWhoID)")
+            ]
+        )
+        let service = SyncService(
+            contactsAdapter: MailBridgeContactStore(contacts: [contact]),
+            eventsAdapter: MailBridgeEventStore(),
+            sidecarLocation: .iCloud(root),
+            deviceID: "mail-bridge-test",
+            contactCursorURL: root.appendingPathComponent("cursor")
+        )
+        let center = NotificationCenter()
+        let repository = service.makeContactsRepository(notificationCenter: center)
+        await repository.reload()
+
+        let cacheStore = MailContactCacheStore(
+            fileURL: root.appendingPathComponent("contact-cache.plist")
+        )
+        let journalURL = root.appendingPathComponent("incoming-messages.jsonl")
+        let journal = MailIncomingJournal(fileURL: journalURL)
+        let messageID = try #require(MailMessageID.normalize("bridge@example.com"))
+        _ = try journal.append(MailIncomingMessage(
+            sender: "mailto:ada@example.com",
+            subject: "Integration",
+            receivedAt: Date(timeIntervalSince1970: 2_000),
+            messageID: messageID,
+            messageURL: URL(string: "https://attacker.invalid/not-used")
+        ))
+
+        let controller = MailBridgeController(
+            service: service,
+            repository: repository,
+            notificationCenter: center,
+            cacheStore: cacheStore,
+            journal: journal,
+            journalNotificationName: nil
+        )
+        controller.bootstrap()
+        defer { controller.shutdown() }
+
+        let contactID = try #require(repository.contacts.first?.contactID)
+        try await waitUntil {
+            await repository.mailActivities(for: contactID).map(\.messageID) == ["bridge@example.com"]
+        }
+        let contents = try #require(try cacheStore.read())
+        guard case .current(let snapshot) = contents else {
+            Issue.record("Expected a current cache snapshot")
+            return
+        }
+        #expect(snapshot.summaries(forAddress: "ada@example.com").map(\.displayName) == ["Ada Lovelace"])
+        try await waitUntil {
+            ((try? Data(contentsOf: journalURL)) ?? Data()).isEmpty
+        }
+    }
+
+    private func waitUntil(
+        timeout: Duration = .seconds(3),
+        _ condition: @escaping @MainActor () async -> Bool
+    ) async throws {
+        let deadline = ContinuousClock.now.advanced(by: timeout)
+        while !(await condition()), ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(await condition())
+    }
+}
+
+private actor MailBridgeContactStore: ContactStoreProtocol {
+    private var contacts: [Contact]
+
+    init(contacts: [Contact]) {
+        self.contacts = contacts
+    }
+
+    func fetchAll() async throws -> [Contact] { contacts }
+    func fetch(localID: String) async throws -> Contact? {
+        contacts.first { $0.contactID == contacts.first?.contactID }
+    }
+    func save(_ contact: Contact) async throws {
+        if let index = contacts.indices.first {
+            contacts[index] = contact
+        }
+    }
+    func delete(localID: String) async throws {}
+    func create(_ contact: Contact) async throws -> Contact { contact }
+    func contactsAuthorizationStatus() async -> StoreAuthorizationStatus { .authorized }
+    func requestContactsAccess() async -> StoreAccessResult {
+        StoreAccessResult(status: .authorized)
+    }
+    func changes(since token: Data?) async throws -> ContactChangeSet {
+        ContactChangeSet(changes: [], newToken: token ?? Data(), requiresFullReload: false)
+    }
+    func loadImageData(localID: String) async throws -> Data? { nil }
+    func loadThumbnailImageData(localID: String) async throws -> Data? { nil }
+    func setImageData(localID: String, imageData: Data?) async throws {}
+    func fetchAllGroups() async throws -> [ContactGroup] { [] }
+    func fetchGroup(localID: String) async throws -> ContactGroup? { nil }
+    func createGroup(name: String) async throws -> ContactGroup {
+        ContactGroup(localID: UUID().uuidString, name: name)
+    }
+    func renameGroup(localID: String, to name: String) async throws {}
+    func deleteGroup(localID: String) async throws {}
+    func fetchMembers(ofGroup groupLocalID: String) async throws -> [Contact] { [] }
+    func fetchMemberLocalIDs(ofGroup groupLocalID: String) async throws -> [String] { [] }
+    func fetchGroupMemberships(contactLocalID: String) async throws -> [ContactGroup] { [] }
+    func addMember(contactLocalID: String, toGroup groupLocalID: String) async throws {}
+    func removeMember(contactLocalID: String, fromGroup groupLocalID: String) async throws {}
+}
+
+private final class MailBridgeEventStore: EventStoreProtocol, Sendable {
+    func eventsAuthorizationStatus() -> StoreAuthorizationStatus { .authorized }
+    func requestEventsAccess() async -> StoreAccessResult {
+        StoreAccessResult(status: .authorized)
+    }
+    func fetchEvents(in interval: DateInterval) throws -> [Event] { [] }
+    func fetch(eventKitID: String) throws -> Event? { nil }
+    func fetchEvents(on day: Date) throws -> [Event] { [] }
+    func searchEvents(matching text: String, in interval: DateInterval) throws -> [Event] { [] }
+    func eventsWithAttendee(
+        matchingEmails emails: Set<String>,
+        orLocations locations: Set<String>,
+        in interval: DateInterval,
+        limit: Int
+    ) throws -> [Event] { [] }
+    func fetch(legacyEventIdentifier: String) throws -> Event? { nil }
+    func createEvent(
+        title: String,
+        startDate: Date,
+        endDate: Date,
+        isAllDay: Bool,
+        location: String?
+    ) throws -> Event {
+        Event(title: title, startDate: startDate, endDate: endDate, isAllDay: isAllDay)
+    }
+    func updateEvent(
+        eventKitID: String,
+        title: String,
+        startDate: Date,
+        endDate: Date,
+        isAllDay: Bool,
+        location: String?
+    ) throws {}
 }
 
 #endif

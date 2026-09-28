@@ -6,6 +6,15 @@ import UniformTypeIdentifiers
 import GuessWhoSync
 import GuessWhoLogging
 
+/// Builds the only URL the contact card will open for a recorded message.
+/// `MailActivity` stores its normalized Message-ID without angle brackets;
+/// the shared URL validator deliberately accepts only canonical `<...>` form.
+enum MailActivityMailLink {
+    static func url(for activity: MailActivity) -> URL? {
+        MailMessageID.mailDeepLink(for: "<\(activity.messageID)>")
+    }
+}
+
 /// Once-per-view scheduler for the presentation-only viewed stamp. An
 /// unstructured utility-priority task deliberately outlives SwiftUI's
 /// appearance task: navigating away must not cancel the real stamp/mint, while
@@ -311,26 +320,6 @@ struct ContactDetailView: View {
 
     private var linkedPlaceItems: [ContactLink] {
         placeLinks.sorted { $0.createdAt < $1.createdAt }
-    }
-
-    /// The stored event association pointing at `event`, if any. Drives the
-    /// recent-event long-press menu: a match means the row is already associated,
-    /// so the menu offers no duplicate add action.
-    ///
-    /// Recent-event rows live in the EventKit id-space: their `id` is the
-    /// synthetic `Event.stableID(forEventKitID:)`, while a link's event
-    /// endpoint stores the real sidecar UUID — the two never compare equal.
-    /// Match on the linked sidecar event's `eventKitID` instead, keeping the
-    /// direct UUID comparison only for sidecar-only (manual) events.
-    private func eventLink(for event: Event) -> ContactLink? {
-        eventLinks.first { link in
-            guard let endpointUUID = repository.eventEndpointUUID(
-                of: link, for: loadedContactID ?? id
-            ) else { return false }
-            if endpointUUID == event.id.uuidString { return true }
-            guard let ekid = event.eventKitID else { return false }
-            return service.event(uuid: endpointUUID)?.eventKitID == ekid
-        }
     }
 
     /// Split the connection links by the linked contact's type. Links whose
@@ -1706,7 +1695,7 @@ struct ContactDetailView: View {
     }
 
     private func mailURL(for activity: MailActivity) -> URL? {
-        MailMessageID.mailDeepLink(for: activity.messageID)
+        MailActivityMailLink.url(for: activity)
     }
 
     @ViewBuilder

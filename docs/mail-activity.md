@@ -18,17 +18,17 @@ Each activity is **one cell** on the contact's sidecar envelope (kind
 `.contact`, keyed by the contact's GuessWho UUID). There is no new kind and no
 new directory.
 
-- **Cell key:** `mailActivity:<uuid>`, the activity id in lowercase[^key]. The
+- **Cell key:** `mailActivity:<uuid>`, the activity id in lowercase\[^key\]. The
   prefix is part of the synced format; never change it.
 - **Cell value:** an object with `direction` (`"incoming"`), `sender`,
   `receivedAt` (ISO 8601 UTC, milliseconds), `messageID` (normalized), and the
-  optional `subject` and `mailURL`, which are omitted when absent[^value].
+  optional `subject` and `mailURL`, which are omitted when absent\[^value\].
 - **Cell stamps:** `modifiedAt` is the time of the write that last changed the
   value, `modifiedBy` that device's id.
 
 The key is not a bare UUID and the value has no `field` / `type`, so these
 cells are not field instances. `GuessWhoSync.fields(at:)` skips the prefix
-explicitly[^fields], so they never appear in notes, custom fields, the
+explicitly\[^fields], so they never appear in notes, custom fields, the
 Recently Deleted screen, or the CLI/MCP field tools, all of which read through
 it. The one decode path is `GuessWhoSync.mailActivities(at:)`.
 
@@ -38,14 +38,14 @@ The activity id is **deterministic**, so every delivery of one message — a
 repeat from the handler, the same message on another Mac, or the same message
 recorded on two contacts that later collapse — lands on the same cell.
 
-1. **Normalize** the RFC 5322 Message-ID[^normalize]: remove all whitespace
+1. **Normalize** the RFC 5322 Message-ID\[^normalize\]: remove all whitespace
    (header folding), strip one enclosing `<` `>` pair, and lowercase the part
    after the last `@`. Domains are case-insensitive; the local part is not, so
    it keeps its case. An ID that is empty after this has no identity, and
    `MailActivity.init` returns nil.
 2. **Hash** `"mail-activity\n" + normalized` with SHA-256 and format the first
    16 bytes as an RFC 4122 UUID (version and variant bits set, the same recipe
-   as `Event.stableID(forEventKitID:)`)[^hash]. The namespace prefix keeps a
+   as `Event.stableID(forEventKitID:)`)\[^hash\]. The namespace prefix keeps a
    Message-ID from hashing to the id of anything else.
 
 The stored `messageID` is the normalized form. `receivedAt` is rounded to the
@@ -56,17 +56,17 @@ compares equal to the one written.
 
 `GuessWhoSync.recordMailActivity(_:at:)` does ONE key-locked read-modify-write
 of the raw cell map: every cell it does not own is copied through
-unchanged[^write]. In that one write it:
+unchanged\[^write]. In that one write it:
 
 1. **Upserts the activity cell.**
-   - No cell yet: store the full value.
-   - A live cell this build decodes: write only this build's keys over the
-     stored object. Keys a newer build added inside the object survive, and a
-     stored `subject` or `mailURL` survives a delivery that has none. If the
-     result equals the stored object, nothing is written.
-   - A soft-deleted cell: leave it. A repeat delivery never undeletes.
-   - A live cell this build cannot decode (an unknown `direction`, a missing
-     required key): leave it. It belongs to a newer build.
+    - No cell yet: store the full value.
+    - A live cell this build decodes: write only this build's keys over the
+      stored object. Keys a newer build added inside the object survive, and a
+      stored `subject` or `mailURL` survives a delivery that has none. If the
+      result equals the stored object, nothing is written.
+    - A soft-deleted cell: leave it. A repeat delivery never undeletes.
+    - A live cell this build cannot decode (an unknown `direction`, a missing
+      required key): leave it. It belongs to a newer build.
 2. **Applies retention** (below).
 3. **Advances `lastInteracted`** (below).
 
@@ -84,22 +84,25 @@ When it moves, the cell's value AND its `modifiedAt` are both the received
 time. Every timestamp stamp writes that same shape (value == `modifiedAt`), so
 the whole-cell last-writer-wins merge picks the cell with the later value: two
 Macs that each record a different message converge on the later received time,
-even when the older message was written at a later wall-clock time[^lww].
+even when the older message was written at a later wall-clock time\[^lww].
 
 The activity cell itself is different: its `modifiedAt` is the write time, so
 the newest change to a message's stored value wins a merge.
 
 ## Retention
 
-Each contact keeps at most `MailActivity.retentionLimit` (100) activities[^retention].
+Each contact keeps at most `MailActivity.retentionLimit` (100) activities\[^retention].
 
 - Only **decodable live** activity cells count. Soft-deleted cells and cells
   this build cannot decode are never counted and never removed.
+
 - They rank newest first by `receivedAt`, ties broken by the id string — the
   same order `mailActivities(at:)` returns — so every device keeps the same
   set.
+
 - The write physically removes every counted cell beyond the limit. A delivery
   that would rank outside the window is not added.
+
 - Removal is physical, not a tombstone, and the sidecar merge is a
   cell-by-cell union. A peer whose version still holds a removed cell can
   bring it back when the versions merge, and a Case-D collapse unions two
@@ -107,16 +110,18 @@ Each contact keeps at most `MailActivity.retentionLimit` (100) activities[^reten
   every decodable live activity until the next mail-activity write for that
   contact prunes that build's copy again. Builds with the same limit rank the
   same set, so they converge on it.
+
 - **The limit is part of the synced format.** Each build prunes its own copy
   to its OWN limit on the next mail-activity write for that contact. With
   mixed limits the set churns: a lower-limit build re-trims it, and a
   higher-limit peer's version can re-add those cells during a merge. A pruned
   cell is permanently lost only after every device holding it has pruned it.
-  - Raising the limit is durable only once no build with a lower limit still
-    writes.
-  - Lowering the limit makes each build discard its excess on its next
-    mail-activity write for a contact; the excess is gone once every device
-    holding it has done so.
+
+    - Raising the limit is durable only once no build with a lower limit still
+      writes.
+    - Lowering the limit makes each build discard its excess on its next
+      mail-activity write for a contact; the excess is gone once every device
+      holding it has done so.
 
   Change the limit only as a deliberate format decision.
 
@@ -133,7 +138,7 @@ is a pure read: a missing envelope returns `[]`.
 
 ## Repository surface
 
-The app speaks `ContactID` only[^repo]:
+The app speaks `ContactID` only\[^repo]:
 
 - `recordMailActivity(_:for:)` is a write, so it resolves-or-mints the contact's
   GuessWho ID. A token captured before the mint resolves through the cache
@@ -150,27 +155,18 @@ The app speaks `ContactID` only[^repo]:
 
 ### Notifications
 
-- `.contactsRepositoryMailActivityDidChange` carries `[ContactID]` in
-  `ContactsRepositoryMailActivityDidChangeKey.contactIDs`, and no message content.
-  - A local write posts it when the activity list changed (added, changed, or
-    pruned). When the caller's token predates the mint, the list holds both
-    that token and the cache's re-keyed token.
-  - A watcher delivery that names exact `.contact` keys posts it for the keys
-    the cache resolves. The watcher cannot say which cells changed, so this also
-    fires for other edits to that contact.
-- `.contactsRepositoryDidReload` posts when `lastInteracted` moved
-  (`contactDataChanged: false`), or once with `contactDataChanged: true` when
-  the write minted the contact's identity.
-- A **coarse** watcher delivery (a kind directory, or unknown scope) names no
-  contact and posts only `.contactsRepositoryDidReload`. A view that shows mail
-  activity must observe **both** notifications.
+- `.contactsRepositoryMailActivityDidChange` carries `[ContactID]` in `ContactsRepositoryMailActivityDidChangeKey.contactIDs`, and no message content.
+    - A local write posts it when the activity list changed (added, changed, or pruned). When the caller token predates the mint, the list holds both that token and the cache re-keyed token.
+    - A watcher delivery that names exact `.contact` keys posts it for the keys the cache resolves. The watcher cannot say which cells changed, so this also fires for other edits to that contact.
+- `.contactsRepositoryDidReload` posts when `lastInteracted` moved (`contactDataChanged: false`), or once with `contactDataChanged: true` when the write minted the contact identity. Local mail writes also set `mailContactProjectionChanged: false`, because names, addresses, compose fields, and photos did not change. A mint post sets `mailActivityIdentityMinted: true` and carries `mailActivityIdentityMintedFromContactRevision`, the exact revision before the private identity URL was added; a cache may carry state forward only when it represented that revision.
+- A **coarse** watcher delivery names no contact and posts only `.contactsRepositoryDidReload`. A view that shows mail activity must observe both notifications.
 
-[^key]: [MailActivity.cellKey / cellKeyPrefix](../Sources/GuessWhoSync/MailActivity.swift:MailActivity.cellKey)
-[^value]: [MailActivity.cellValue(overlaying:)](../Sources/GuessWhoSync/MailActivity.swift:MailActivity.cellValue)
-[^fields]: [GuessWhoSync.fields(at:) skips MailActivity.isCellKey](../Sources/GuessWhoSync/GuessWhoSync.swift:GuessWhoSync.fields)
-[^normalize]: [MailActivity.normalizedMessageID](../Sources/GuessWhoSync/MailActivity.swift:MailActivity.normalizedMessageID)
-[^hash]: [MailActivity.activityID(forNormalizedMessageID:)](../Sources/GuessWhoSync/MailActivity.swift:MailActivity.activityID)
-[^write]: [GuessWhoSync.recordMailActivity(_:at:)](../Sources/GuessWhoSync/GuessWhoSync+MailActivity.swift:GuessWhoSync.recordMailActivity)
-[^lww]: [merge — whole-cell LWW](../Sources/GuessWhoSync/SidecarMerge.swift:merge)
-[^retention]: [GuessWhoSync.pruneMailActivities / MailActivity.isNewer(than:)](../Sources/GuessWhoSync/GuessWhoSync+MailActivity.swift:GuessWhoSync.pruneMailActivities)
-[^repo]: [ContactsRepository.recordMailActivity(_:for:) / mailActivities(for:)](../Sources/GuessWhoSync/ContactsRepository.swift:ContactsRepository.recordMailActivity)
+\[^key]: [MailActivity.cellKey / cellKeyPrefix](../Sources/GuessWhoSync/MailActivity.swift:MailActivity.cellKey)
+\[^value]: [MailActivity.cellValue(overlaying:)](../Sources/GuessWhoSync/MailActivity.swift:MailActivity.cellValue)
+\[^fields]: [GuessWhoSync.fields(at:) skips MailActivity.isCellKey](../Sources/GuessWhoSync/GuessWhoSync.swift:GuessWhoSync.fields)
+\[^normalize]: [MailActivity.normalizedMessageID](../Sources/GuessWhoSync/MailActivity.swift:MailActivity.normalizedMessageID)
+\[^hash]: [MailActivity.activityID(forNormalizedMessageID:)](../Sources/GuessWhoSync/MailActivity.swift:MailActivity.activityID)
+\[^write]: [GuessWhoSync.recordMailActivity(\_:at:)](../Sources/GuessWhoSync/GuessWhoSync+MailActivity.swift:GuessWhoSync.recordMailActivity)
+\[^lww]: [merge — whole-cell LWW](../Sources/GuessWhoSync/SidecarMerge.swift:merge)
+\[^retention]: [GuessWhoSync.pruneMailActivities / MailActivity.isNewer(than:)](../Sources/GuessWhoSync/GuessWhoSync+MailActivity.swift:GuessWhoSync.pruneMailActivities)
+\[^repo]: [ContactsRepository.recordMailActivity(\_:for:) / mailActivities(for:)](../Sources/GuessWhoSync/ContactsRepository.swift:ContactsRepository.recordMailActivity)
