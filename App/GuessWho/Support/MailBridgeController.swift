@@ -17,7 +17,7 @@ final class MailBridgeController {
     private static let log = GuessWhoLog.logger("app.mail-bridge")
     private static let debounceNanoseconds: UInt64 = 300_000_000
     private static let retryNanoseconds: UInt64 = 2_000_000_000
-    private static let publishRecoveryRetryNanoseconds: UInt64 = 30_000_000_000
+    private static let defaultPublishRecoveryRetryNanoseconds: UInt64 = 30_000_000_000
     private static let drainRetryNanoseconds: UInt64 = 300_000_000_000
     private static let renewalStride = 10
     private static let maximumDrainBatchesPerPass = 10
@@ -28,6 +28,7 @@ final class MailBridgeController {
     private let cacheStore: MailContactCacheStore?
     private let journal: MailIncomingJournal?
     private let journalNotificationName: String?
+    private let publishRecoveryRetryNanoseconds: UInt64
 
     private var notificationTokens: [NSObjectProtocol] = []
     private var journalObserver: MailJournalChangeNotification.Observer?
@@ -60,7 +61,8 @@ final class MailBridgeController {
         notificationCenter: NotificationCenter = .default,
         cacheStore: MailContactCacheStore? = MailContactCacheStore.shared(),
         journal: MailIncomingJournal? = MailIncomingJournal.shared(),
-        journalNotificationName: String? = MailJournalChangeNotification.name()
+        journalNotificationName: String? = MailJournalChangeNotification.name(),
+        publishRecoveryRetryNanoseconds: UInt64 = MailBridgeController.defaultPublishRecoveryRetryNanoseconds
     ) {
         self.service = service
         self.repository = repository
@@ -68,6 +70,7 @@ final class MailBridgeController {
         self.cacheStore = cacheStore
         self.journal = journal
         self.journalNotificationName = journalNotificationName
+        self.publishRecoveryRetryNanoseconds = publishRecoveryRetryNanoseconds
     }
 
     func bootstrap() {
@@ -236,7 +239,7 @@ final class MailBridgeController {
         publishDebounceTask?.cancel()
         publishDebounceTask = Task { @MainActor [weak self] in
             do {
-                try await Task.sleep(nanoseconds: Self.publishRecoveryRetryNanoseconds)
+                try await Task.sleep(nanoseconds: publishRecoveryRetryNanoseconds)
             } catch {
                 return
             }

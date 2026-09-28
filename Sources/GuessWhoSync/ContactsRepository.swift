@@ -149,8 +149,9 @@ public enum ContactsRepositoryDidReloadKey {
     /// `Bool` — whether this reload can change the name, organization, title,
     /// email, photo, group resolution, or other input to the Apple Mail contact
     /// projection. Absent means true. Presentation-only filters and timestamp
-    /// stamps set this false. A local mail-activity identity refresh sets it
-    /// false only when its before/after revisions prove no refresh intervened.
+    /// stamps set this false. A local mail-activity identity refresh also sets
+    /// it false; consumers independently validate its before/after revisions
+    /// against the revision their cached projection represents.
     public static let mailContactProjectionChanged = "mailContactProjectionChanged"
 }
 
@@ -3534,13 +3535,12 @@ public final class ContactsRepository: NSObject {
             let mintRefresh = await applyRefresh(localID: current.localID)
             let revisionBeforeMint = mintRefresh.before
             let revisionAfterMint = mintRefresh.after
-            let isExactIdentityOnlyRevision = revisionAfterMint == revisionBeforeMint &+ 1
             postDidReload(
                 contactDataChanged: true,
                 mailActivityIdentityMinted: true,
                 mailActivityIdentityMintedFromContactRevision: revisionBeforeMint,
                 mailActivityIdentityMintedToContactRevision: revisionAfterMint,
-                mailContactProjectionChanged: !isExactIdentityOnlyRevision
+                mailContactProjectionChanged: false
             )
         } else if outcome.lastInteractedChanged {
             postDidReload(contactDataChanged: false, mailContactProjectionChanged: false)
@@ -4580,12 +4580,34 @@ public final class ContactsRepository: NSObject {
 
     @discardableResult
     private func applyRefresh(localID: String) async -> (before: Int, after: Int) {
+        let fetched: Result<Contact?, Error>
+        do {
+            fetched = .success(try await contactsStore.fetch(localID: localID))
+        } catch {
+            fetched = .failure(error)
+        }
+
+        // Start from the latest cache only AFTER the suspending Contacts fetch.
+        // A reload that landed while the fetch was in flight is therefore kept,
+        // rather than overwritten by a working copy captured before the await.
         var updated = contacts
-        await refetch(localID: localID, into: &updated)
-        // Capture provenance only after the suspending Contacts fetch and
-        // immediately around the synchronous cache commit. A different reload
-        // that lands during `refetch` is therefore included in `before`, never
-        // misattributed to this refresh.
+        switch fetched {
+        case .success(let fresh):
+            if let fresh {
+                if let index = updated.firstIndex(where: { $0.localID == localID }) {
+                    updated[index] = fresh
+                } else {
+                    updated.append(fresh)
+                }
+            } else {
+                updated.removeAll { $0.localID == localID }
+            }
+            lastError = nil
+        case .failure(let error):
+            lastError = "Failed to refresh contact: \(error.localizedDescription)"
+        }
+
+        // Capture provenance immediately around the synchronous cache commit.
         let before = contactDataRevision
         setContacts(updated)
         return (before, contactDataRevision)

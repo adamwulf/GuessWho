@@ -453,15 +453,23 @@ struct MailBridgeControllerTests {
             notificationCenter: center,
             cacheStore: cacheStore,
             journal: nil,
-            journalNotificationName: nil
+            journalNotificationName: nil,
+            publishRecoveryRetryNanoseconds: 50_000_000
         )
         controller.bootstrap()
         defer { controller.shutdown() }
 
         try await waitUntil { await store.memberFetchAttemptCount() > 0 }
-        try await Task.sleep(for: .milliseconds(50))
+        let groupFetchesBeforeRecovery = await store.groupFetchAttemptCount()
+        try await waitUntil {
+            await store.groupFetchAttemptCount() > groupFetchesBeforeRecovery
+        }
+        let groupFetchesAfterRecovery = await store.groupFetchAttemptCount()
+        try await Task.sleep(for: .milliseconds(100))
 
         #expect(try Data(contentsOf: cacheURL) == bytesBefore)
+        #expect(groupFetchesAfterRecovery == groupFetchesBeforeRecovery + 1)
+        #expect(await store.groupFetchAttemptCount() == groupFetchesAfterRecovery)
     }
 
     @Test
@@ -517,7 +525,7 @@ struct MailBridgeControllerTests {
         try await waitUntil { self.journalLineIsUnclaimed(at: journalURL) }
 
         let retryClaim = try #require(try journal.claimEntries())
-        #expect(retryClaim.entries.map(\.messageID) == ["retry@example.com"])
+        #expect(retryClaim.entries.map(\.messageID) == [messageID])
         _ = try journal.release(retryClaim)
     }
 
@@ -550,6 +558,7 @@ private actor MailBridgeContactStore: ContactStoreProtocol {
     private var memberLocalIDsByGroupID: [String: [String]]
     private var failMemberFetch = false
     private var memberFetches = 0
+    private var groupFetches = 0
     private var failSaves: Bool
     private var saves = 0
 
@@ -569,6 +578,7 @@ private actor MailBridgeContactStore: ContactStoreProtocol {
 
     func setFailMemberFetch(_ fail: Bool) { failMemberFetch = fail }
     func memberFetchAttemptCount() -> Int { memberFetches }
+    func groupFetchAttemptCount() -> Int { groupFetches }
     func saveAttemptCount() -> Int { saves }
 
     func fetchAll() async throws -> [Contact] { contacts }
@@ -597,7 +607,10 @@ private actor MailBridgeContactStore: ContactStoreProtocol {
     func loadImageData(localID: String) async throws -> Data? { nil }
     func loadThumbnailImageData(localID: String) async throws -> Data? { nil }
     func setImageData(localID: String, imageData: Data?) async throws {}
-    func fetchAllGroups() async throws -> [ContactGroup] { groups }
+    func fetchAllGroups() async throws -> [ContactGroup] {
+        groupFetches += 1
+        return groups
+    }
     func fetchGroup(localID: String) async throws -> ContactGroup? {
         groups.first { $0.localID == localID }
     }
