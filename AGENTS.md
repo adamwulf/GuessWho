@@ -65,6 +65,14 @@ it's almost certainly wrong. Rephrase in terms of the user's mental model
   storage, no entitlements. iOS only (not Catalyst).
 - `App/GuessWhoAppKitBridge/` — in-process AppKit `.bundle` for the rare
   AppKit-only needs on Catalyst (e.g. `NSOpenPanel`).
+- `App/GuessWhoMailExtension/` — the Apple Mail extension: a NATIVE macOS
+  MailKit `.appex` embedded only in the Catalyst app. Highlights mail from
+  favorite people, journals metadata for mail from known people, and adds a
+  recipient-details popover to compose windows. No Swift packages.
+- `App/GuessWhoMailShared/` — the Foundation-only file formats the Mail
+  extension shares with the app through the App Group (contact cache,
+  incoming-message journal, address/Message-ID handling), compiled into both
+  targets. See `docs/apple-mail-extension.md`.
 - `Sources/GuessWhoLogging/` — `GuessWhoLog`, a thin facade over
   FellerBuncher (swift-log) for file logging.
 - `Tests/` — XCTest + swift-testing suites for the package.
@@ -81,6 +89,12 @@ touching that subsystem:
 - [`docs/linkedin-safari-extension.md`](docs/linkedin-safari-extension.md) —
   the LinkedIn extension + extension↔app handoff: App Group / iCloud
   wiring, Debug-vs-Release ids, the wake-URL flow, match→diff→confirm→save.
+- [`docs/apple-mail-extension.md`](docs/apple-mail-extension.md) — the Apple
+  Mail extension: target/embed rules, the App Group `Mail/` files (contact
+  cache and incoming-message journal) and their version rules, the bounded,
+  fenced claim → settle lifecycle for draining the journal, what the
+  extension reads and stores, the best-effort `message://` link, and how to
+  enable and hand-check it in Mail.
 - [`docs/maps-guides.md`](docs/maps-guides.md) — the Apple Maps guide
   import: the share-link/protobuf format, guide/place sidecars, MapKit
   place-ID resolution, and the Guides tab's entry points.
@@ -93,6 +107,11 @@ touching that subsystem:
 - [`docs/sidecar-compatibility.md`](docs/sidecar-compatibility.md) — the
   forward-compatibility contract for synced envelopes: what an older build
   preserves, and the rules a storage change must keep.
+- [`docs/mail-activity.md`](docs/mail-activity.md) — incoming-mail activity
+  on contacts: the `mailActivity:<uuid>` cells, Message-ID normalization and
+  hashing, the forward-only `lastInteracted` merge, retention, tombstones, and
+  the repository notifications. Read before touching mail activity or any code
+  that walks every cell of a contact envelope.
 - [`docs/autocomplete.md`](docs/autocomplete.md) — text-field autocomplete:
   how a field opts in (`.autocomplete(text:candidates:)` +
   `.autocompleteMenuHost()`), the shared filter, the candidate lists, and

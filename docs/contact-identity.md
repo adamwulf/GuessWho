@@ -342,10 +342,15 @@ same per-contact algorithm, dispatching on the number of *distinct, valid*
   the malformed URLs, save. [^caseC]
 - **Case D — two or more *different* valid IDs on one contact.** Sort the IDs as
   ASCII strings; the **lexicographically smallest wins.** Merge each loser's
-  sidecar data into the winner's (a union — sidecar fields are keyed by
-  per-instance UUIDs that can't collide), delete the loser sidecar files,
-  rewrite any link endpoints that pointed at a loser to point at the winner,
-  strip the loser and malformed URLs from the contact, and save. [^caseD]
+  sidecar data into the winner's, delete the loser sidecar files, rewrite any
+  link endpoints that pointed at a loser to point at the winner, strip the
+  loser and malformed URLs from the contact, and save. [^caseD] The merge is a
+  cell-by-cell union: field instances are keyed by random per-instance UUIDs
+  and never collide, but fixed-key cells (the timestamps) and deterministic
+  keys (mail activities keyed by Message-ID — see
+  [`mail-activity.md`](mail-activity.md)) can exist on both sides. Those
+  resolve by whole-cell last-writer-wins, so the same message recorded on both
+  contacts becomes one activity, and `lastInteracted` keeps the later time.
 
 Lex-smallest-wins is the package's single **first-writer-wins** rule (every
 other field uses last-writer-wins). It needs no coordination and no clock: two

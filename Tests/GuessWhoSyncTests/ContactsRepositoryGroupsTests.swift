@@ -152,10 +152,14 @@ struct ContactsRepositoryGroupsTests {
         await store.suspendNextGroupFetch()
         let olderLoad = Task { @MainActor in await repository.loadGroups() }
         await store.waitUntilGroupFetchIsSuspended()
+        #expect(repository.isLoadingGroups)
+        #expect(!repository.hasAuthoritativeGroupCache)
 
         _ = try await store.seedGroup(name: "Work")
         await repository.loadGroups()
         #expect(repository.groups.map(\.name) == ["Family", "Work"])
+        #expect(!repository.isLoadingGroups)
+        #expect(repository.hasAuthoritativeGroupCache)
 
         await store.resumeGroupFetch()
         await olderLoad.value
@@ -196,6 +200,77 @@ struct ContactsRepositoryGroupsTests {
 
         #expect(repository.groups.map(\.name) == ["Family", "Work"])
         #expect(repository.groupsError == nil)
+        #expect(repository.hasAuthoritativeGroupCache)
+        #expect(!repository.isLoadingGroups)
+    }
+
+    @Test @MainActor
+    func mutationRecoveryMarksGroupCacheLoadingUntilItsFetchFinishes() async throws {
+        let store = SuspendingGroupContactStore()
+        _ = try await store.seedGroup(name: "Family")
+        let repository = ContactsRepository(contacts: store)
+
+        await store.failNextGroupFetch()
+        await repository.loadGroups()
+        #expect(!repository.hasAuthoritativeGroupCache)
+
+        await store.suspendNextGroupFetch()
+        let create = Task { @MainActor in
+            try await repository.createGroup(name: "Work")
+        }
+        await store.waitUntilGroupFetchIsSuspended()
+
+        #expect(repository.isLoadingGroups)
+        #expect(!repository.hasAuthoritativeGroupCache)
+
+        await store.resumeGroupFetch()
+        _ = try await create.value
+
+        #expect(!repository.isLoadingGroups)
+        #expect(repository.hasAuthoritativeGroupCache)
+        #expect(repository.groups.map(\.name) == ["Family", "Work"])
+    }
+
+    @Test @MainActor
+    func groupIdentityEnumerationFailureMakesTheCombinedCacheNonAuthoritative() async {
+        let contacts = InMemoryContactStore()
+        let sidecars = ScriptedHierarchySidecarStore(wrapping: InMemorySidecarStore())
+        let sync = GuessWhoSync(
+            contacts: contacts,
+            events: InMemoryEventStore(),
+            sidecars: sidecars,
+            deviceID: "group-authority-test"
+        )
+        let center = NotificationCenter()
+        let repository = ContactsRepository(
+            contacts: contacts,
+            sync: sync,
+            notificationCenter: center
+        )
+        nonisolated(unsafe) var mailProjectionFlags: [Bool] = []
+        let token = center.addObserver(
+            forName: .contactsRepositoryDidReload,
+            object: repository,
+            queue: nil
+        ) { note in
+            mailProjectionFlags.append(
+                note.userInfo?[ContactsRepositoryDidReloadKey.mailContactProjectionChanged]
+                    as? Bool ?? true
+            )
+        }
+        defer { center.removeObserver(token) }
+
+        await repository.loadGroups()
+        #expect(repository.hasAuthoritativeGroupCache)
+        #expect(mailProjectionFlags == [true])
+
+        sidecars.failEnumeration = true
+        await repository.loadGroups()
+
+        #expect(!repository.hasAuthoritativeGroupCache)
+        #expect(repository.groupsError == nil)
+        #expect(!repository.isLoadingGroups)
+        #expect(mailProjectionFlags == [true, false])
     }
 
     @Test @MainActor
@@ -226,13 +301,27 @@ struct ContactsRepositoryGroupsTests {
     func failedLoadAndMutationPreserveLastGoodCache() async throws {
         let store = SuspendingGroupContactStore()
         let family = try await store.seedGroup(name: "Family")
-        let repository = ContactsRepository(contacts: store)
+        let center = NotificationCenter()
+        let repository = ContactsRepository(contacts: store, notificationCenter: center)
+        nonisolated(unsafe) var mailProjectionFlags: [Bool] = []
+        let token = center.addObserver(
+            forName: .contactsRepositoryDidReload,
+            object: repository,
+            queue: nil
+        ) { note in
+            mailProjectionFlags.append(
+                note.userInfo?[ContactsRepositoryDidReloadKey.mailContactProjectionChanged]
+                    as? Bool ?? true
+            )
+        }
+        defer { center.removeObserver(token) }
         await repository.loadGroups()
 
         await store.failNextGroupFetch()
         await repository.loadGroups()
         #expect(repository.groups.map(\.name) == ["Family"])
         #expect(repository.groupsError != nil)
+        #expect(mailProjectionFlags == [true, false])
 
         await store.failNextRename()
         await #expect(throws: InjectedGroupStoreFailure.self) {

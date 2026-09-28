@@ -68,7 +68,10 @@ final class ContactPhotoLoader {
             let dataChanged = (note.userInfo?[
                 ContactsRepositoryDidReloadKey.contactDataChanged
             ] as? Bool) ?? true
-            guard dataChanged else { return }
+            let mailActivityIdentityMinted = (note.userInfo?[
+                ContactsRepositoryDidReloadKey.mailActivityIdentityMinted
+            ] as? Bool) ?? false
+            guard dataChanged, !mailActivityIdentityMinted else { return }
             MainActor.assumeIsolated {
                 self?.removeAll()
             }

@@ -44,6 +44,12 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
         service: service,
         repository: contactsRepository,
         groupDefaults: CLIHelper.appGroupID.flatMap { UserDefaults(suiteName: $0) })
+    /// One app-process bridge for the native Mail extension. It publishes the
+    /// extension's read-only contact cache and drains incoming-message metadata
+    /// into the same live repository every scene uses.
+    private(set) lazy var mailBridgeController = MailBridgeController(
+        service: service,
+        repository: contactsRepository)
     #endif
 
     #if targetEnvironment(macCatalyst)
@@ -351,6 +357,11 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
         // Phase 1). Injects the live service + repository (INV-2b).
         mcpHostController.bootstrap()
 
+        // Apple Mail extension handoff: one process-wide publisher/drainer,
+        // deliberately after the repository launch task has been kicked off.
+        // The controller awaits that initial load before touching either file.
+        mailBridgeController.bootstrap()
+
         // Phase 3 launch check: confirm the embedded helper resolves, and
         // breadcrumb when the app's location changed since the user last
         // copied/installed the helper path (their client configs are then
@@ -435,6 +446,7 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
     func applicationWillTerminate(_ application: UIApplication) {
         Self.lifecycleLog.notice("app willTerminate")
         #if targetEnvironment(macCatalyst)
+        mailBridgeController.shutdown()
         mcpHostController.shutdown()
         #endif
     }
