@@ -171,6 +171,11 @@ extension MailActivity {
 
     /// How many decodable live activities one contact keeps. The write that
     /// would exceed it removes the oldest (by `isNewer(than:)` order).
+    ///
+    /// Part of the synced format, like the cell keys: every build physically
+    /// prunes to its own limit, so raising it has no lasting effect while an
+    /// older build with the lower limit is still active on any device, and
+    /// lowering it deletes data other peers kept. See docs/mail-activity.md.
     static let retentionLimit = 100
 
     /// The one activity order: newer `receivedAt` first, ties broken by the

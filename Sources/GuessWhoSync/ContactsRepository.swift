@@ -3411,8 +3411,13 @@ public final class ContactsRepository: NSObject {
     /// ID. Throws `SidecarUnavailableError` when the engine is unavailable.
     ///
     /// A token captured before the contact's identity was minted resolves
-    /// through the cache first, so a batch of messages queued against that
-    /// token mints (and refreshes the cache) once, not once per message.
+    /// through the cache first. That makes a batch queued against the token
+    /// mint (and refresh the cache) once ONLY when the calls for that contact
+    /// are awaited one after another: a call that starts before an earlier
+    /// one has minted still sees no identity and mints too (the double-mint
+    /// `resolveOrMintGuessWhoID(for:)` accepts). **Caller precondition:** a
+    /// queue drain awaits each call for a contact before it starts the next
+    /// call for the same contact.
     ///
     /// **Notifications.** A changed activity list posts
     /// `.contactsRepositoryMailActivityDidChange` for this contact. A moved

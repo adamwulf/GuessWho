@@ -106,6 +106,12 @@ Each contact keeps at most `MailActivity.retentionLimit` (100) activities[^reten
   live activity until the next mail-activity write on that contact trims the
   set again; because the order is deterministic, devices converge on the same
   set.
+- **The limit is part of the synced format.** Every build physically prunes to
+  its OWN limit, and a removed cell is gone for every peer once the prune
+  syncs. So while any device still runs a build with a lower limit, that build
+  keeps trimming contacts back to its limit, and raising the limit in a newer
+  build has no lasting effect. Lowering it takes effect at once and destroys
+  data other peers kept. Change it only as a deliberate format decision.
 
 ## Deletion
 
@@ -124,8 +130,13 @@ The app speaks `ContactID` only[^repo]:
 
 - `recordMailActivity(_:for:)` is a write, so it resolves-or-mints the contact's
   GuessWho ID. A token captured before the mint resolves through the cache
-  first, so a batch of messages queued against that token mints once. The disk
-  work runs off the main actor.
+  first, so a batch of messages queued against that token mints once — but
+  ONLY when the calls for that contact are awaited one after another. A call
+  that starts before an earlier one has minted still sees no identity and
+  mints too (the double-mint `resolveOrMintGuessWhoID(for:)` accepts).
+  **Caller precondition:** a queue drain awaits each call for a contact before
+  it starts the next call for the same contact. The disk work runs off the
+  main actor.
 - `mailActivities(for:)` is async and runs its read off the main actor. It never
   reconciles or mints; an unreconciled contact returns `[]`. A pre-mint token
   resolves through the cache like `contact(id:)`.

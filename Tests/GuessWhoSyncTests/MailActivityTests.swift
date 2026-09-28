@@ -715,6 +715,136 @@ struct ContactsRepositoryMailActivityTests {
         #expect(activityPosts == [[id]])
     }
 
+    /// Collects every `.contactsRepositoryMailActivityDidChange` post from
+    /// `repo`. `@unchecked Sendable`: the repository posts from the main
+    /// actor, and the test reads `posts` on its main-actor flow.
+    private final class MailActivityPostRecorder: @unchecked Sendable {
+        var posts: [[ContactID]] = []
+        private var token: NSObjectProtocol?
+        private let center: NotificationCenter
+
+        init(center: NotificationCenter, repo: ContactsRepository) {
+            self.center = center
+            token = center.addObserver(
+                forName: .contactsRepositoryMailActivityDidChange, object: repo, queue: nil
+            ) { [unowned self] note in
+                self.posts.append(
+                    (note.userInfo?[ContactsRepositoryMailActivityDidChangeKey.contactIDs] as? [ContactID]) ?? []
+                )
+            }
+        }
+
+        deinit {
+            if let token { center.removeObserver(token) }
+        }
+    }
+
+    private func postSidecarChange(_ keys: [SidecarKey], on center: NotificationCenter) {
+        center.post(
+            name: .guessWhoSidecarsDidChange,
+            object: nil,
+            userInfo: [GuessWhoSidecarsDidChangeKey.changeSet: SidecarChangeSet(changedKeys: Set(keys))]
+        )
+    }
+
+    @Test
+    func supersededExactKeyRefreshPostsNothingAndHandsItsKeysOn() async throws {
+        let annaKey = SidecarKey(kind: .contact, id: "a1000000-0000-0000-0000-000000000001")
+        let bobKey = SidecarKey(kind: .contact, id: "a1000000-0000-0000-0000-000000000002")
+        let store = InMemoryContactStore(contacts: [
+            reconciled("anna", "Anna", uuid: annaKey.id),
+            reconciled("bob", "Bob", uuid: bobKey.id),
+        ])
+        let center = NotificationCenter()
+        let repo = ContactsRepository(
+            contacts: store,
+            sync: makeSync(store, InMemorySidecarStore()),
+            notificationCenter: center
+        )
+        await repo.reload()
+        let annaID = try #require(repo.contact(localID: "anna")).contactID
+        let bobID = try #require(repo.contact(localID: "bob")).contactID
+        let recorder = MailActivityPostRecorder(center: center, repo: repo)
+
+        // Park the refresh for Anna's key inside its scoped read.
+        let gate = ContactsSidecarReadGate()
+        repo.sidecarReadBarrierForTesting = { await gate.arriveAndWait() }
+        postSidecarChange([annaKey], on: center)
+        await gate.waitUntilReached()
+
+        // A newer delivery for Bob supersedes it while it is parked.
+        repo.sidecarReadBarrierForTesting = nil
+        postSidecarChange([bobKey], on: center)
+        #expect(await waitUntil { !recorder.posts.isEmpty })
+
+        // Let the superseded refresh resume; it must stay silent.
+        gate.release()
+        try await Task.sleep(for: .milliseconds(100))
+
+        // One post, from the successor, which inherited Anna's key.
+        #expect(recorder.posts == [[annaID, bobID]])
+    }
+
+    @Test
+    func exactContactKeyMissingFromTheCachePostsNothing() async throws {
+        let knownKey = SidecarKey(kind: .contact, id: "a2000000-0000-0000-0000-000000000001")
+        let unknownKey = SidecarKey(kind: .contact, id: "a2000000-0000-0000-0000-00000000ffff")
+        let store = InMemoryContactStore(contacts: [reconciled("known", "Kim", uuid: knownKey.id)])
+        let center = NotificationCenter()
+        let repo = ContactsRepository(
+            contacts: store,
+            sync: makeSync(store, InMemorySidecarStore()),
+            notificationCenter: center
+        )
+        await repo.reload()
+        let knownID = try #require(repo.contact(localID: "known")).contactID
+        let recorder = MailActivityPostRecorder(center: center, repo: repo)
+
+        // nonisolated(unsafe): incremented only from the handler on this
+        // test's main-actor flow.
+        nonisolated(unsafe) var reloadCount = 0
+        let reloadToken = center.addObserver(
+            forName: .contactsRepositoryDidReload, object: repo, queue: nil
+        ) { _ in reloadCount += 1 }
+        defer { center.removeObserver(reloadToken) }
+
+        // Only a key the cache cannot resolve: the refresh still runs and
+        // posts its reload, but names no contact.
+        postSidecarChange([unknownKey], on: center)
+        #expect(await waitUntil { reloadCount == 1 })
+        #expect(recorder.posts.isEmpty)
+
+        // Mixed: only the resolvable contact is listed.
+        postSidecarChange([unknownKey, knownKey], on: center)
+        #expect(await waitUntil { reloadCount == 2 })
+        #expect(recorder.posts == [[knownID]])
+    }
+
+    @Test
+    func groupEscalatedRefreshPostsForExactContactKeys() async throws {
+        let contactKey = SidecarKey(kind: .contact, id: "a3000000-0000-0000-0000-000000000001")
+        let groupKey = SidecarKey(kind: .group, id: "a3000000-0000-0000-0000-0000000000aa")
+        let store = InMemoryContactStore(contacts: [reconciled("grace", "Grace", uuid: contactKey.id)])
+        let sync = makeSync(store, InMemorySidecarStore())
+        let center = NotificationCenter()
+        let repo = ContactsRepository(contacts: store, sync: sync, notificationCenter: center)
+        await repo.reload()
+        let id = try #require(repo.contact(localID: "grace")).contactID
+        let recorder = MailActivityPostRecorder(center: center, repo: repo)
+
+        try await sync.recordMailActivity(
+            try activity("<grouped@example.com>", receivedAt: Date(timeIntervalSince1970: 1_790_000_000)),
+            at: contactKey
+        )
+        // A `.group` key escalates to the full refresh; the exact contact key
+        // alongside it still gets its scoped post.
+        postSidecarChange([groupKey, contactKey], on: center)
+
+        #expect(await waitUntil { !recorder.posts.isEmpty })
+        #expect(recorder.posts == [[id]])
+        #expect(await repo.mailActivities(for: id).map(\.messageID) == ["grouped@example.com"])
+    }
+
     @Test
     func firstWriteToUnreconciledContactMintsAndRecords() async throws {
         let store = InMemoryContactStore(contacts: [Contact(localID: "TARGET", givenName: "Ada")])
