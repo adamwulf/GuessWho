@@ -126,10 +126,10 @@ public enum ContactsRepositoryDidReloadKey {
     /// consumers should re-render regardless. Absent means `true`.
     public static let contactDataChanged = "contactDataChanged"
 
-    /// `Bool` — true only when the record change was the transparent identity
-    /// mint performed by `recordMailActivity`. Contact presentation data and
-    /// photos did not change, so consumers whose projection excludes the
-    /// private identity URL may retain their caches. Absent means false.
+    /// `Bool` — marks the transparent identity refresh performed by
+    /// `recordMailActivity`. Consumers may retain projection state only after
+    /// validating the accompanying before/after revision pair; this flag alone
+    /// is not proof that no other contact refresh intervened. Absent means false.
     public static let mailActivityIdentityMinted = "mailActivityIdentityMinted"
 
     /// `Int` — the contact-data revision immediately before the transparent
@@ -148,8 +148,9 @@ public enum ContactsRepositoryDidReloadKey {
 
     /// `Bool` — whether this reload can change the name, organization, title,
     /// email, photo, group resolution, or other input to the Apple Mail contact
-    /// projection. Absent means true. Presentation-only filters, timestamp
-    /// stamps, and local mail-activity writes set this false.
+    /// projection. Absent means true. Presentation-only filters and timestamp
+    /// stamps set this false. A local mail-activity identity refresh sets it
+    /// false only when its before/after revisions prove no refresh intervened.
     public static let mailContactProjectionChanged = "mailContactProjectionChanged"
 }
 
@@ -3530,9 +3531,9 @@ public final class ContactsRepository: NSObject {
             updateTimestampCache(.interacted, at: key, to: lastInteracted)
         }
         if minted {
-            let revisionBeforeMint = contactDataRevision
-            await applyRefresh(localID: current.localID)
-            let revisionAfterMint = contactDataRevision
+            let mintRefresh = await applyRefresh(localID: current.localID)
+            let revisionBeforeMint = mintRefresh.before
+            let revisionAfterMint = mintRefresh.after
             let isExactIdentityOnlyRevision = revisionAfterMint == revisionBeforeMint &+ 1
             postDidReload(
                 contactDataChanged: true,
@@ -4577,10 +4578,17 @@ public final class ContactsRepository: NSObject {
         contactsByEmail = byEmail
     }
 
-    private func applyRefresh(localID: String) async {
+    @discardableResult
+    private func applyRefresh(localID: String) async -> (before: Int, after: Int) {
         var updated = contacts
         await refetch(localID: localID, into: &updated)
+        // Capture provenance only after the suspending Contacts fetch and
+        // immediately around the synchronous cache commit. A different reload
+        // that lands during `refetch` is therefore included in `before`, never
+        // misattributed to this refresh.
+        let before = contactDataRevision
         setContacts(updated)
+        return (before, contactDataRevision)
     }
 
     /// Re-reads ONE Contacts record and applies the result to `working` WITHOUT

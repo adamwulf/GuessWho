@@ -37,6 +37,7 @@ final class MailBridgeController {
     private var drainTask: Task<Void, Never>?
     private var drainRetryTask: Task<Void, Never>?
     private var groupRecoveryTask: Task<Void, Never>?
+    private var pendingGroupReload = false
     private var publishPending = false
     private var drainPending = false
     private var isShuttingDown = false
@@ -239,7 +240,18 @@ final class MailBridgeController {
             } catch {
                 return
             }
-            self?.requestPublish()
+            guard let self else { return }
+            if pendingGroupReload {
+                pendingGroupReload = false
+                await repository.loadGroups()
+                guard !Task.isCancelled, !isShuttingDown else { return }
+                if repository.hasAuthoritativeGroupCache {
+                    // The successful load posted a projection-changing reload,
+                    // which scheduled the debounced publication.
+                    return
+                }
+            }
+            requestPublish()
         }
     }
 
@@ -309,7 +321,7 @@ final class MailBridgeController {
     private enum SnapshotBuildResult {
         case ready(MailContactSnapshot, contactRevision: Int)
         case retry
-        case preserveExisting
+        case preserveExisting(requiresGroupReload: Bool)
     }
 
     private func publishContactSnapshot() async {
@@ -324,8 +336,8 @@ final class MailBridgeController {
         case .retry:
             schedulePublishRetry()
             return
-        case .preserveExisting:
-            recoverGroupsIfNeeded()
+        case .preserveExisting(let requiresGroupReload):
+            pendingGroupReload = pendingGroupReload || requiresGroupReload
             schedulePublishRecoveryRetry()
             return
         case .ready(let candidate, let contactRevision):
@@ -355,7 +367,7 @@ final class MailBridgeController {
     private func buildContactSnapshot() async -> SnapshotBuildResult {
         guard !repository.isLoading,
               case .published = repository.lastReloadOutcome
-        else { return .preserveExisting }
+        else { return .preserveExisting(requiresGroupReload: false) }
         let contactRevision = repository.contactDataRevision
         let memberRevisions = repository.memberRevisions
         let favorites: [Favorite]
@@ -367,7 +379,7 @@ final class MailBridgeController {
             Self.log.error("mail contact cache favorites read failed", [
                 "errorType": String(reflecting: type(of: error))
             ])
-            return .preserveExisting
+            return .preserveExisting(requiresGroupReload: false)
         }
 
         // `loadGroups()` preserves its last good cache on failure. Publishing
@@ -376,7 +388,7 @@ final class MailBridgeController {
         // favorite plus any group error is an incomplete projection.
         if favorites.contains(where: { $0.kind == .group }),
            !repository.hasAuthoritativeGroupCache {
-            return .preserveExisting
+            return .preserveExisting(requiresGroupReload: true)
         }
 
         var reasonsByContactID: [ContactID: Set<MailHighlightReason>] = [:]
@@ -397,7 +409,7 @@ final class MailBridgeController {
                 guard snapshot.failedGroups.isEmpty else {
                     // A failed group read is unknown membership, not an empty
                     // group. Keep Mail's last complete cache.
-                    return .preserveExisting
+                    return .preserveExisting(requiresGroupReload: true)
                 }
                 guard repository.isCurrent(snapshot) else { return .retry }
                 for member in snapshot.contacts {

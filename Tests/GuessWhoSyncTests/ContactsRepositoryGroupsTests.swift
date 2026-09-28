@@ -301,13 +301,27 @@ struct ContactsRepositoryGroupsTests {
     func failedLoadAndMutationPreserveLastGoodCache() async throws {
         let store = SuspendingGroupContactStore()
         let family = try await store.seedGroup(name: "Family")
-        let repository = ContactsRepository(contacts: store)
+        let center = NotificationCenter()
+        let repository = ContactsRepository(contacts: store, notificationCenter: center)
+        nonisolated(unsafe) var mailProjectionFlags: [Bool] = []
+        let token = center.addObserver(
+            forName: .contactsRepositoryDidReload,
+            object: repository,
+            queue: nil
+        ) { note in
+            mailProjectionFlags.append(
+                note.userInfo?[ContactsRepositoryDidReloadKey.mailContactProjectionChanged]
+                    as? Bool ?? true
+            )
+        }
+        defer { center.removeObserver(token) }
         await repository.loadGroups()
 
         await store.failNextGroupFetch()
         await repository.loadGroups()
         #expect(repository.groups.map(\.name) == ["Family"])
         #expect(repository.groupsError != nil)
+        #expect(mailProjectionFlags == [true, false])
 
         await store.failNextRename()
         await #expect(throws: InjectedGroupStoreFailure.self) {

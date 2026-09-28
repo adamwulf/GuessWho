@@ -398,6 +398,136 @@ struct MailBridgeControllerTests {
         #expect(await repository.mailActivities(for: contactID).isEmpty)
     }
 
+    @Test
+    func failedFavoriteGroupMemberReadPreservesTheExistingCache() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gw-mail-group-failure-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let contact = Contact(
+            givenName: "Ada",
+            familyName: "Lovelace",
+            emailAddresses: [LabeledValue(label: "work", value: "ada@example.com")],
+            urlAddresses: [
+                LabeledValue(
+                    label: "GuessWho",
+                    value: "guesswho://contact/30000000-0000-4000-8000-000000000003"
+                )
+            ]
+        )
+        let group = ContactGroup(localID: "favorites", name: "Favorites")
+        let store = MailBridgeContactStore(
+            contacts: [contact],
+            groups: [group],
+            membersByGroupID: [group.localID: [contact]],
+            memberLocalIDsByGroupID: [group.localID: [""]]
+        )
+        let service = SyncService(
+            contactsAdapter: store,
+            eventsAdapter: MailBridgeEventStore(),
+            sidecarLocation: .iCloud(root),
+            deviceID: "mail-bridge-group-failure-test",
+            contactCursorURL: root.appendingPathComponent("cursor")
+        )
+        let center = NotificationCenter()
+        let repository = service.makeContactsRepository(notificationCenter: center)
+        await repository.reload()
+        await repository.loadGroups()
+        _ = try await repository.setGroupFavorite(true, for: group)
+        await store.setFailMemberFetch(true)
+
+        let cacheURL = root.appendingPathComponent("contact-cache.plist")
+        let cacheStore = MailContactCacheStore(fileURL: cacheURL)
+        var existing = MailContactSnapshot(generatedAt: Date(timeIntervalSince1970: 1_000))
+        existing.add(
+            MailContactSummary(displayName: "Sentinel"),
+            forAddresses: ["sentinel@example.com"]
+        )
+        try cacheStore.write(existing)
+        let bytesBefore = try Data(contentsOf: cacheURL)
+
+        let controller = MailBridgeController(
+            service: service,
+            repository: repository,
+            notificationCenter: center,
+            cacheStore: cacheStore,
+            journal: nil,
+            journalNotificationName: nil
+        )
+        controller.bootstrap()
+        defer { controller.shutdown() }
+
+        try await waitUntil { await store.memberFetchAttemptCount() > 0 }
+        try await Task.sleep(for: .milliseconds(50))
+
+        #expect(try Data(contentsOf: cacheURL) == bytesBefore)
+    }
+
+    @Test
+    func failedMailWriteIsReleasedForRetry() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gw-mail-write-failure-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let contact = Contact(
+            givenName: "Ada",
+            familyName: "Lovelace",
+            emailAddresses: [LabeledValue(label: "work", value: "ada@example.com")]
+        )
+        let store = MailBridgeContactStore(contacts: [contact], failSaves: true)
+        let service = SyncService(
+            contactsAdapter: store,
+            eventsAdapter: MailBridgeEventStore(),
+            sidecarLocation: .iCloud(root),
+            deviceID: "mail-bridge-write-failure-test",
+            contactCursorURL: root.appendingPathComponent("cursor")
+        )
+        let center = NotificationCenter()
+        let repository = service.makeContactsRepository(notificationCenter: center)
+        await repository.reload()
+
+        let cacheStore = MailContactCacheStore(
+            fileURL: root.appendingPathComponent("contact-cache.plist")
+        )
+        let journalURL = root.appendingPathComponent("incoming-messages.jsonl")
+        let journal = MailIncomingJournal(fileURL: journalURL)
+        let messageID = try #require(MailMessageID.normalize("retry@example.com"))
+        _ = try journal.append(MailIncomingMessage(
+            sender: "ada@example.com",
+            subject: "Retry me",
+            receivedAt: Date(),
+            messageID: messageID,
+            messageURL: nil
+        ))
+
+        let controller = MailBridgeController(
+            service: service,
+            repository: repository,
+            notificationCenter: center,
+            cacheStore: cacheStore,
+            journal: journal,
+            journalNotificationName: nil
+        )
+        controller.bootstrap()
+        defer { controller.shutdown() }
+
+        try await waitUntil { await store.saveAttemptCount() > 0 }
+        try await waitUntil { self.journalLineIsUnclaimed(at: journalURL) }
+
+        let retryClaim = try #require(try journal.claimEntries())
+        #expect(retryClaim.entries.map(\.messageID) == ["retry@example.com"])
+        _ = try journal.release(retryClaim)
+    }
+
+    private func journalLineIsUnclaimed(at url: URL) -> Bool {
+        guard let data = try? Data(contentsOf: url),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return false }
+        return object["claim"] == nil || object["claim"] is NSNull
+    }
+
     private func waitUntil(
         timeout: Duration = .seconds(3),
         _ condition: @escaping @MainActor () async -> Bool
@@ -411,11 +541,35 @@ struct MailBridgeControllerTests {
 }
 
 private actor MailBridgeContactStore: ContactStoreProtocol {
-    private var contacts: [Contact]
+    private struct MemberFetchFailure: Error {}
+    private struct SaveFailure: Error {}
 
-    init(contacts: [Contact]) {
+    private var contacts: [Contact]
+    private var groups: [ContactGroup]
+    private var membersByGroupID: [String: [Contact]]
+    private var memberLocalIDsByGroupID: [String: [String]]
+    private var failMemberFetch = false
+    private var memberFetches = 0
+    private var failSaves: Bool
+    private var saves = 0
+
+    init(
+        contacts: [Contact],
+        groups: [ContactGroup] = [],
+        membersByGroupID: [String: [Contact]] = [:],
+        memberLocalIDsByGroupID: [String: [String]] = [:],
+        failSaves: Bool = false
+    ) {
         self.contacts = contacts
+        self.groups = groups
+        self.membersByGroupID = membersByGroupID
+        self.memberLocalIDsByGroupID = memberLocalIDsByGroupID
+        self.failSaves = failSaves
     }
+
+    func setFailMemberFetch(_ fail: Bool) { failMemberFetch = fail }
+    func memberFetchAttemptCount() -> Int { memberFetches }
+    func saveAttemptCount() -> Int { saves }
 
     func fetchAll() async throws -> [Contact] { contacts }
     func fetch(localID: String) async throws -> Contact? {
@@ -423,6 +577,8 @@ private actor MailBridgeContactStore: ContactStoreProtocol {
         contacts.first
     }
     func save(_ contact: Contact) async throws {
+        saves += 1
+        if failSaves { throw SaveFailure() }
         if contacts.isEmpty {
             contacts.append(contact)
         } else {
@@ -441,15 +597,23 @@ private actor MailBridgeContactStore: ContactStoreProtocol {
     func loadImageData(localID: String) async throws -> Data? { nil }
     func loadThumbnailImageData(localID: String) async throws -> Data? { nil }
     func setImageData(localID: String, imageData: Data?) async throws {}
-    func fetchAllGroups() async throws -> [ContactGroup] { [] }
-    func fetchGroup(localID: String) async throws -> ContactGroup? { nil }
+    func fetchAllGroups() async throws -> [ContactGroup] { groups }
+    func fetchGroup(localID: String) async throws -> ContactGroup? {
+        groups.first { $0.localID == localID }
+    }
     func createGroup(name: String) async throws -> ContactGroup {
         ContactGroup(localID: UUID().uuidString, name: name)
     }
     func renameGroup(localID: String, to name: String) async throws {}
     func deleteGroup(localID: String) async throws {}
-    func fetchMembers(ofGroup groupLocalID: String) async throws -> [Contact] { [] }
-    func fetchMemberLocalIDs(ofGroup groupLocalID: String) async throws -> [String] { [] }
+    func fetchMembers(ofGroup groupLocalID: String) async throws -> [Contact] {
+        memberFetches += 1
+        if failMemberFetch { throw MemberFetchFailure() }
+        return membersByGroupID[groupLocalID] ?? []
+    }
+    func fetchMemberLocalIDs(ofGroup groupLocalID: String) async throws -> [String] {
+        memberLocalIDsByGroupID[groupLocalID] ?? []
+    }
     func fetchGroupMemberships(contactLocalID: String) async throws -> [ContactGroup] { [] }
     func addMember(contactLocalID: String, toGroup groupLocalID: String) async throws {}
     func removeMember(contactLocalID: String, fromGroup groupLocalID: String) async throws {}
