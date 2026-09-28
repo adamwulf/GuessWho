@@ -93,6 +93,11 @@ touching that subsystem:
 - [`docs/sidecar-compatibility.md`](docs/sidecar-compatibility.md) — the
   forward-compatibility contract for synced envelopes: what an older build
   preserves, and the rules a storage change must keep.
+- [`docs/mail-activity.md`](docs/mail-activity.md) — incoming-mail activity
+  on contacts: the `mailActivity:<uuid>` cells, Message-ID normalization and
+  hashing, the forward-only `lastInteracted` merge, retention, tombstones, and
+  the repository notifications. Read before touching mail activity or any code
+  that walks every cell of a contact envelope.
 - [`docs/autocomplete.md`](docs/autocomplete.md) — text-field autocomplete:
   how a field opts in (`.autocomplete(text:candidates:)` +
   `.autocompleteMenuHost()`), the shared filter, the candidate lists, and

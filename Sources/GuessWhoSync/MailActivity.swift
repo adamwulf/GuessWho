@@ -15,6 +15,8 @@ import Foundation
 /// a message the handler delivers twice lands on the same cell (idempotent),
 /// and the same message recorded on two contacts that later collapse under
 /// Case-D reconciliation merges into one cell instead of duplicating.
+///
+/// The synced format, retention, and merge rules: docs/mail-activity.md.
 public struct MailActivity: Hashable, Sendable, Identifiable {
     /// Which way the message travelled relative to the user. Only incoming
     /// mail is recorded today; the raw value is the stored spelling.
@@ -148,17 +150,34 @@ extension MailActivity {
         cellKey.hasPrefix(cellKeyPrefix)
     }
 
-    /// The cell's opaque value object. Optional members are omitted when nil.
-    var cellValue: JSONValue {
-        var object: [String: JSONValue] = [
-            Self.directionKey: .string(direction.rawValue),
-            Self.senderKey: .string(senderAddress),
-            Self.receivedAtKey: .string(SidecarISO8601.string(from: receivedAt)),
-            Self.messageIDKey: .string(messageID),
-        ]
+    /// The cell's opaque value object for a first delivery. Optional members
+    /// are omitted when nil.
+    var cellValue: JSONValue { cellValue(overlaying: [:]) }
+
+    /// The cell value for a repeat delivery onto an existing live value
+    /// object: this build's keys are written over `existing`, every other key
+    /// (one a newer build added) is kept, and an existing `subject` /
+    /// `mailURL` is kept when this delivery has none.
+    func cellValue(overlaying existing: [String: JSONValue]) -> JSONValue {
+        var object = existing
+        object[Self.directionKey] = .string(direction.rawValue)
+        object[Self.senderKey] = .string(senderAddress)
+        object[Self.receivedAtKey] = .string(SidecarISO8601.string(from: receivedAt))
+        object[Self.messageIDKey] = .string(messageID)
         if let subject { object[Self.subjectKey] = .string(subject) }
         if let mailURL { object[Self.mailURLKey] = .string(mailURL) }
         return .object(object)
+    }
+
+    /// How many decodable live activities one contact keeps. The write that
+    /// would exceed it removes the oldest (by `isNewer(than:)` order).
+    static let retentionLimit = 100
+
+    /// The one activity order: newer `receivedAt` first, ties broken by the
+    /// `id` string so every device ranks the same set identically.
+    func isNewer(than other: MailActivity) -> Bool {
+        if receivedAt != other.receivedAt { return receivedAt > other.receivedAt }
+        return id.uuidString < other.id.uuidString
     }
 
     /// Decodes one envelope cell, or nil when `cellKey` is not a mail

@@ -45,6 +45,31 @@ struct MailActivityTests {
         #expect(lhs.deletedAt == rhs.deletedAt)
     }
 
+    /// Writes `cells` straight into the envelope at `key`, as another build
+    /// or device would, keeping every other cell.
+    private func seed(_ cells: [String: SidecarCell], in sidecars: InMemorySidecarStore) throws {
+        let envelope = try sidecars.read(key)
+        let fields = (envelope?.fields ?? [:]).merging(cells) { _, new in new }
+        try sidecars.write(SidecarEnvelope(entityID: envelope?.entityID ?? key.id, fields: fields), at: key)
+    }
+
+    /// A live cell holding `value`, stamped by another device.
+    private func foreignCell(_ value: JSONValue, deletedAt: Date? = nil) -> SidecarCell {
+        SidecarCell(
+            value: value,
+            modifiedAt: Date(timeIntervalSince1970: 1_700_000_000),
+            modifiedBy: "other-device",
+            deletedAt: deletedAt
+        )
+    }
+
+    /// `count` activities received one second apart, oldest first.
+    private func activities(_ count: Int, from start: Date, prefix: String) throws -> [MailActivity] {
+        try (0..<count).map { index in
+            try activity("<\(prefix)-\(index)@example.com>", receivedAt: start.addingTimeInterval(TimeInterval(index)))
+        }
+    }
+
     // MARK: - Model
 
     @Test
@@ -128,6 +153,7 @@ struct MailActivityTests {
         let second = try sync.recordMailActivity(message, at: key)
         #expect(second == MailActivityWriteOutcome(
             activityChanged: false,
+            prunedActivityCount: 0,
             lastInteractedChanged: false,
             lastInteracted: message.receivedAt
         ))
@@ -303,6 +329,237 @@ struct MailActivityTests {
         #expect(merged.fields.keys.filter { $0.hasPrefix(MailActivity.cellKeyPrefix) }.count == 1)
         #expect(try sync.mailActivities(at: key) == [message])
     }
+
+    // MARK: - Forward-compatible redelivery
+
+    @Test
+    func redeliveryKeepsInnerKeysANewerBuildAdded() throws {
+        let sidecars = InMemorySidecarStore()
+        let sync = makeSync(sidecars)
+        let received = Date(timeIntervalSince1970: 1_790_000_000)
+        let original = try activity("<future@example.com>", receivedAt: received, subject: "First")
+        try sync.recordMailActivity(original, at: key)
+
+        // A newer build added a key inside the stored value object.
+        let storedCell = try #require(try sidecars.read(key)?.fields[original.cellKey])
+        guard case .object(var object) = storedCell.value else {
+            Issue.record("stored activity is not an object")
+            return
+        }
+        object["futureKey"] = .string("keep me")
+        try seed([original.cellKey: foreignCell(.object(object))], in: sidecars)
+        let seeded = try #require(try sidecars.read(key)?.fields[original.cellKey])
+
+        // The same delivery again changes nothing, so nothing is written.
+        let repeatOutcome = try sync.recordMailActivity(original, at: key)
+        #expect(!repeatOutcome.didWrite)
+        try expectSameCell(try sidecars.read(key)?.fields[original.cellKey], seeded)
+
+        // A changed delivery writes this build's keys and keeps the new one.
+        let updated = try activity("<future@example.com>", receivedAt: received, subject: "Second")
+        let updateOutcome = try sync.recordMailActivity(updated, at: key)
+        #expect(updateOutcome.activityChanged)
+        let rewritten = try #require(try sidecars.read(key)?.fields[original.cellKey])
+        guard case .object(let rewrittenObject) = rewritten.value else {
+            Issue.record("rewritten activity is not an object")
+            return
+        }
+        #expect(rewrittenObject["futureKey"] == .string("keep me"))
+        #expect(rewrittenObject[MailActivity.subjectKey] == .string("Second"))
+        #expect(rewritten.modifiedBy == "device-mail")
+        #expect(try sync.mailActivities(at: key) == [updated])
+    }
+
+    @Test
+    func redeliveryWithoutSubjectOrLinkKeepsTheStoredOnes() throws {
+        let sidecars = InMemorySidecarStore()
+        let sync = makeSync(sidecars)
+        let received = Date(timeIntervalSince1970: 1_790_000_000)
+        let full = try activity(
+            "<keep@example.com>", receivedAt: received, subject: "Hello", mailURL: "message://%3Ckeep@example.com%3E")
+        let bare = try activity("<keep@example.com>", receivedAt: received, subject: nil, mailURL: nil)
+        try sync.recordMailActivity(full, at: key)
+        let before = try #require(try sidecars.read(key)?.fields[full.cellKey])
+
+        let outcome = try sync.recordMailActivity(bare, at: key)
+
+        #expect(!outcome.didWrite)
+        try expectSameCell(try sidecars.read(key)?.fields[full.cellKey], before)
+        #expect(try sync.mailActivities(at: key) == [full])
+    }
+
+    @Test
+    func undecodableLiveCellIsNeverRewritten() throws {
+        let sidecars = InMemorySidecarStore()
+        let sync = makeSync(sidecars)
+        let message = try activity("<outgoing@example.com>", receivedAt: Date(timeIntervalSince1970: 1_790_000_000))
+        // A newer build stored this message with a direction this build does
+        // not know.
+        guard case .object(var object) = message.cellValue else {
+            Issue.record("cell value is not an object")
+            return
+        }
+        object[MailActivity.directionKey] = .string("outgoing")
+        try seed([message.cellKey: foreignCell(.object(object))], in: sidecars)
+        let seeded = try #require(try sidecars.read(key)?.fields[message.cellKey])
+
+        let outcome = try sync.recordMailActivity(message, at: key)
+
+        #expect(!outcome.activityChanged)
+        try expectSameCell(try sidecars.read(key)?.fields[message.cellKey], seeded)
+        #expect(try sync.mailActivities(at: key).isEmpty)
+    }
+
+    // MARK: - Retention
+
+    @Test
+    func retentionKeepsTheNewestHundredAndRemovesOlderCells() throws {
+        let sidecars = InMemorySidecarStore()
+        let sync = makeSync(sidecars)
+        let start = Date(timeIntervalSince1970: 1_790_000_000)
+        let messages = try activities(MailActivity.retentionLimit + 1, from: start, prefix: "keep")
+
+        // Exactly at the limit: nothing is removed.
+        for message in messages.dropLast() {
+            let outcome = try sync.recordMailActivity(message, at: key)
+            #expect(outcome.prunedActivityCount == 0)
+        }
+        #expect(try sync.mailActivities(at: key).count == MailActivity.retentionLimit)
+
+        // One past the limit removes the single oldest, physically.
+        let newest = try #require(messages.last)
+        let outcome = try sync.recordMailActivity(newest, at: key)
+        #expect(outcome.activityChanged)
+        #expect(outcome.prunedActivityCount == 1)
+
+        let oldest = try #require(messages.first)
+        let stored = try #require(try sidecars.read(key))
+        #expect(stored.fields[oldest.cellKey] == nil)
+        #expect(try sync.mailActivities(at: key) == Array(messages.dropFirst().reversed()))
+    }
+
+    @Test
+    func activityOutsideTheWindowIsNotAdded() throws {
+        let sidecars = InMemorySidecarStore()
+        let sync = makeSync(sidecars)
+        let start = Date(timeIntervalSince1970: 1_790_000_000)
+        for message in try activities(MailActivity.retentionLimit, from: start, prefix: "full") {
+            try sync.recordMailActivity(message, at: key)
+        }
+        let before = try #require(try sidecars.read(key))
+
+        let tooOld = try activity("<too-old@example.com>", receivedAt: start.addingTimeInterval(-60))
+        let outcome = try sync.recordMailActivity(tooOld, at: key)
+
+        #expect(outcome == MailActivityWriteOutcome(
+            activityChanged: false,
+            prunedActivityCount: 0,
+            lastInteractedChanged: false,
+            lastInteracted: start.addingTimeInterval(TimeInterval(MailActivity.retentionLimit - 1))
+        ))
+        let after = try #require(try sidecars.read(key))
+        #expect(after.fields[tooOld.cellKey] == nil)
+        #expect(Set(after.fields.keys) == Set(before.fields.keys))
+    }
+
+    @Test
+    func retentionBreaksReceivedTimeTiesByID() throws {
+        let sidecars = InMemorySidecarStore()
+        let sync = makeSync(sidecars)
+        let start = Date(timeIntervalSince1970: 1_790_000_000)
+        // 99 newer activities, then two sharing the oldest received time: only
+        // one fits, and the one whose id sorts first ranks as newer.
+        for message in try activities(MailActivity.retentionLimit - 1, from: start.addingTimeInterval(10), prefix: "new") {
+            try sync.recordMailActivity(message, at: key)
+        }
+        let tiedA = try activity("<tie-a@example.com>", receivedAt: start)
+        let tiedB = try activity("<tie-b@example.com>", receivedAt: start)
+        let (kept, dropped) = tiedA.id.uuidString < tiedB.id.uuidString ? (tiedA, tiedB) : (tiedB, tiedA)
+
+        try sync.recordMailActivity(dropped, at: key)
+        let outcome = try sync.recordMailActivity(kept, at: key)
+
+        #expect(outcome.activityChanged)
+        #expect(outcome.prunedActivityCount == 1)
+        let stored = try #require(try sidecars.read(key))
+        #expect(stored.fields[kept.cellKey] != nil)
+        #expect(stored.fields[dropped.cellKey] == nil)
+    }
+
+    @Test
+    func retentionNeverRemovesOrCountsTombstonedOrUndecodableCells() throws {
+        let sidecars = InMemorySidecarStore()
+        let sync = makeSync(sidecars)
+        let start = Date(timeIntervalSince1970: 1_790_000_000)
+
+        // Older than everything else: a tombstone and a cell this build
+        // cannot decode.
+        let tombstoned = try activity("<deleted@example.com>", receivedAt: start.addingTimeInterval(-100))
+        let unknown = try activity("<unknown@example.com>", receivedAt: start.addingTimeInterval(-100))
+        guard case .object(var unknownObject) = unknown.cellValue else {
+            Issue.record("cell value is not an object")
+            return
+        }
+        unknownObject[MailActivity.directionKey] = .string("outgoing")
+        try seed([
+            tombstoned.cellKey: foreignCell(tombstoned.cellValue, deletedAt: start),
+            unknown.cellKey: foreignCell(.object(unknownObject)),
+        ], in: sidecars)
+
+        // Merge-style over-limit envelope: 102 decodable live cells arrive
+        // from another device without being pruned.
+        let messages = try activities(MailActivity.retentionLimit + 2, from: start, prefix: "merged")
+        try seed(
+            Dictionary(uniqueKeysWithValues: messages.map { ($0.cellKey, foreignCell($0.cellValue)) }),
+            in: sidecars
+        )
+
+        // A repeat of an already-stored message changes nothing itself, but the
+        // write still trims the envelope back to the window.
+        let outcome = try sync.recordMailActivity(try #require(messages.last), at: key)
+
+        #expect(!outcome.activityChanged)
+        #expect(outcome.prunedActivityCount == 2)
+        let stored = try #require(try sidecars.read(key))
+        #expect(stored.fields[messages[0].cellKey] == nil)
+        #expect(stored.fields[messages[1].cellKey] == nil)
+        #expect(stored.fields[tombstoned.cellKey]?.deletedAt == start)
+        #expect(stored.fields[unknown.cellKey] != nil)
+        #expect(try sync.mailActivities(at: key) == Array(messages.dropFirst(2).reversed()))
+    }
+
+    // MARK: - Cross-device convergence
+
+    @Test
+    func lastInteractedConvergesToTheLaterReceivedDateAcrossDevices() throws {
+        // Two Macs record different messages for the same contact before
+        // either sees the other's write. Mac B processes an OLDER message at
+        // a LATER wall-clock time, so a write-time stamp would let it win.
+        let storeA = InMemorySidecarStore()
+        let storeB = InMemorySidecarStore()
+        let macA = GuessWhoSync(contacts: InMemoryContactStore(), events: InMemoryEventStore(), sidecars: storeA, deviceID: "mac-A")
+        let macB = GuessWhoSync(contacts: InMemoryContactStore(), events: InMemoryEventStore(), sidecars: storeB, deviceID: "mac-B")
+        let earlier = try activity("<earlier@example.com>", receivedAt: Date(timeIntervalSince1970: 1_790_000_000))
+        let later = try activity("<later@example.com>", receivedAt: Date(timeIntervalSince1970: 1_790_003_600))
+
+        try macA.recordMailActivity(later, at: key)
+        try macB.recordMailActivity(earlier, at: key)
+        let versionA = try SidecarEnvelopeCodec.encode(try #require(try storeA.read(key)))
+        let versionB = try SidecarEnvelopeCodec.encode(try #require(try storeB.read(key)))
+
+        // Each Mac resolves the iCloud conflict with the other's version.
+        storeA.scriptConflict(at: key, versions: [versionB])
+        storeB.scriptConflict(at: key, versions: [versionA])
+        _ = try macA.reconcileSidecars()
+        _ = try macB.reconcileSidecars()
+
+        for (sync, store) in [(macA, storeA), (macB, storeB)] {
+            #expect(try sync.contactTimestamps(at: key).lastInteracted == later.receivedAt)
+            #expect(try sync.mailActivities(at: key) == [later, earlier])
+            #expect(try SidecarEnvelopeCodec.encode(try #require(try store.read(key)))
+                == SidecarEnvelopeCodec.encode(try #require(try storeA.read(key))))
+        }
+    }
 }
 
 /// The `ContactID`-keyed repository surface: writes resolve-or-mint, reads
@@ -330,6 +587,132 @@ struct ContactsRepositoryMailActivityTests {
             receivedAt: receivedAt,
             messageID: messageID
         ))
+    }
+
+    /// Polls until `condition` holds or `timeout` passes; returns whether it
+    /// held. The sidecar refresh runs after the repository's 300 ms debounce.
+    private func waitUntil(timeout: Duration = .seconds(2), _ condition: () -> Bool) async -> Bool {
+        let deadline = ContinuousClock.now.advanced(by: timeout)
+        while !condition() && ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return condition()
+    }
+
+    @Test
+    func queuedWritesThroughAPreMintTokenMintOnce() async throws {
+        let store = InMemoryContactStore(contacts: [Contact(localID: "TARGET", givenName: "Ada")])
+        let center = NotificationCenter()
+        let repo = ContactsRepository(
+            contacts: store,
+            sync: makeSync(store, InMemorySidecarStore()),
+            notificationCenter: center
+        )
+
+        // nonisolated(unsafe): appended only from the notification handlers
+        // on this test's main-actor flow; read after the awaited writes.
+        nonisolated(unsafe) var reloadFlags: [Bool] = []
+        nonisolated(unsafe) var activityPosts: [[ContactID]] = []
+        let reloadToken = center.addObserver(
+            forName: .contactsRepositoryDidReload, object: repo, queue: nil
+        ) { note in
+            reloadFlags.append(
+                (note.userInfo?[ContactsRepositoryDidReloadKey.contactDataChanged] as? Bool) ?? true
+            )
+        }
+        let activityToken = center.addObserver(
+            forName: .contactsRepositoryMailActivityDidChange, object: repo, queue: nil
+        ) { note in
+            activityPosts.append(
+                (note.userInfo?[ContactsRepositoryMailActivityDidChangeKey.contactIDs] as? [ContactID]) ?? []
+            )
+        }
+        defer {
+            center.removeObserver(reloadToken)
+            center.removeObserver(activityToken)
+        }
+
+        await repo.reload()
+        let id = try #require(repo.contact(localID: "TARGET")).contactID
+        #expect(id.guessWhoID == nil)
+
+        // Two messages queued against the token captured before either write.
+        try await repo.recordMailActivity(
+            try activity("<queued-1@example.com>", receivedAt: Date(timeIntervalSince1970: 1_790_000_000)),
+            for: id
+        )
+        try await repo.recordMailActivity(
+            try activity("<queued-2@example.com>", receivedAt: Date(timeIntervalSince1970: 1_790_000_060)),
+            for: id
+        )
+
+        // One mint refresh (contactDataChanged: true). The second write found
+        // the minted identity through the cache, so it posted only the
+        // presentation-only reload for its newer lastInteracted.
+        let minted = try #require(repo.contact(id: id)).contactID
+        #expect(minted.guessWhoID != nil)
+        #expect(reloadFlags == [true, true, false])
+        #expect(activityPosts == [[minted, id], [minted, id]])
+        #expect(await repo.mailActivities(for: id).map(\.messageID)
+            == ["queued-2@example.com", "queued-1@example.com"])
+    }
+
+    @Test
+    func remoteChangeWithExactContactKeyPostsScopedChange() async throws {
+        let uuid = "90000000-0000-0000-0000-000000000001"
+        let store = InMemoryContactStore(contacts: [reconciled("RECON", "Grace", uuid: uuid)])
+        let sync = makeSync(store, InMemorySidecarStore())
+        let center = NotificationCenter()
+        let repo = ContactsRepository(contacts: store, sync: sync, notificationCenter: center)
+
+        // nonisolated(unsafe): appended only from the notification handlers
+        // on this test's main-actor flow.
+        nonisolated(unsafe) var reloadCount = 0
+        nonisolated(unsafe) var activityPosts: [[ContactID]] = []
+        let reloadToken = center.addObserver(
+            forName: .contactsRepositoryDidReload, object: repo, queue: nil
+        ) { _ in reloadCount += 1 }
+        let activityToken = center.addObserver(
+            forName: .contactsRepositoryMailActivityDidChange, object: repo, queue: nil
+        ) { note in
+            activityPosts.append(
+                (note.userInfo?[ContactsRepositoryMailActivityDidChangeKey.contactIDs] as? [ContactID]) ?? []
+            )
+        }
+        defer {
+            center.removeObserver(reloadToken)
+            center.removeObserver(activityToken)
+        }
+
+        await repo.reload()
+        let id = try #require(repo.contact(localID: "RECON")).contactID
+
+        // Another device's write lands on disk; the watcher names its key.
+        let key = SidecarKey(kind: .contact, id: uuid)
+        try await sync.recordMailActivity(
+            try activity("<remote@example.com>", receivedAt: Date(timeIntervalSince1970: 1_790_000_000)),
+            at: key
+        )
+        center.post(
+            name: .guessWhoSidecarsDidChange,
+            object: nil,
+            userInfo: [GuessWhoSidecarsDidChangeKey.changeSet: SidecarChangeSet(changedKeys: [key])]
+        )
+        #expect(await waitUntil { !activityPosts.isEmpty })
+        #expect(activityPosts == [[id]])
+        #expect(await repo.mailActivities(for: id).map(\.messageID) == ["remote@example.com"])
+
+        // A coarse delivery names no contact: only the global reload posts.
+        let reloadsBefore = reloadCount
+        center.post(
+            name: .guessWhoSidecarsDidChange,
+            object: nil,
+            userInfo: [GuessWhoSidecarsDidChangeKey.changeSet:
+                SidecarChangeSet(changedKeys: nil, changedKinds: [.contact])]
+        )
+        #expect(await waitUntil { reloadCount > reloadsBefore })
+        try await Task.sleep(for: .milliseconds(500))
+        #expect(activityPosts == [[id]])
     }
 
     @Test

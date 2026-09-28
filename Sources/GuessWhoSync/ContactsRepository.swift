@@ -48,25 +48,40 @@ public extension Notification.Name {
     static let contactsRepositoryGroupMembershipDidChange =
         Notification.Name("ContactsRepositoryGroupMembershipDidChange")
 
-    /// Posted after `ContactsRepository.recordMailActivity(_:for:)` changed a
-    /// contact's stored mail activity — a new message, or a changed payload
-    /// for one already recorded. Not posted for a duplicate delivery that
-    /// changed nothing.
+    /// Posted when a contact's stored mail activity may have changed, so an
+    /// open contact detail can re-read `mailActivities(for:)` without waiting
+    /// on a global reload. Two sources:
+    ///
+    /// - **Local write.** `ContactsRepository.recordMailActivity(_:for:)`
+    ///   posts when the contact's activity list changed: a new message, a
+    ///   changed stored value, or older activities removed by retention. A
+    ///   duplicate delivery that changed nothing posts nothing.
+    /// - **Remote change with exact keys.** When the sidecar watcher names
+    ///   exact `.contact` keys, the repository posts for the ones the cache
+    ///   resolves. The watcher cannot say WHICH cells changed, so this also
+    ///   fires for other edits to the same contact (a note, a timestamp) and
+    ///   for the echo of this device's own writes; re-reading is cheap.
+    ///
+    /// A COARSE remote change (the watcher names only a kind directory, or
+    /// nothing) posts only `.contactsRepositoryDidReload`, because it names no
+    /// contact. A detail that shows mail activity must therefore observe BOTH
+    /// notifications.
     ///
     /// Like `.contactsRepositoryGroupMembershipDidChange`, this is NOT
     /// `.contactsRepositoryDidReload`: a new mail activity moves no cached
-    /// contact record, so an open contact detail observes this and re-reads
-    /// `mailActivities(for:)` instead of waiting on a global reload. When the
-    /// write also moved `lastInteracted`, the repository ALSO posts
-    /// `.contactsRepositoryDidReload` (`contactDataChanged: false`) so
-    /// time-sorted lists re-render.
+    /// contact record. A local write that also moved `lastInteracted` ALSO
+    /// posts `.contactsRepositoryDidReload` with `contactDataChanged: false`,
+    /// so time-sorted lists re-render; a write that minted the contact's
+    /// identity posts it with `contactDataChanged: true` instead (the cached
+    /// record gained its GuessWho URL).
     ///
     /// **userInfo** — see `ContactsRepositoryMailActivityDidChangeKey`:
-    /// - `.contactIDs` (`[ContactID]`) — the contact whose activity changed.
-    ///   When the write minted the contact's identity, the list holds BOTH the
-    ///   token the caller passed and the re-keyed token from the cache, so an
-    ///   observer holding either one matches. Compare against the `ContactID`
-    ///   you hold; never a raw identifier.
+    /// - `.contactIDs` (`[ContactID]`) — the contacts whose activity changed.
+    ///   For a local write whose caller passed a token captured before the
+    ///   contact's identity was minted, the list holds BOTH that token and the
+    ///   re-keyed token from the cache, so an observer holding either one
+    ///   matches. Compare against the `ContactID` you hold; never a raw
+    ///   identifier.
     ///
     /// Metadata only: the post never carries message content. `object` is the
     /// posting `ContactsRepository`, on its injected notification center
@@ -77,9 +92,9 @@ public extension Notification.Name {
 
 /// userInfo keys for `.contactsRepositoryMailActivityDidChange`.
 public enum ContactsRepositoryMailActivityDidChangeKey {
-    /// `[ContactID]` — the contact whose mail activity changed, as the app's
-    /// opaque identity token (see the notification for why a minting write
-    /// lists two tokens for one contact).
+    /// `[ContactID]` — the contacts whose mail activity changed, as the app's
+    /// opaque identity token (see the notification for why a local write can
+    /// list two tokens for one contact).
     public static let contactIDs = "contactIDs"
 }
 
@@ -3395,16 +3410,22 @@ public final class ContactsRepository: NSObject {
     /// first: the first write to an unreconciled contact mints its GuessWho
     /// ID. Throws `SidecarUnavailableError` when the engine is unavailable.
     ///
-    /// **Notifications.** A changed activity posts
+    /// A token captured before the contact's identity was minted resolves
+    /// through the cache first, so a batch of messages queued against that
+    /// token mints (and refreshes the cache) once, not once per message.
+    ///
+    /// **Notifications.** A changed activity list posts
     /// `.contactsRepositoryMailActivityDidChange` for this contact. A moved
     /// `lastInteracted` posts `.contactsRepositoryDidReload`
     /// (`contactDataChanged: false`) so time-sorted lists re-render; a minting
-    /// write posts its reload through `refreshCacheIfMinted` instead. A
-    /// repeat delivery that changed nothing posts nothing.
+    /// write instead posts it once through `refreshCacheIfMinted`, with
+    /// `contactDataChanged: true`. A repeat delivery that changed nothing
+    /// posts nothing.
     public func recordMailActivity(_ activity: MailActivity, for id: ContactID) async throws {
         guard let sync else { throw SidecarUnavailableError() }
-        let minted = id.guessWhoID == nil
-        let guessWhoID = try await resolveOrMintGuessWhoID(for: id)
+        let current = contact(id: id)?.contactID ?? id
+        let minted = current.guessWhoID == nil
+        let guessWhoID = try await resolveOrMintGuessWhoID(for: current)
         let key = SidecarKey(kind: .contact, id: guessWhoID)
         let outcome = try await sync.recordMailActivity(activity, at: key)
         // Mirror the cell just written into the cache in place, like the stamp
@@ -3412,18 +3433,33 @@ public final class ContactsRepository: NSObject {
         if outcome.lastInteractedChanged, let lastInteracted = outcome.lastInteracted {
             updateTimestampCache(.interacted, at: key, to: lastInteracted)
         }
-        await refreshCacheIfMinted(minted, localID: id.localID)
+        await refreshCacheIfMinted(minted, localID: current.localID)
         if !minted && outcome.lastInteractedChanged { postDidReload(contactDataChanged: false) }
-        guard outcome.activityChanged else { return }
+        guard outcome.activitiesChanged else { return }
         // After the mint refresh, so the cache token below carries the new
         // identity. List the caller's token too when it differs (it was
         // captured before the mint) so an observer holding either matches.
-        var changedIDs = [contact(id: id)?.contactID ?? id]
+        var changedIDs = [contact(id: id)?.contactID ?? current]
         if !changedIDs.contains(id) { changedIDs.append(id) }
+        postMailActivityDidChange(changedIDs)
+    }
+
+    /// Announces the scoped mail-activity change for `ids`.
+    private func postMailActivityDidChange(_ ids: [ContactID]) {
+        guard !ids.isEmpty else { return }
         notificationCenter.post(
             name: .contactsRepositoryMailActivityDidChange,
             object: self,
-            userInfo: [ContactsRepositoryMailActivityDidChangeKey.contactIDs: changedIDs]
+            userInfo: [ContactsRepositoryMailActivityDidChangeKey.contactIDs: ids]
+        )
+    }
+
+    /// Announces the exact `.contact` keys a watcher delivery named, for the
+    /// ones the cache resolves. The watcher cannot say which cells changed, so
+    /// any edit to the contact envelope posts; an observer just re-reads.
+    private func postMailActivityDidChange(forContactKeys keys: Set<SidecarKey>) {
+        postMailActivityDidChange(
+            keys.sorted { $0.id < $1.id }.compactMap { contact(guessWhoID: $0.id)?.contactID }
         )
     }
 
@@ -4571,7 +4607,9 @@ public final class ContactsRepository: NSObject {
     /// projection (the bulk timestamp cache that drives time-ordered sorts
     /// and bucket sections) and post a presentation-only reload
     /// (`contactDataChanged: false`, so the app's decoded-photo cache
-    /// survives).
+    /// survives). A delivery naming exact `.contact` keys also posts
+    /// `.contactsRepositoryMailActivityDidChange` for the contacts the cache
+    /// resolves; a coarse delivery names no contact and posts only the reload.
     ///
     /// READ-ONLY over sidecars, with ONE bounded exception. A write from this
     /// path makes the watcher post again, so an unconditional write would loop.
@@ -4650,6 +4688,11 @@ public final class ContactsRepository: NSObject {
             await performFullSidecarProjectionRefresh(
                 generation: generation,
                 groupIdentities: .resolve(keys: groupKeys))
+            // The exact contact keys still name the contacts whose mail
+            // activity may have moved; a superseded pass leaves them to the
+            // newer refresh, which inherits them.
+            guard generation == refreshGeneration else { return }
+            postMailActivityDidChange(forContactKeys: contactKeys)
             return
         }
 
@@ -4674,6 +4717,9 @@ public final class ContactsRepository: NSObject {
         }
         isLoading = false
         postDidReload(contactDataChanged: false)
+        // Exact remote contact keys: tell an open detail showing mail activity
+        // without making it wait on (or re-read for) the global reload.
+        postMailActivityDidChange(forContactKeys: contactKeys)
     }
 
     /// A delivery that can only have changed folders: re-read the hierarchy and
