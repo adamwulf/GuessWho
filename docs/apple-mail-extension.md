@@ -146,10 +146,14 @@ text field is sender-controlled, so every bound is in **UTF-8 bytes**:
 
 `append` re-checks all four bounds (the fields are mutable), then refuses
 any entry whose **encoded line** exceeds 16 KiB (`maximumLineByteCount`,
-error `entryTooLarge`) before it touches the file, so a single crafted entry
-can never evict the backlog. Every entry within the field bounds — even one
-built from the characters JSON escapes most expensively — encodes under the
-line cap (`worstCaseEntryFitsTheLineCap`), so the cap is a backstop.
+error `entryTooLarge`) before it touches the file. That bounds what a
+single entry can evict rather than preventing eviction: when the file is at
+its byte cap, an accepted entry still evicts the fewest oldest unclaimed
+lines that make room for it — whole lines, so about its own size and at
+most about two line caps (32 KiB) of backlog. Every entry
+within the field bounds — even one built from the characters JSON escapes
+most expensively — encodes under the line cap
+(`worstCaseEntryFitsTheLineCap`), so the cap is a backstop.
 
 Bump `MailIncomingMessage.currentVersion` only for a breaking shape change.
 

@@ -53,7 +53,10 @@ import Foundation
 /// are clipped (`MailIncomingMessage.maximumSubjectUTF8Length`), and `append`
 /// rejects over-long senders and Message-IDs. As a backstop, `append` also
 /// refuses any entry whose encoded line exceeds `maximumLineByteCount`
-/// before it touches the file, so no single entry can evict the backlog.
+/// before it touches the file. That bounds, rather than prevents, what one
+/// entry can evict: when the file sits at `maximumByteCount`, an accepted
+/// entry still evicts the fewest oldest unclaimed lines that make room for
+/// it — whole lines, so about its own size and at most about two line caps.
 ///
 /// ## Concurrency
 /// Every operation is one `NSFileCoordinator` claim on the file, and every
