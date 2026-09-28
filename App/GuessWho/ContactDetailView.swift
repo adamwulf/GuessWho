@@ -304,10 +304,9 @@ struct ContactDetailView: View {
         placeLinks.sorted { $0.createdAt < $1.createdAt }
     }
 
-    /// The "Linked Events" link pointing at `event`, if any. Drives the
-    /// recent-event long-press menu: a match means the row is already linked,
-    /// so the menu offers "Unlink Event" (removing this link) instead of
-    /// "Link Event".
+    /// The stored event association pointing at `event`, if any. Drives the
+    /// recent-event long-press menu: a match means the row is already associated,
+    /// so the menu offers no duplicate add action.
     ///
     /// Recent-event rows live in the EventKit id-space: their `id` is the
     /// synthetic `Event.stableID(forEventKitID:)`, while a link's event
@@ -1575,14 +1574,11 @@ struct ContactDetailView: View {
         }
         .buttonStyle(.plain)
         .contextMenu {
-            if let link = eventLink(for: event) {
-                // Already in "Linked Events" — offer to remove that curated link.
-                Button(role: .destructive) {
-                    removeEventLink(link.id)
-                } label: {
-                    Label("Unlink Event", systemImage: "calendar.badge.minus")
-                }
-            } else {
+            // Adoption and persistence are implementation details, not choices
+            // the user manages. An event that is already associated therefore
+            // has no reverse action here; deleting the GuessWho record is the
+            // only user-facing way to remove its private data.
+            if eventLink(for: event) == nil {
                 Button {
                     Task { await linkRecentEvent(event) }
                 } label: {
