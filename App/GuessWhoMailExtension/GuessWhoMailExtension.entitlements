@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Mail loads only sandboxed extensions. -->
+	<key>com.apple.security.app-sandbox</key>
+	<true/>
+	<!-- The App Group ONLY (no iCloud, no Contacts, no network): the extension
+	     reads the contact cache the app publishes and appends to the
+	     incoming-message journal the app drains, both in the shared container.
+	     Expands at signing time from GUESSWHO_APP_GROUP in
+	     Config/GuessWhoMailExtension-Shared.xcconfig — the same
+	     <TeamID>.com.milestonemade.guesswho group as the app's
+	     GuessWho-MacCatalyst.entitlements, and the value the extension's
+	     GuessWhoAppGroup Info.plist key carries, so the two can't drift. -->
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>$(GUESSWHO_APP_GROUP)</string>
+	</array>
+</dict>
+</plist>

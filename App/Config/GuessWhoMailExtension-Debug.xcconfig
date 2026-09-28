@@ -1,0 +1,14 @@
+// GuessWhoMailExtension-Debug.xcconfig
+// Debug-configuration identifiers for the GuessWhoMailExtension target. Wired as
+// the extension's Debug baseConfigurationReference. Debug uses the production
+// bundle id and App Group, matching the app, so Xcode builds exercise the same
+// capabilities as Release.
+
+#include "GuessWhoMailExtension-Shared.xcconfig"
+
+// Bundle id — must stay prefixed by the app bundle id (…guesswho ⊃ …guesswho.mail).
+PRODUCT_BUNDLE_IDENTIFIER = com.milestonemade.guesswho.mail
+
+// Display name in Mail's Settings → Extensions. "Debug"-suffixed so an
+// Xcode-installed extension is obvious next to an installed release build.
+GUESSWHO_MAIL_EXTENSION_DISPLAY_NAME = GuessWho Debug

@@ -1,0 +1,60 @@
+// GuessWhoMailExtension-Shared.xcconfig
+// Config-invariant TARGET-level settings for the GuessWhoMailExtension target —
+// a NATIVE macOS MailKit app extension (not Catalyst) that highlights mail from
+// favorite contacts, journals incoming-message metadata for the app, and adds
+// a recipient-details popover to Mail's compose window. The Catalyst app embeds
+// it under GuessWho.app/Contents/PlugIns/ (Mac Catalyst only — the embed build
+// file and the target dependency both carry platformFilter = maccatalyst, so
+// iOS builds never build or ship it).
+//
+// The per-configuration settings — bundle id and display name — live in
+// GuessWhoMailExtension-Debug.xcconfig and GuessWhoMailExtension-Release.xcconfig,
+// each wired as that configuration's baseConfigurationReference in the project.
+
+#include "SharedVersion.xcconfig"
+
+PRODUCT_NAME = $(TARGET_NAME)
+
+// Signing. Sandboxed (Mail loads only sandboxed extensions) with the App Group
+// as its only other entitlement. REGISTER_APP_GROUPS stays off: the extension
+// uses only the <TeamID>.-prefixed macOS group form, which is authorized by
+// code signature and needs no developer-portal registration.
+DEVELOPMENT_TEAM = T68Z94627S
+CODE_SIGN_STYLE = Automatic
+ENABLE_APP_SANDBOX = YES
+CODE_SIGN_ENTITLEMENTS = GuessWhoMailExtension/GuessWhoMailExtension.entitlements
+
+// App Group — the app's Mac Catalyst group (GUESSWHO_APP_GROUP[sdk=macosx*] in
+// GuessWho-Debug/Release.xcconfig; Debug and Release share it). This target is
+// macOS-only, so the <TeamID>. form is the only one. Feeds BOTH the
+// entitlement ($(GUESSWHO_APP_GROUP) in GuessWhoMailExtension.entitlements)
+// and the GuessWhoAppGroup Info.plist key the shared code resolves the
+// container from, so the two can't drift.
+GUESSWHO_APP_GROUP = $(DEVELOPMENT_TEAM).com.milestonemade.guesswho
+
+// Platform: NATIVE macOS. MailKit is unavailable to Mac Catalyst, so this
+// overrides the project-level SDKROOT = iphoneos. MailKit needs macOS 12; the
+// floor matches the project's macOS 14.
+SDKROOT = macosx
+SUPPORTED_PLATFORMS = macosx
+MACOSX_DEPLOYMENT_TARGET = 14.0
+
+// No Swift packages. Linking the app's package graph (GuessWhoLogging, …)
+// into a macOS target built in the same xcodebuild as the Catalyst app makes
+// archive planning emit duplicate package build commands (see the app's
+// "Build and Embed guesswho-cli" phase), so the extension stays
+// Foundation/AppKit/SwiftUI/MailKit only. The file format it shares with the
+// app is compiled from App/GuessWhoMailShared/ into both targets.
+
+// Swift
+CLANG_ENABLE_MODULES = YES
+SWIFT_VERSION = 6.0
+SWIFT_EMIT_LOC_STRINGS = YES
+
+// Info.plist
+GENERATE_INFOPLIST_FILE = NO
+INFOPLIST_FILE = GuessWhoMailExtension/Info.plist
+
+// Embedded app extension: Contents/PlugIns/<name>.appex/Contents/MacOS/<exe>.
+SKIP_INSTALL = YES
+LD_RUNPATH_SEARCH_PATHS = $(inherited) @executable_path/../Frameworks @executable_path/../../../../Frameworks
