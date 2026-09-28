@@ -3331,6 +3331,45 @@ public final class ContactsRepository: NSObject {
         contactTimestampsByID[key.id] = stamps
     }
 
+    // MARK: - Mail activity
+
+    /// Live mail activities recorded on the contact identified by `id`, newest
+    /// first. Returns `[]` when the contact is unreconciled (no sidecar yet) or
+    /// the engine is unavailable; a read NEVER reconciles or mints.
+    public func mailActivities(for id: ContactID) -> [MailActivity] {
+        guard let sync, let guessWhoID = id.guessWhoID else { return [] }
+        do {
+            return try sync.mailActivities(at: SidecarKey(kind: .contact, id: guessWhoID))
+        } catch {
+            lastError = "mail activity read failed: \(error.localizedDescription)"
+            return []
+        }
+    }
+
+    /// Records `activity` on the contact identified by `id` and advances its
+    /// `lastInteracted` to the message's received time (never backward), in
+    /// one sidecar write. Like every write here it resolves-or-mints first,
+    /// so the first write to an unreconciled contact mints its GuessWho ID.
+    /// A repeat delivery of an already-recorded message writes and posts
+    /// nothing. Throws `SidecarUnavailableError` when the engine is unavailable.
+    public func recordMailActivity(_ activity: MailActivity, for id: ContactID) async throws {
+        guard let sync else { throw SidecarUnavailableError() }
+        let minted = id.guessWhoID == nil
+        let guessWhoID = try await resolveOrMintGuessWhoID(for: id)
+        let key = SidecarKey(kind: .contact, id: guessWhoID)
+        let outcome = try sync.recordMailActivity(activity, at: key)
+        // Mirror the cell just written into the cache in place, like the stamp
+        // verbs, so a Last Interacted sort sees it without a disk rescan.
+        if outcome.lastInteractedChanged, let lastInteracted = outcome.lastInteracted {
+            updateTimestampCache(.interacted, at: key, to: lastInteracted)
+        }
+        await refreshCacheIfMinted(minted, localID: id.localID)
+        // On mint, `refreshCacheIfMinted` posts its own reload. Otherwise post
+        // only when the write changed something; the contact records
+        // themselves are untouched either way.
+        if !minted && outcome.didWrite { postDidReload(contactDataChanged: false) }
+    }
+
     /// All live (non-deleted) USER-VISIBLE sidecar fields on the contact, by
     /// `ContactID`. Returns empty for an unreconciled id (no mint on read).
     ///
