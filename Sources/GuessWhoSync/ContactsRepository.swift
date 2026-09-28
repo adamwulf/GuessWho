@@ -742,6 +742,8 @@ public final class ContactsRepository: NSObject {
             lastError = "Groups fetch failed: \(error.localizedDescription)"
         }
         // Groups moved; the CONTACT records in the cache are untouched.
+        guard loadGeneration == groupLoadRequestGeneration,
+              mutationGeneration == groupMutationGeneration else { return }
         isLoadingGroups = false
         postDidReload(contactDataChanged: false)
     }
@@ -1093,6 +1095,12 @@ public final class ContactsRepository: NSObject {
         groupLoadRequestGeneration &+= 1
         let loadGeneration = groupLoadRequestGeneration
         let mutationGeneration = groupMutationGeneration
+        isLoadingGroups = true
+        defer {
+            if loadGeneration == groupLoadRequestGeneration {
+                isLoadingGroups = false
+            }
+        }
         do {
             let fetched = try await contactsStore.fetchAllGroups()
             guard loadGeneration == groupLoadRequestGeneration,
@@ -1102,12 +1110,16 @@ public final class ContactsRepository: NSObject {
             hasAuthoritativeGroups = true
             await refreshAllGroupIdentities(resetCache: true)
             await reloadGroupHierarchy()
+            guard loadGeneration == groupLoadRequestGeneration,
+                  mutationGeneration == groupMutationGeneration else { return true }
+            isLoadingGroups = false
             postDidReload(contactDataChanged: false)
         } catch {
             guard loadGeneration == groupLoadRequestGeneration,
                   mutationGeneration == groupMutationGeneration else { return true }
             groupsError = error.localizedDescription
             lastError = "Groups fetch failed: \(error.localizedDescription)"
+            isLoadingGroups = false
             postDidReload(contactDataChanged: false)
         }
         return true

@@ -25,17 +25,30 @@ struct MailBridgeControllerTests {
 
     @Test
     func unmatchedMailIsDroppedOnlyAfterTheCurrentContactsWerePublished() {
+        let now = Date(timeIntervalSince1970: 2_000_000)
         #expect(!MailJournalDrainPolicy.shouldAcknowledgeUnmatched(
             publishedContactRevision: nil,
-            currentContactRevision: 3
+            currentContactRevision: 3,
+            receivedAt: now,
+            now: now
         ))
         #expect(!MailJournalDrainPolicy.shouldAcknowledgeUnmatched(
             publishedContactRevision: 2,
-            currentContactRevision: 3
+            currentContactRevision: 3,
+            receivedAt: now,
+            now: now
         ))
         #expect(MailJournalDrainPolicy.shouldAcknowledgeUnmatched(
             publishedContactRevision: 3,
-            currentContactRevision: 3
+            currentContactRevision: 3,
+            receivedAt: now,
+            now: now
+        ))
+        #expect(MailJournalDrainPolicy.shouldAcknowledgeUnmatched(
+            publishedContactRevision: nil,
+            currentContactRevision: 3,
+            receivedAt: now.addingTimeInterval(-MailJournalDrainPolicy.maximumUnmatchedAge),
+            now: now
         ))
     }
 
@@ -263,6 +276,11 @@ struct MailBridgeControllerTests {
         try await waitUntil {
             await repository.mailActivities(for: contactID).map(\.messageID) == ["bridge@example.com"]
         }
+        try await waitUntil {
+            guard case .current(let snapshot) = try? cacheStore.read() else { return false }
+            return snapshot.summaries(forAddress: "ada@example.com").map(\.displayName)
+                == ["Ada Lovelace"]
+        }
         let contents = try #require(try cacheStore.read())
         guard case .current(let snapshot) = contents else {
             Issue.record("Expected a current cache snapshot")
@@ -272,6 +290,66 @@ struct MailBridgeControllerTests {
         try await waitUntil {
             ((try? Data(contentsOf: journalURL)) ?? Data()).isEmpty
         }
+    }
+
+    @Test
+    func bridgeAcknowledgesUnmatchedSenderAfterPublishingCurrentContacts() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("gw-mail-unmatched-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let guessWhoID = "20000000-0000-4000-8000-000000000002"
+        let contact = Contact(
+            givenName: "Ada",
+            familyName: "Lovelace",
+            emailAddresses: [LabeledValue(label: "work", value: "ada@example.com")],
+            urlAddresses: [
+                LabeledValue(label: "GuessWho", value: "guesswho://contact/\(guessWhoID)")
+            ]
+        )
+        let service = SyncService(
+            contactsAdapter: MailBridgeContactStore(contacts: [contact]),
+            eventsAdapter: MailBridgeEventStore(),
+            sidecarLocation: .iCloud(root),
+            deviceID: "mail-bridge-unmatched-test",
+            contactCursorURL: root.appendingPathComponent("cursor")
+        )
+        let center = NotificationCenter()
+        let repository = service.makeContactsRepository(notificationCenter: center)
+        await repository.reload()
+
+        let cacheStore = MailContactCacheStore(
+            fileURL: root.appendingPathComponent("contact-cache.plist")
+        )
+        let journalURL = root.appendingPathComponent("incoming-messages.jsonl")
+        let journal = MailIncomingJournal(fileURL: journalURL)
+        let messageID = try #require(MailMessageID.normalize("missing@example.com"))
+        _ = try journal.append(MailIncomingMessage(
+            sender: "missing@example.com",
+            subject: "No longer known",
+            receivedAt: Date(),
+            messageID: messageID,
+            messageURL: nil
+        ))
+
+        let controller = MailBridgeController(
+            service: service,
+            repository: repository,
+            notificationCenter: center,
+            cacheStore: cacheStore,
+            journal: journal,
+            journalNotificationName: nil
+        )
+        controller.bootstrap()
+        defer { controller.shutdown() }
+
+        try await waitUntil {
+            guard case .current = try? cacheStore.read() else { return false }
+            return ((try? Data(contentsOf: journalURL)) ?? Data()).isEmpty
+        }
+        let contactID = try #require(repository.contacts.first?.contactID)
+        #expect(await repository.mailActivities(for: contactID).isEmpty)
     }
 
     private func waitUntil(
@@ -295,11 +373,13 @@ private actor MailBridgeContactStore: ContactStoreProtocol {
 
     func fetchAll() async throws -> [Contact] { contacts }
     func fetch(localID: String) async throws -> Contact? {
-        contacts.first { $0.contactID == contacts.first?.contactID }
+        contacts.first { $0.localID == localID }
     }
     func save(_ contact: Contact) async throws {
-        if let index = contacts.indices.first {
+        if let index = contacts.firstIndex(where: { $0.localID == contact.localID }) {
             contacts[index] = contact
+        } else {
+            contacts.append(contact)
         }
     }
     func delete(localID: String) async throws {}

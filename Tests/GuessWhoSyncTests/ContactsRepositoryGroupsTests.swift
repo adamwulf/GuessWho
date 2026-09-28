@@ -196,6 +196,35 @@ struct ContactsRepositoryGroupsTests {
 
         #expect(repository.groups.map(\.name) == ["Family", "Work"])
         #expect(repository.groupsError == nil)
+        #expect(repository.hasAuthoritativeGroupCache)
+        #expect(!repository.isLoadingGroups)
+    }
+
+    @Test @MainActor
+    func mutationRecoveryMarksGroupCacheLoadingUntilItsFetchFinishes() async throws {
+        let store = SuspendingGroupContactStore()
+        _ = try await store.seedGroup(name: "Family")
+        let repository = ContactsRepository(contacts: store)
+
+        await store.failNextGroupFetch()
+        await repository.loadGroups()
+        #expect(!repository.hasAuthoritativeGroupCache)
+
+        await store.suspendNextGroupFetch()
+        let create = Task { @MainActor in
+            try await repository.createGroup(name: "Work")
+        }
+        await store.waitUntilGroupFetchIsSuspended()
+
+        #expect(repository.isLoadingGroups)
+        #expect(!repository.hasAuthoritativeGroupCache)
+
+        await store.resumeGroupFetch()
+        _ = try await create.value
+
+        #expect(!repository.isLoadingGroups)
+        #expect(repository.hasAuthoritativeGroupCache)
+        #expect(repository.groups.map(\.name) == ["Family", "Work"])
     }
 
     @Test @MainActor

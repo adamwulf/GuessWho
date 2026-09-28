@@ -1,6 +1,7 @@
 #if targetEnvironment(macCatalyst)
 
 import Foundation
+import CryptoKit
 import UIKit
 import GuessWhoLogging
 import GuessWhoSync
@@ -16,7 +17,8 @@ final class MailBridgeController {
     private static let log = GuessWhoLog.logger("app.mail-bridge")
     private static let debounceNanoseconds: UInt64 = 300_000_000
     private static let retryNanoseconds: UInt64 = 2_000_000_000
-    private static let drainRetryNanoseconds: UInt64 = 30_000_000_000
+    private static let publishRecoveryRetryNanoseconds: UInt64 = 30_000_000_000
+    private static let drainRetryNanoseconds: UInt64 = 300_000_000_000
     private static let renewalStride = 10
     private static let maximumDrainBatchesPerPass = 10
 
@@ -44,11 +46,14 @@ final class MailBridgeController {
     /// newer-format cache is intentionally preserved.
     private var publishedContactRevision: Int?
 
-    /// Thumbnail reads are comparatively expensive. The cache is valid for one
-    /// contact-data revision; membership/favorite-only changes reuse it.
+    /// Thumbnail reads are comparatively expensive. Across contact revisions,
+    /// retain entries whose `Contact` fingerprint is unchanged and invalidate
+    /// only removed, re-keyed, or edited contacts. Membership/favorite-only
+    /// changes reuse every entry.
     private var photoRevision: Int?
     private var loadedPhotoIDs: Set<ContactID> = []
     private var photosByContactID: [ContactID: Data] = [:]
+    private var photoContactByID: [ContactID: Contact] = [:]
 
     init(
         service: SyncService,
@@ -95,7 +100,7 @@ final class MailBridgeController {
         let claims = Array(activeClaims.values)
         activeClaims.removeAll()
         if let journal, !claims.isEmpty {
-            Task.detached(priority: .utility) {
+            DispatchQueue.global(qos: .utility).async {
                 for claim in claims {
                     _ = try? journal.release(claim)
                 }
@@ -122,18 +127,19 @@ final class MailBridgeController {
             object: repository,
             queue: .main
         ) { [weak self] notification in
+            let mailContactProjectionChanged = notification.userInfo?[
+                ContactsRepositoryDidReloadKey.mailContactProjectionChanged
+            ] as? Bool ?? true
+            let mailActivityIdentityMinted = notification.userInfo?[
+                ContactsRepositoryDidReloadKey.mailActivityIdentityMinted
+            ] as? Bool ?? false
+            let previousRevision = notification.userInfo?[
+                ContactsRepositoryDidReloadKey.mailActivityIdentityMintedFromContactRevision
+            ] as? Int
             MainActor.assumeIsolated {
                 guard let self else { return }
-                let mailContactProjectionChanged = notification.userInfo?[
-                    ContactsRepositoryDidReloadKey.mailContactProjectionChanged
-                ] as? Bool ?? true
-                let mailActivityIdentityMinted = notification.userInfo?[
-                    ContactsRepositoryDidReloadKey.mailActivityIdentityMinted
-                ] as? Bool ?? false
                 if mailActivityIdentityMinted,
-                   let previousRevision = notification.userInfo?[
-                    ContactsRepositoryDidReloadKey.mailActivityIdentityMintedFromContactRevision
-                   ] as? Int,
+                   let previousRevision,
                    self.publishedContactRevision == previousRevision {
                     // Addresses and compose fields are unchanged by the
                     // private identity URL. Carry the publication marker only
@@ -213,7 +219,7 @@ final class MailBridgeController {
         publishDebounceTask?.cancel()
         publishDebounceTask = Task { @MainActor [weak self] in
             do {
-                try await Task.sleep(nanoseconds: Self.drainRetryNanoseconds)
+                try await Task.sleep(nanoseconds: Self.publishRecoveryRetryNanoseconds)
             } catch {
                 return
             }
@@ -311,6 +317,9 @@ final class MailBridgeController {
                    case .published = repository.lastReloadOutcome,
                    repository.contactDataRevision == contactRevision {
                     publishedContactRevision = contactRevision
+                    // A drain may have deferred an unmatched sender while
+                    // waiting for this exact publication proof.
+                    requestDrain()
                 }
             case .preservedNewer(let version):
                 Self.log.notice("mail contact cache is from a newer app; preserving it", [
@@ -320,6 +329,7 @@ final class MailBridgeController {
                 Self.log.error("mail contact cache publish failed", [
                     "errorType": errorType
                 ])
+                schedulePublishRecoveryRetry()
             }
         }
     }
@@ -400,13 +410,25 @@ final class MailBridgeController {
         else { return .retry }
         if photoRevision != contactRevision {
             photoRevision = contactRevision
-            loadedPhotoIDs.removeAll()
-            photosByContactID.removeAll()
+            let currentContacts = Dictionary(
+                uniqueKeysWithValues: repository.contacts.map { ($0.contactID, $0) }
+            )
+            let invalidatedIDs = loadedPhotoIDs.filter { id in
+                photoContactByID[id] != currentContacts[id]
+            }
+            loadedPhotoIDs.subtract(invalidatedIDs)
+            for id in invalidatedIDs { photosByContactID.removeValue(forKey: id) }
+            photoContactByID = currentContacts
         }
 
         var candidates: [MailSnapshotContact] = []
         candidates.reserveCapacity(repository.contacts.count)
         for contact in repository.contacts {
+            guard !Task.isCancelled,
+                  !repository.isLoading,
+                  repository.contactDataRevision == contactRevision,
+                  repository.memberRevisions == memberRevisions
+            else { return .retry }
             guard contact.emailAddresses.contains(where: {
                 MailAddressNormalizer.normalize($0.value) != nil
             }) else { continue }
@@ -422,6 +444,11 @@ final class MailBridgeController {
                 // the actual Contacts fetch off the main actor.
                 do {
                     thumbnail = try await repository.contactPhotoData(for: id, kind: .thumbnail)?.data
+                    guard !Task.isCancelled,
+                          !repository.isLoading,
+                          repository.contactDataRevision == contactRevision,
+                          repository.memberRevisions == memberRevisions
+                    else { return .retry }
                     loadedPhotoIDs.insert(id)
                     if let thumbnail { photosByContactID[id] = thumbnail }
                 } catch {
@@ -469,7 +496,7 @@ final class MailBridgeController {
             return
         }
 
-        var addressIndex: MailContactAddressIndex?
+        var addressIndex: (revision: Int, value: MailContactAddressIndex)?
         var deferred: [DeferredClaim] = []
         var batchCount = 0
         var stopAfterCurrentBatch = false
@@ -480,9 +507,9 @@ final class MailBridgeController {
               batchCount < Self.maximumDrainBatchesPerPass {
             let claim: MailIncomingJournal.Claim?
             do {
-                claim = try await Task.detached(priority: .utility) {
+                claim = try await MailBridgeBlockingIO.run {
                     try journal.claimEntries()
-                }.value
+                }
             } catch {
                 Self.log.error("mail journal claim failed", [
                     "errorType": String(reflecting: type(of: error))
@@ -493,14 +520,20 @@ final class MailBridgeController {
             guard let claim else { break }
             batchCount += 1
             activeClaims[claim.token] = claim
+            let currentRevision = repository.contactDataRevision
             let index: MailContactAddressIndex
-            if let addressIndex {
-                index = addressIndex
+            if let addressIndex, addressIndex.revision == currentRevision {
+                index = addressIndex.value
             } else {
                 index = MailContactAddressIndex(contacts: repository.contacts)
-                addressIndex = index
+                addressIndex = (currentRevision, index)
             }
-            switch await drain(claim, from: journal, addressIndex: index) {
+            switch await drain(
+                claim,
+                from: journal,
+                addressIndex: index,
+                addressIndexRevision: currentRevision
+            ) {
             case .settled:
                 activeClaims.removeValue(forKey: claim.token)
             case .deferred(let messageIDs):
@@ -515,9 +548,9 @@ final class MailBridgeController {
                 do {
                     let claim = item.claim
                     let messageIDs = item.messageIDs
-                    let outcome = try await Task.detached(priority: .utility) {
+                    let outcome = try await MailBridgeBlockingIO.run {
                         try journal.renew(claim, messageIDs: messageIDs)
-                    }.value
+                    }
                     if !outcome.applied.isEmpty {
                         renewed.append(DeferredClaim(
                             claim: claim,
@@ -543,9 +576,9 @@ final class MailBridgeController {
             do {
                 let claim = item.claim
                 let messageIDs = item.messageIDs
-                _ = try await Task.detached(priority: .utility) {
+                _ = try await MailBridgeBlockingIO.run {
                     try journal.release(claim, messageIDs: messageIDs)
-                }.value
+                }
                 activeClaims.removeValue(forKey: claim.token)
             } catch {
                 needsRetry = true
@@ -570,9 +603,9 @@ final class MailBridgeController {
     private func releaseOutstandingClaims(from journal: MailIncomingJournal) async {
         for claim in Array(activeClaims.values) {
             do {
-                _ = try await Task.detached(priority: .utility) {
+                _ = try await MailBridgeBlockingIO.run {
                     try journal.release(claim)
-                }.value
+                }
                 activeClaims.removeValue(forKey: claim.token)
             } catch {
                 Self.log.error("mail journal outstanding release failed", [
@@ -593,11 +626,14 @@ final class MailBridgeController {
     private func drain(
         _ claim: MailIncomingJournal.Claim,
         from journal: MailIncomingJournal,
-        addressIndex: MailContactAddressIndex
+        addressIndex initialAddressIndex: MailContactAddressIndex,
+        addressIndexRevision initialAddressIndexRevision: Int
     ) async -> ClaimDrainResult {
         var owned = Set(claim.entries.map(\.messageID))
         var acknowledge = Set<String>()
         var retry = Set<String>()
+        var addressIndex = initialAddressIndex
+        var addressIndexRevision = initialAddressIndexRevision
 
         for (index, entry) in claim.entries.enumerated() {
             guard !Task.isCancelled, !isShuttingDown else {
@@ -606,9 +642,9 @@ final class MailBridgeController {
             }
             if index.isMultiple(of: Self.renewalStride) {
                 do {
-                    let outcome = try await Task.detached(priority: .utility) {
+                    let outcome = try await MailBridgeBlockingIO.run {
                         try journal.renew(claim)
-                    }.value
+                    }
                     owned = outcome.applied
                     if outcome.lostOwnership {
                         Self.log.notice("mail journal claim ownership changed", [
@@ -642,11 +678,22 @@ final class MailBridgeController {
                 continue
             }
 
+            if addressIndexRevision != repository.contactDataRevision {
+                addressIndexRevision = repository.contactDataRevision
+                addressIndex = MailContactAddressIndex(contacts: repository.contacts)
+            }
             let contactIDs = addressIndex.contactIDs(matching: entry.sender)
+            guard addressIndexRevision == repository.contactDataRevision else {
+                // A contact reload interleaved with the rebuild. Do not make an
+                // absence decision from an index whose revision is ambiguous.
+                retry.insert(entry.messageID)
+                continue
+            }
             guard !contactIDs.isEmpty else {
                 if MailJournalDrainPolicy.shouldAcknowledgeUnmatched(
                     publishedContactRevision: publishedContactRevision,
-                    currentContactRevision: repository.contactDataRevision
+                    currentContactRevision: repository.contactDataRevision,
+                    receivedAt: entry.receivedAt
                 ) {
                     // The extension saw the sender in an older cache, while a
                     // successful publication proves the current cache and
@@ -686,9 +733,9 @@ final class MailBridgeController {
         if !acknowledge.isEmpty {
             do {
                 let messageIDs = acknowledge
-                _ = try await Task.detached(priority: .utility) {
+                _ = try await MailBridgeBlockingIO.run {
                     try journal.acknowledge(claim, messageIDs: messageIDs)
-                }.value
+                }
             } catch {
                 Self.log.error("mail journal acknowledge failed", [
                     "errorType": String(reflecting: type(of: error))
@@ -702,12 +749,36 @@ final class MailBridgeController {
 
 private struct MailBridgeRepositoryUnavailableError: Error {}
 
+/// `NSFileCoordinator` is synchronous and can block while another process
+/// holds the App Group file presenter. Keep those operations off Swift's
+/// cooperative executor just as the repository does for coordinated reads.
+private enum MailBridgeBlockingIO {
+    static func run<T: Sendable>(
+        _ operation: @escaping @Sendable () throws -> T
+    ) async throws -> T {
+        try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                do {
+                    continuation.resume(returning: try operation())
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+}
+
 enum MailJournalDrainPolicy {
+    static let maximumUnmatchedAge: TimeInterval = 7 * 24 * 60 * 60
+
     static func shouldAcknowledgeUnmatched(
         publishedContactRevision: Int?,
-        currentContactRevision: Int
+        currentContactRevision: Int,
+        receivedAt: Date,
+        now: Date = Date()
     ) -> Bool {
         publishedContactRevision == currentContactRevision
+            || receivedAt <= now.addingTimeInterval(-maximumUnmatchedAge)
     }
 }
 
@@ -754,9 +825,9 @@ enum MailContactCachePublication {
     ) async -> Outcome {
         var snapshot = candidate
         do {
-            let existing = try await Task.detached(priority: .utility) {
+            let existing = try await MailBridgeBlockingIO.run {
                 try store.read()
-            }.value
+            }
             switch existing {
             case .current(let current):
                 snapshot.generatedAt = current.generatedAt
@@ -779,9 +850,9 @@ enum MailContactCachePublication {
 
         snapshot.generatedAt = Date()
         do {
-            try await Task.detached(priority: .utility) {
+            try await MailBridgeBlockingIO.run {
                 try store.write(snapshot)
-            }.value
+            }
             return .written
         } catch {
             return .failed(errorType: String(reflecting: type(of: error)))
@@ -852,9 +923,15 @@ enum MailContactSnapshotBuilder {
             candidate.contact.displayName,
             candidate.contact.organizationName,
             candidate.contact.jobTitle,
-            candidate.thumbnail?.base64EncodedString() ?? "",
+            thumbnailFingerprint(candidate.thumbnail),
             candidate.highlightReasons.map(\.rawValue).sorted().joined(separator: "\u{1f}"),
         ].joined(separator: "\u{1e}")
+    }
+
+    private static func thumbnailFingerprint(_ data: Data?) -> String {
+        guard let data else { return "" }
+        let digest = SHA256.hash(data: data)
+        return "\(data.count):" + digest.map { String(format: "%02x", $0) }.joined()
     }
 
     private static func nonempty(_ value: String) -> String? {
