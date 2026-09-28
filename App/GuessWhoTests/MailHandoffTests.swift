@@ -614,10 +614,13 @@ struct MailIncomingJournalTests {
             let journal = MailIncomingJournal(fileURL: url)
             do {
                 if worker < appenderCount {
+                    // Counted as finished even when an append throws, so the
+                    // claimers stop and the recorded error fails the test
+                    // instead of the claimers spinning forever.
+                    defer { recorder.finishAppender() }
                     for index in stride(from: worker, to: total, by: appenderCount) {
                         recorder.recordAppend(try journal.append(entry("c\(index)")))
                     }
-                    recorder.finishAppender()
                 } else {
                     while true {
                         // Read before claiming: once every append has landed,
