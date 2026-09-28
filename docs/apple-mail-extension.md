@@ -52,15 +52,23 @@ formats, or the code that writes or drains them.
   `MEMessageActionHandler`), with the compose button's icon (`ToolbarIcon` in
   the extension's asset catalog) and tooltip under `MEComposeSession`.
 - **MailKit calls "main-actor" protocols off the main thread.** `MEExtension`
-  and `MEComposeSessionHandler` are declared `@MainActor`, yet MailKit creates
-  the principal object, asks it for handlers, and calls
-  `annotateAddressesForSession` and the compose-session begin/end methods on
-  its NSXPC queue. Under Swift 6 a main-actor-isolated witness checks its
-  executor at entry and traps there (`_dispatch_assert_queue_fail` in the
-  crash report, which also blanks the compose popover). So `MailExtension`
-  is `nonisolated`, and those `ComposeSessionHandler` methods are
+  and `MEComposeSessionHandler` are declared `@MainActor`, yet crash reports
+  show MailKit creating the principal object (`MailExtension.init`) and
+  delivering `annotateAddressesForSession` and `mailComposeSessionDidEnd` on
+  its NSXPC queue. Under Swift 6 a main-actor-isolated `init` or witness
+  checks its executor at entry and traps there (`_dispatch_assert_queue_fail`
+  in the crash report, which also blanks the compose popover). So
+  `MailExtension` is `nonisolated` (its handler factories as a precaution),
+  and `ComposeSessionHandler`'s annotate and begin/end methods are
   `nonisolated` and hop to the main queue for per-window state.
   `viewController(for:)` has been seen on the main thread and stays isolated.
+- **Mail sizes the compose popover when it presents it.** The popover took
+  the view's preferred size at presentation: an asynchronous first lookup
+  left it at the loading placeholder's height with the rows clipped. Whether
+  Mail follows a later `preferredContentSize` change is unverified, so
+  `viewController(for:)` fills the model synchronously
+  (`RecipientsModel.showNow`) before it returns the view controller; keep
+  that first lookup synchronous.
 
 ## App Group and the `Mail/` directory
 
@@ -276,6 +284,6 @@ Automated tests cover the shared formats, cache projection, address matching, ca
 - The matching contact page shows the message under **Recent Email**, advances Last Interaction, and offers **Open in Mail** only for a safe Message-ID link.
 - On the first incoming message for a known contact that has no GuessWho identity yet, the app transparently adds its private identity URL to the Contacts card before storing activity.
 - `~/Library/Group Containers/<TeamID>.com.milestonemade.guesswho/Mail/incoming-messages.jsonl` holds only the metadata fields above.
-- A compose window shows the toolbar button; its popover lists the recipients and updates as recipients are added or removed.
+- A compose window shows the toolbar button; its popover opens sized to its rows (nothing clipped, even when one address matches two contacts), stays filled, and reopening it after adding or removing recipients shows the new list. No new `GuessWhoMailExtension-*.ips` appears in `~/Library/Logs/DiagnosticReports/`.
 - Opening a generated message link may or may not select the message — both are acceptable.
 - The Mail extension log shows no unexpected errors and never includes addresses or subjects.

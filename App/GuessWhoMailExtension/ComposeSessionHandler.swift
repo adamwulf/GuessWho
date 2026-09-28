@@ -15,12 +15,13 @@ import MailKit
 /// the cache can say who someone is, not whether an address is valid.
 ///
 /// Main-actor bound, as MailKit declares `MEComposeSessionHandler` — but
-/// MailKit calls the session lifecycle and annotation methods on its XPC
-/// queue (seen in crash reports), so those are `nonisolated` and hop to the
-/// main queue for the per-window state. A main-actor-isolated witness would
-/// fail Swift 6's runtime executor check on that queue and trap.
-/// `viewController(for:)` has been seen on the main thread, and it stays
-/// isolated because it builds AppKit views.
+/// crash reports show MailKit delivering `annotateAddressesForSession` and
+/// `mailComposeSessionDidEnd` on its XPC queue, where a main-actor-isolated
+/// witness fails Swift 6's runtime executor check and traps. Those, and
+/// `mailComposeSessionDidBegin` as a precaution, are `nonisolated` and hop to
+/// the main queue for the per-window state. `viewController(for:)` has been
+/// seen on the main thread, and it stays isolated because it builds AppKit
+/// views.
 final class ComposeSessionHandler: NSObject, MEComposeSessionHandler {
 
     nonisolated static let shared = ComposeSessionHandler(contactCache: MailExtensionStorage.contactCache)
@@ -35,9 +36,10 @@ final class ComposeSessionHandler: NSObject, MEComposeSessionHandler {
 
     nonisolated func mailComposeSessionDidBegin(_ session: MEComposeSession) {
         // Decode the cache now, off the main thread, so the popover's
-        // synchronous lookup finds it memoized.
+        // synchronous lookup finds it memoized. User-initiated: a click that
+        // lands mid-decode waits on the store's lock from the main thread.
         let contactCache = self.contactCache
-        DispatchQueue.global(qos: .utility).async {
+        DispatchQueue.global(qos: .userInitiated).async {
             _ = try? contactCache?.read()
         }
     }
