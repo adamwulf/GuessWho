@@ -92,6 +92,7 @@ struct ContactDetailView: View {
     @Environment(ContactPhotoLoader.self) private var photoLoader
     @Environment(FavoritesListStore.self) private var favoritesStore
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.openURL) private var openURL
     // Set by SceneDelegate when this view is pushed onto an iPhone UIKit nav
     // stack. Defaults to a no-op closure (see `ReferenceNavigation.swift`),
     // which is also what Catalyst gets today.
@@ -163,6 +164,13 @@ struct ContactDetailView: View {
     // on each contact load — separate from `eventLinks`, which are user-curated
     // contact↔event links.
     @State private var recentEvents: [Event] = []
+    // Incoming messages reported by the Apple Mail extension and recorded on
+    // this contact. Loaded independently from EventKit activity and capped in
+    // the section below so the card stays compact.
+    @State private var mailActivities: [MailActivity] = []
+    // Newest-wins gate shared by full contact loads and notification-driven
+    // mail-only refreshes. A slow older disk read must not restore stale rows.
+    @State private var mailActivitiesLoadID = UUID()
     // Imported-guide matches keyed by the individual contact street line they
     // describe. Each summary renders directly below its own address rather than
     // combining counts across a multi-address contact. Loaded async via
@@ -481,6 +489,14 @@ struct ContactDetailView: View {
             NotificationCenter.default.publisher(for: .contactsRepositoryGroupMembershipDidChange),
             perform: groupMembershipDidChange
         )
+        .onReceive(
+            NotificationCenter.default.publisher(for: .contactsRepositoryMailActivityDidChange),
+            perform: mailActivityDidChange
+        )
+        .onReceive(
+            NotificationCenter.default.publisher(for: .contactsRepositoryDidReload),
+            perform: repositoryDidReloadForMailActivity
+        )
     }
 
     /// A group-membership write landed somewhere in the app — most likely the
@@ -500,6 +516,49 @@ struct ContactDetailView: View {
               ] as? [ContactID],
               changed.contains(contact.contactID) else { return }
         Task { await reloadGroups(for: contact) }
+    }
+
+    /// A local mail write or an exact-key synced change named the contacts that
+    /// may have new activity. Resolve every token through the repository before
+    /// comparing: a first mail write can mint the contact identity while this
+    /// card still holds its pre-mint navigation token.
+    private func mailActivityDidChange(_ notification: Notification) {
+        guard let postingRepository = notification.object as? ContactsRepository,
+              postingRepository === repository,
+              let changed = notification.userInfo?[
+                ContactsRepositoryMailActivityDidChangeKey.contactIDs
+              ] as? [ContactID],
+              let current = resolvedMailActivityContactID()
+        else { return }
+        let applies = changed.contains { changedID in
+            (repository.contact(id: changedID)?.contactID ?? changedID) == current
+        }
+        guard applies else { return }
+        Task { await reloadMailActivities(for: current) }
+    }
+
+    /// Coarse synced changes name no contact, so the repository can only post
+    /// its presentation reload. Re-read this lightweight section as the
+    /// fallback required by the mail-activity notification contract.
+    private func repositoryDidReloadForMailActivity(_ notification: Notification) {
+        guard let postingRepository = notification.object as? ContactsRepository,
+              postingRepository === repository,
+              let current = resolvedMailActivityContactID()
+        else { return }
+        Task { await reloadMailActivities(for: current) }
+    }
+
+    private func resolvedMailActivityContactID() -> ContactID? {
+        guard let held = loadedContactID else { return nil }
+        return repository.contact(id: held)?.contactID ?? held
+    }
+
+    private func reloadMailActivities(for contactID: ContactID) async {
+        let loadID = UUID()
+        mailActivitiesLoadID = loadID
+        let activities = await repository.mailActivities(for: contactID)
+        guard mailActivitiesLoadID == loadID else { return }
+        mailActivities = activities
     }
 
     @ViewBuilder
@@ -551,6 +610,8 @@ struct ContactDetailView: View {
                 notesSection
 
                 recentEventsSection
+
+                recentMailSection
 
                 linkedContactsSection
                 linkedOrganizationsSection
@@ -1573,6 +1634,69 @@ struct ContactDetailView: View {
             }
         }
         .buttonStyle(.plain)
+    }
+
+    /// The ten newest incoming messages recorded for this contact. Message
+    /// links are a best-effort Apple Mail convenience: the undocumented
+    /// `message:` scheme may fail when Mail no longer has the message locally,
+    /// so a row remains useful activity history even without a working URL.
+    @ViewBuilder
+    private var recentMailSection: some View {
+        if !mailActivities.isEmpty {
+            Section {
+                ForEach(mailActivities.prefix(10)) { activity in
+                    mailActivityRow(activity)
+                        .centeredRowContent()
+                }
+            } header: {
+                Text("Recent Email").centeredSectionHeader()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func mailActivityRow(_ activity: MailActivity) -> some View {
+        if let url = mailURL(for: activity) {
+            Button {
+                openURL(url)
+            } label: {
+                mailActivityLabel(activity, opensMail: true)
+            }
+            .buttonStyle(.plain)
+            .contextMenu {
+                Button {
+                    openURL(url)
+                } label: {
+                    Label("Open in Mail", systemImage: "envelope.open")
+                }
+            }
+        } else {
+            mailActivityLabel(activity, opensMail: false)
+        }
+    }
+
+    private func mailActivityLabel(_ activity: MailActivity, opensMail: Bool) -> some View {
+        let subject = activity.subject.flatMap { $0.isEmpty ? nil : $0 } ?? "(No subject)"
+        return ActivityRowLayout(systemImage: "envelope") {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(subject)
+                    .font(.body)
+                    .foregroundStyle(opensMail ? Color.accentColor : Color.primary)
+                Text(
+                    "\(activity.senderAddress) · "
+                    + activity.receivedAt.formatted(date: .abbreviated, time: .shortened)
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+    }
+
+    private func mailURL(for activity: MailActivity) -> URL? {
+        guard let raw = activity.mailURL else { return nil }
+        return URL(string: raw)
     }
 
     @ViewBuilder
@@ -2752,6 +2876,8 @@ struct ContactDetailView: View {
             // secondary sections publish together in a later paint.
             let groupLoadID = UUID()
             memberGroupsLoadID = groupLoadID
+            let mailLoadID = UUID()
+            mailActivitiesLoadID = mailLoadID
 
             async let fusedLinks = loadLinkStores(for: loaded)
             async let fetchedSources = DetailLoadSignpost.measure("contact_sources") {
@@ -2765,6 +2891,9 @@ struct ContactDetailView: View {
             }
             async let fetchedAddressGuides = DetailLoadSignpost.measure("contact_address_guides") {
                 await fetchAddressGuides(for: loaded)
+            }
+            async let fetchedMailActivities = DetailLoadSignpost.measure("contact_mail_activity") {
+                await repository.mailActivities(for: loaded.contactID)
             }
 
             let linkResult = await fusedLinks
@@ -2815,11 +2944,12 @@ struct ContactDetailView: View {
                 await service.refreshLinkedEvents(eventUUIDs: linkResult.eventUUIDs)
             }
 
-            let (sources, events, groups, guides) = await (
+            let (sources, events, groups, guides, activities) = await (
                 fetchedSources,
                 fetchedRecentEvents,
                 fetchedGroups,
-                fetchedAddressGuides
+                fetchedAddressGuides,
+                fetchedMailActivities
             )
 
             // Targeted event-link rereads do not invalidate these contact-only
@@ -2832,6 +2962,9 @@ struct ContactDetailView: View {
                 addressGuides = guides
                 storeSourceCount = sources.storeCount
                 recordSources = sources.recordSources
+                if mailActivitiesLoadID == mailLoadID {
+                    mailActivities = activities
+                }
             }
 
             // Both branches already run concurrently as `async let`s started
@@ -2874,6 +3007,8 @@ struct ContactDetailView: View {
             placeLinks = []
             linkedPlaces = [:]
             recentEvents = []
+            mailActivitiesLoadID = UUID()
+            mailActivities = []
             memberGroups = []
             addressGuides = [:]
             storeSourceCount = 0
