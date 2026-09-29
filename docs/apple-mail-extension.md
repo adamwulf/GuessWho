@@ -74,11 +74,15 @@ formats, or the code that writes or drains them.
   and the scrolling content's natural height). Both pages share one maximum
   height, `RecipientsView.maximumHeight` (420pt), and scroll past it. The
   measured height is kept with its row's ID and used only while that row is
-  open, so opening another row keeps the list's height until the new page
-  reports its own. Each row's page has its own view identity
-  (`.id(row.id)`): without it, a row opened during the Back slide-out reuses
-  the outgoing page, whose unchanged height is never reported again, and the
-  page stays at the list's height. `RecipientsView` reports
+  open, so opening another row keeps the list's height until its page
+  reports. Opening a row during the Back slide-out (0.25s) can reuse the
+  outgoing page, which doesn't report its unchanged height again, so two
+  rules keep the page from sticking at the list's height. Each row's page
+  has its own view identity (`.id(row.id)`), so a different row is a new
+  view that reports. The same row still reuses its page, so the stored
+  height is kept, not cleared, on Back and sizes that page. Don't replace
+  the stored height with "clear on open": that brings the stuck page back
+  for the same row. `RecipientsView` reports
   each height change through `onSizeChange`, and `RecipientsViewController`
   sets its own `preferredContentSize` from it. Don't go back to the child
   `NSHostingController`'s `.preferredContentSize` sizing option: it changes
@@ -325,6 +329,6 @@ Automated tests cover the shared formats, cache projection, address matching, ca
 - On the first incoming message for a known contact that has no GuessWho identity yet, the app transparently adds its private identity URL to the Contacts card before storing activity.
 - `~/Library/Group Containers/<TeamID>.com.milestonemade.guesswho/Mail/incoming-messages.jsonl` holds only the metadata fields above.
 - A compose window shows the toolbar button; its popover opens sized to its rows (nothing clipped, even when one address matches two contacts), stays filled, and reopening it after adding or removing recipients shows the new list. No new `GuessWhoMailExtension-*.ips` appears in `~/Library/Logs/DiagnosticReports/`.
-- Clicking a known recipient slides in a detail page; **Back** returns to the list; **GuessWho** brings GuessWho forward with that contact selected. The popover is neither clipped nor left at the list's size on the detail page: a contact with little to show gets a short page with no empty space below it, and one with many emails or phone numbers stops at the list's maximum height and scrolls. Clicking **Back** and then immediately opening the same contact (or another one) again still opens the page at its full height. A person with two addresses in the window appears once.
+- Clicking a known recipient slides in a detail page; **Back** returns to the list; **GuessWho** brings GuessWho forward with that contact selected. The popover is neither clipped nor left at the list's size on the detail page: a contact with little to show gets a short page with no empty space below it, and one with many emails or phone numbers stops at the list's maximum height and scrolls. Clicking **Back** and then immediately opening the same contact, or another one, still sizes the page to its content (up to the maximum height). A person with two addresses in the window appears once.
 - Opening a generated message link may or may not select the message — both are acceptable.
 - The Mail extension log shows no unexpected errors and never includes addresses or subjects.

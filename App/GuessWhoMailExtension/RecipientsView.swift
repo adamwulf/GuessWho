@@ -20,9 +20,10 @@ struct RecipientsView: View {
     @State private var selectedRowID: String?
     /// The last detail page's full height, as it reported it, and the row it
     /// belongs to. Used only while that row is open, so opening another row
-    /// keeps the list's height until the new page reports its own. Each row's
-    /// page has its own identity (`.id(row.id)`), so a newly opened contact
-    /// always reports, even when it opens during the previous page's slide-out.
+    /// keeps the list's height until its page reports. Kept, not cleared, on
+    /// Back: reopening the same row during the Back slide-out reuses its
+    /// outgoing page (same `.id`), which doesn't report again, so this stored
+    /// height sizes it.
     @State private var detailHeight: (rowID: String, value: CGFloat)?
 
     static let width: CGFloat = 320
@@ -40,9 +41,10 @@ struct RecipientsView: View {
                     onBack: { selectedRowID = nil },
                     onHeightChange: { detailHeight = (row.id, $0) }
                 )
-                // Without its own identity, a row opened during the Back
-                // slide-out reuses the outgoing page, whose unchanged height
-                // is never reported again.
+                // Without its own identity, a different row opened during the
+                // Back slide-out reuses the outgoing page, whose unchanged
+                // height is never reported again. (The same row still reuses
+                // its page; the stored `detailHeight` covers that.)
                 .id(row.id)
                 .transition(.move(edge: .trailing))
             } else {
