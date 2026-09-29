@@ -6,12 +6,18 @@ import SwiftUI
 /// requires an `MEExtensionViewController` subclass, so the SwiftUI list is
 /// hosted in a child `NSHostingController`, and Mail sizes the popover from
 /// this controller's `preferredContentSize`. The first size is measured in
-/// `loadView()`, so the model already holds its rows by then (see
-/// `RecipientsModel.showNow(_:)`). Later sizes (opening or leaving a detail
-/// page, recipients changing) come from the view's `onSizeChange`: AppKit
-/// never calls `preferredContentSizeDidChange(for:)` for a child's size
-/// change, so forwarding the child's own preferred size would keep the
-/// popover at its first size.
+/// `loadView()`; `viewController(for:)` fills the model with
+/// `RecipientsModel.showNow(_:)` before it creates this controller, so the
+/// rows are in place by then. Later sizes (opening or leaving a detail page,
+/// recipients changing) come from the view's `onSizeChange`.
+///
+/// Don't use the hosting controller's `.preferredContentSize` sizing option
+/// for this: it changes the child's `preferredContentSize` without a KVO
+/// notice and without calling this controller's
+/// `preferredContentSizeDidChange(for:)`, so the popover kept its first size.
+/// The hosting controller keeps its default sizing options, which also
+/// constrain the hosted view to the SwiftUI frame; setting
+/// `[.preferredContentSize]` alone would remove those constraints.
 final class RecipientsViewController: MEExtensionViewController {
 
     private let model: RecipientsModel

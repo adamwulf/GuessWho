@@ -72,13 +72,19 @@ formats, or the code that writes or drains them.
 - **The detail page changes the popover's size.** The list is sized from its
   row count and the detail page has a fixed height. `RecipientsView` reports
   each height change through `onSizeChange`, and `RecipientsViewController`
-  sets its own `preferredContentSize` from it. Don't go back to forwarding the
-  child `NSHostingController`'s preferred size from
-  `preferredContentSizeDidChange(for:)`: AppKit never calls that for a child
-  view controller, so the extension kept reporting the list's size and Mail
-  left the detail page clipped at that height. Whether Mail resizes the
-  popover once the extension reports the new size is unverified: hand-check
-  it, and if Mail keeps the first size, give both pages one fixed height.
+  sets its own `preferredContentSize` from it. Don't go back to the child
+  `NSHostingController`'s `.preferredContentSize` sizing option: it changes
+  the child's `preferredContentSize` without a KVO notice and without calling
+  the parent's `preferredContentSizeDidChange(for:)`, so the extension kept
+  reporting the list's size and Mail left the detail page clipped at that
+  height. The hosting controller keeps its default sizing options, so its
+  view is also constrained to the SwiftUI frame; setting
+  `[.preferredContentSize]` alone would remove those constraints. The
+  extension therefore sends two size signals (the constraints and
+  `preferredContentSize`), and a hand-check in Mail can't tell which one Mail
+  follows. Whether Mail resizes the popover for them is unverified:
+  hand-check it, and if Mail keeps the first size, give both pages one fixed
+  height.
 - **The GuessWho button is a wake URL.** The extension opens
   `<app wake scheme>://open-contact?id=<GuessWho ID>` with `NSWorkspace`
   (`GuessWhoAppLink`); `MailContactLink` in `GuessWhoMailShared` builds and
