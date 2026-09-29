@@ -18,10 +18,12 @@ struct RecipientsView: View {
     /// The row whose detail page is showing; nil shows the list. Held by ID so
     /// a recipient edit that drops the row also returns to the list.
     @State private var selectedRowID: String?
-    /// The open detail page's full height, as it reports it. Cleared when a
-    /// row is opened, so the popover keeps the list's height until the new
-    /// page reports, instead of showing the previous page's height first.
-    @State private var detailHeight: CGFloat?
+    /// The last detail page's full height, as it reported it, and the row it
+    /// belongs to. Used only while that row is open, so opening another row
+    /// keeps the list's height until the new page reports its own. Each row's
+    /// page has its own identity (`.id(row.id)`), so a newly opened contact
+    /// always reports, even when it opens during the previous page's slide-out.
+    @State private var detailHeight: (rowID: String, value: CGFloat)?
 
     static let width: CGFloat = 320
     static let rowHeight: CGFloat = 52
@@ -36,8 +38,12 @@ struct RecipientsView: View {
                 RecipientDetailView(
                     summary: summary,
                     onBack: { selectedRowID = nil },
-                    onHeightChange: { detailHeight = $0 }
+                    onHeightChange: { detailHeight = (row.id, $0) }
                 )
+                // Without its own identity, a row opened during the Back
+                // slide-out reuses the outgoing page, whose unchanged height
+                // is never reported again.
+                .id(row.id)
                 .transition(.move(edge: .trailing))
             } else {
                 list.transition(.move(edge: .leading))
@@ -91,7 +97,6 @@ struct RecipientsView: View {
             RecipientRowView(row: row)
         } else {
             Button {
-                detailHeight = nil
                 selectedRowID = row.id
             } label: {
                 RecipientRowView(row: row)
@@ -102,8 +107,8 @@ struct RecipientsView: View {
     }
 
     private var height: CGFloat {
-        if selectedRow != nil, let detailHeight {
-            return min(detailHeight, Self.maximumHeight)
+        if let selectedRow, let detailHeight, detailHeight.rowID == selectedRow.id {
+            return min(detailHeight.value, Self.maximumHeight)
         }
         return listHeight
     }
@@ -160,7 +165,8 @@ private struct RecipientRowView: View {
 /// contact can be opened in the app), then their photo, name, work line, and
 /// the emails, phone numbers, and birthday the cache holds. Reports its full
 /// height (header, divider, and the scrolling content's natural height) to
-/// `onHeightChange`; the content scrolls when the popover caps that height.
+/// `onHeightChange`; the content scrolls when `RecipientsView` caps that
+/// height.
 private struct RecipientDetailView: View {
     let summary: MailContactSummary
     let onBack: () -> Void
