@@ -7,15 +7,24 @@ import SwiftUI
 /// a known recipient slides in a detail page with a Back button and, when the
 /// contact has an ID, a GuessWho button that opens the contact in the app.
 ///
-/// Sized explicitly (from the row count on the list, a fixed height on the
-/// detail page) so the hosting controller can report an exact preferred size
-/// to Mail's popover.
+/// Sized explicitly: the list from its row count, the detail page from its
+/// measured content, both capped at `maximumHeight` and scrolling past it.
+/// Each later size change goes to `onSizeChange` so the view controller can
+/// resize Mail's popover.
 struct RecipientsView: View {
     let model: RecipientsModel
+    let onSizeChange: (CGSize) -> Void
 
     /// The row whose detail page is showing; nil shows the list. Held by ID so
     /// a recipient edit that drops the row also returns to the list.
     @State private var selectedRowID: String?
+    /// The last detail page's full height, as it reported it, and the row it
+    /// belongs to. Used only while that row is open, so opening another row
+    /// keeps the list's height until its page reports. Kept, not cleared, on
+    /// Back: reopening the same row during the Back slide-out reuses its
+    /// outgoing page (same `.id`), which doesn't report again, so this stored
+    /// height sizes it.
+    @State private var detailHeight: (rowID: String, value: CGFloat)?
 
     static let width: CGFloat = 320
     static let rowHeight: CGFloat = 52
@@ -23,13 +32,21 @@ struct RecipientsView: View {
     static let messageHeight: CGFloat = 72
     static let verticalPadding: CGFloat = 6
     static let maximumHeight: CGFloat = 420
-    static let detailHeight: CGFloat = 380
 
     var body: some View {
         ZStack {
             if let row = selectedRow, let summary = row.summary {
-                RecipientDetailView(summary: summary, onBack: { selectedRowID = nil })
-                    .transition(.move(edge: .trailing))
+                RecipientDetailView(
+                    summary: summary,
+                    onBack: { selectedRowID = nil },
+                    onHeightChange: { detailHeight = (row.id, $0) }
+                )
+                // Without its own identity, a different row opened during the
+                // Back slide-out reuses the outgoing page, whose unchanged
+                // height is never reported again. (The same row still reuses
+                // its page; the stored `detailHeight` covers that.)
+                .id(row.id)
+                .transition(.move(edge: .trailing))
             } else {
                 list.transition(.move(edge: .leading))
             }
@@ -37,6 +54,9 @@ struct RecipientsView: View {
         .frame(width: Self.width, height: height)
         .clipped()
         .animation(.easeInOut(duration: 0.25), value: selectedRow?.id)
+        .onChange(of: height) { _, newHeight in
+            onSizeChange(CGSize(width: Self.width, height: newHeight))
+        }
     }
 
     /// The selected row, only while it is still in the list and has details.
@@ -89,7 +109,13 @@ struct RecipientsView: View {
     }
 
     private var height: CGFloat {
-        if selectedRow != nil { return Self.detailHeight }
+        if let selectedRow, let detailHeight, detailHeight.rowID == selectedRow.id {
+            return min(detailHeight.value, Self.maximumHeight)
+        }
+        return listHeight
+    }
+
+    private var listHeight: CGFloat {
         guard !model.rows.isEmpty else { return Self.messageHeight }
         let notice = model.status == .contactsUnavailable ? Self.noticeHeight + 1 : 0
         let list = CGFloat(model.rows.count) * Self.rowHeight + 2 * Self.verticalPadding
@@ -139,10 +165,14 @@ private struct RecipientRowView: View {
 
 /// The detail page for one contact: a header bar (Back, and GuessWho when the
 /// contact can be opened in the app), then their photo, name, work line, and
-/// the emails, phone numbers, and birthday the cache holds.
+/// the emails, phone numbers, and birthday the cache holds. Reports its full
+/// height (header, divider, and the scrolling content's natural height) to
+/// `onHeightChange`; the content scrolls when `RecipientsView` caps that
+/// height.
 private struct RecipientDetailView: View {
     let summary: MailContactSummary
     let onBack: () -> Void
+    let onHeightChange: (CGFloat) -> Void
 
     private static let headerHeight: CGFloat = 36
 
@@ -161,6 +191,12 @@ private struct RecipientDetailView: View {
                 }
                 .padding(12)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                // Measured inside the scroll view, so the height is the
+                // content's own and doesn't follow the popover's. The
+                // divider is 1pt.
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contentHeight in
+                    onHeightChange(Self.headerHeight + 1 + contentHeight)
+                }
             }
         }
     }

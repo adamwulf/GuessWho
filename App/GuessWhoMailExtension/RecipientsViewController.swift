@@ -4,17 +4,27 @@ import SwiftUI
 
 /// The view controller Mail shows in the compose-window popover. MailKit
 /// requires an `MEExtensionViewController` subclass, so the SwiftUI list is
-/// hosted in a child `NSHostingController` whose ideal size is forwarded as
-/// this controller's `preferredContentSize`. Mail sizes the popover from it
-/// when it presents the view, so the model already holds its rows by then
-/// (see `RecipientsModel.showNow(_:)`).
+/// hosted in a child `NSHostingController`. The popover's size is reported
+/// through this controller's `preferredContentSize` and the hosted view's
+/// constraints (see below). The first size is measured in
+/// `loadView()`; `viewController(for:)` fills the model with
+/// `RecipientsModel.showNow(_:)` before it creates this controller, so the
+/// rows are in place by then. Later sizes (opening or leaving a detail page,
+/// recipients changing) come from the view's `onSizeChange`.
+///
+/// Don't use the hosting controller's `.preferredContentSize` sizing option
+/// for this: it changes the child's `preferredContentSize` without a KVO
+/// notice and without calling this controller's
+/// `preferredContentSizeDidChange(for:)`, so the popover kept its first size.
+/// The hosting controller keeps its default sizing options, which also
+/// constrain the hosted view to the SwiftUI frame; setting
+/// `[.preferredContentSize]` alone would remove those constraints.
 final class RecipientsViewController: MEExtensionViewController {
 
-    private let hostingController: NSHostingController<RecipientsView>
+    private let model: RecipientsModel
 
     init(model: RecipientsModel) {
-        hostingController = NSHostingController(rootView: RecipientsView(model: model))
-        hostingController.sizingOptions = [.preferredContentSize]
+        self.model = model
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -24,6 +34,9 @@ final class RecipientsViewController: MEExtensionViewController {
     }
 
     override func loadView() {
+        let hostingController = NSHostingController(rootView: RecipientsView(model: model) { [weak self] size in
+            self?.preferredContentSize = size
+        })
         view = NSView()
         addChild(hostingController)
         let hostedView = hostingController.view
@@ -35,12 +48,6 @@ final class RecipientsViewController: MEExtensionViewController {
             hostedView.topAnchor.constraint(equalTo: view.topAnchor),
             hostedView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
         ])
-        preferredContentSize = hostingController.view.fittingSize
-    }
-
-    override func preferredContentSizeDidChange(for viewController: NSViewController) {
-        super.preferredContentSizeDidChange(for: viewController)
-        guard viewController === hostingController else { return }
-        preferredContentSize = viewController.preferredContentSize
+        preferredContentSize = hostedView.fittingSize
     }
 }
