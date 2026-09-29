@@ -21,6 +21,12 @@ final class MessageActionHandler: NSObject, MEMessageActionHandler, Sendable {
 
     private static let log = Logger.mailExtension("message-action")
 
+    /// Whether mail from a highlighted sender gets a flag. Off for now: the
+    /// popover's contact details are being built first. The flag logic below
+    /// (`MailFlagColor` and its tests) stays in place; set this to `true` to
+    /// bring flagging back. Journaling of known senders does not depend on it.
+    private static let flagsHighlightedSenders = false
+
     private let contactCache: MailContactCacheStore?
     private let journal: MailIncomingJournal?
 
@@ -68,6 +74,7 @@ final class MessageActionHandler: NSObject, MEMessageActionHandler, Sendable {
             return nil
         }
 
+        guard Self.flagsHighlightedSenders else { return nil }
         // A newer-format cache yields no summaries, so the message is left
         // unflagged rather than guessed at. Two cards can share the sender's
         // address; their reasons count together.
