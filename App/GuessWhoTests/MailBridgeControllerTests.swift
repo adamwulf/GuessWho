@@ -125,6 +125,71 @@ struct MailBridgeControllerTests {
     }
 
     @Test
+    func projectionCarriesDetailPageFields() throws {
+        let guessWhoID = "40000000-0000-4000-8000-000000000004"
+        let contact = Contact(
+            givenName: "Ada",
+            familyName: "Lovelace",
+            phoneNumbers: [
+                LabeledValue(label: "_$!<Mobile>!$_", value: "555-0100"),
+                LabeledValue(label: "", value: "  "),
+            ],
+            emailAddresses: [
+                LabeledValue(label: "_$!<Work>!$_", value: "ada@example.com"),
+                LabeledValue(label: "", value: "ada@home.example"),
+            ],
+            urlAddresses: [
+                LabeledValue(label: "GuessWho", value: "guesswho://contact/\(guessWhoID)")
+            ],
+            birthday: DateComponents(year: 1815, month: 12, day: 10)
+        )
+        let snapshot = MailContactSnapshotBuilder.build([
+            MailSnapshotContact(contact: contact, thumbnail: nil, highlightReasons: [])
+        ], generatedAt: .distantPast)
+
+        let summary = try #require(snapshot.summaries(forAddress: "ada@example.com").first)
+        #expect(summary.contactID == guessWhoID)
+        #expect(summary.emailAddresses.map(\.value) == ["ada@example.com", "ada@home.example"])
+        #expect(summary.emailAddresses.map(\.label) == ["work", ""])
+        #expect(summary.phoneNumbers == [MailLabeledValue(label: "mobile", value: "555-0100")])
+        let birthday = try #require(summary.birthday)
+        #expect(birthday.contains("1815"))
+        #expect(birthday.contains("10"))
+    }
+
+    @Test
+    func birthdayWithoutAYearOmitsTheYear() throws {
+        let contact = Contact(
+            givenName: "Ada",
+            emailAddresses: [LabeledValue(label: "work", value: "ada@example.com")],
+            birthday: DateComponents(month: 2, day: 29)
+        )
+        let snapshot = MailContactSnapshotBuilder.build([
+            MailSnapshotContact(contact: contact, thumbnail: nil, highlightReasons: [])
+        ], generatedAt: .distantPast)
+
+        let summary = try #require(snapshot.summaries(forAddress: "ada@example.com").first)
+        let birthday = try #require(summary.birthday)
+        #expect(birthday.contains("29"))
+        #expect(!birthday.contains("2000"))
+    }
+
+    @Test
+    func unreconciledContactHasNoContactID() throws {
+        let contact = Contact(
+            givenName: "Ada",
+            emailAddresses: [LabeledValue(label: "work", value: "ada@example.com")]
+        )
+        let snapshot = MailContactSnapshotBuilder.build([
+            MailSnapshotContact(contact: contact, thumbnail: nil, highlightReasons: [])
+        ], generatedAt: .distantPast)
+
+        let summary = try #require(snapshot.summaries(forAddress: "ada@example.com").first)
+        #expect(summary.contactID == nil)
+        #expect(summary.birthday == nil)
+    }
+
+    @Test
     func sharedAddressKeepsEveryMatchingContact() {
         let first = Contact(
             givenName: "First",

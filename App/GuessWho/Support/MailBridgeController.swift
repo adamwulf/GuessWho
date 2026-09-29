@@ -1,6 +1,7 @@
 #if targetEnvironment(macCatalyst)
 
 import Foundation
+import Contacts
 import CryptoKit
 import UIKit
 import GuessWhoLogging
@@ -961,11 +962,42 @@ enum MailContactSnapshotBuilder {
                 organization: nonempty(candidate.contact.organizationName),
                 jobTitle: nonempty(candidate.contact.jobTitle),
                 thumbnail: thumbnail,
-                highlightReasons: candidate.highlightReasons
+                highlightReasons: candidate.highlightReasons,
+                contactID: SidecarKey.forContact(candidate.contact)?.id,
+                emailAddresses: labeledValues(candidate.contact.emailAddresses),
+                phoneNumbers: labeledValues(candidate.contact.phoneNumbers),
+                birthday: birthdayText(candidate.contact.birthday)
             )
             snapshot.add(summary, forAddresses: addresses)
         }
         return snapshot
+    }
+
+    /// The values the popover's detail page lists, with each label turned into
+    /// plain text ("work", not `_$!<Work>!$_`). Blank values are dropped.
+    private static func labeledValues(_ values: [LabeledValue]) -> [MailLabeledValue] {
+        values.compactMap { entry in
+            guard let value = nonempty(entry.value) else { return nil }
+            let label = entry.label.isEmpty
+                ? ""
+                : CNLabeledValue<NSString>.localizedString(forLabel: entry.label)
+            return MailLabeledValue(label: label, value: value)
+        }
+    }
+
+    /// "November 30, 1982", or "November 30" when the card has no year.
+    private static func birthdayText(_ birthday: DateComponents?) -> String? {
+        guard let birthday, let month = birthday.month, let day = birthday.day else { return nil }
+        var components = DateComponents(calendar: Calendar(identifier: .gregorian), month: month, day: day)
+        let hasYear = birthday.year.map { $0 > 1 } ?? false
+        // A card without a year stores a placeholder year; format against a
+        // leap year so February 29 stays valid.
+        components.year = hasYear ? birthday.year : 2000
+        guard let date = components.calendar?.date(from: components) else { return nil }
+        let template = hasYear ? "MMMMdy" : "MMMMd"
+        let formatter = DateFormatter()
+        formatter.setLocalizedDateFormatFromTemplate(template)
+        return formatter.string(from: date)
     }
 
     private static func sortKey(_ candidate: MailSnapshotContact) -> String {
@@ -978,6 +1010,7 @@ enum MailContactSnapshotBuilder {
             candidate.contact.displayName,
             candidate.contact.organizationName,
             candidate.contact.jobTitle,
+            SidecarKey.forContact(candidate.contact)?.id ?? "",
             thumbnailFingerprint(candidate.thumbnail),
             candidate.highlightReasons.map(\.rawValue).sorted().joined(separator: "\u{1f}"),
         ].joined(separator: "\u{1e}")

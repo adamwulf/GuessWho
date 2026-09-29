@@ -130,8 +130,9 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
 
     /// Route incoming wake URLs by host: `…://import-guide?url=…` (the share
     /// extension's Apple Maps guide bounce) goes to the guide importer;
-    /// everything else stays on the LinkedIn handoff path, which owns its own
-    /// scheme filtering and logging.
+    /// `…://open-contact?id=…` (the Mail compose popover's GuessWho button)
+    /// opens that contact; everything else stays on the LinkedIn handoff path,
+    /// which owns its own scheme filtering and logging.
     private func handleIncomingURLs(urlContexts: Set<UIOpenURLContext>, entry: String) {
         let guideContexts = urlContexts.filter { context in
             context.url.scheme == LinkedInHandoffScheme.scheme
@@ -140,7 +141,14 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         for context in guideContexts {
             handleGuideImportWake(context.url, entry: entry)
         }
-        let remaining = urlContexts.subtracting(guideContexts)
+        let contactContexts = urlContexts.filter { context in
+            context.url.scheme == LinkedInHandoffScheme.scheme
+                && context.url.host == MailContactLink.host
+        }
+        for context in contactContexts {
+            handleOpenContactWake(context.url, entry: entry)
+        }
+        let remaining = urlContexts.subtracting(guideContexts).subtracting(contactContexts)
         if !remaining.isEmpty {
             handleLinkedInHandoff(urlContexts: remaining, entry: entry)
         }
@@ -1335,8 +1343,22 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         appDelegate: GuessWhoAppDelegate,
         completion: @escaping @MainActor (Contact?) -> Void
     ) {
+        resolveContactWhenLoaded(appDelegate: appDelegate, completion: completion) { repository in
+            repository.contact(restorationToken: token)
+        }
+    }
+
+    /// The wait-for-first-reload logic behind `resolveRestoredContact`, for any
+    /// lookup against the contacts cache (a restoration token, a GuessWho ID
+    /// from a wake URL).
+    @MainActor
+    private func resolveContactWhenLoaded(
+        appDelegate: GuessWhoAppDelegate,
+        completion: @escaping @MainActor (Contact?) -> Void,
+        lookup: @escaping @MainActor (ContactsRepository) -> Contact?
+    ) {
         let repository = appDelegate.contactsRepository
-        if let contact = repository.contact(restorationToken: token) {
+        if let contact = lookup(repository) {
             completion(contact)
             return
         }
@@ -1362,7 +1384,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             guard dataChanged else { return }
             MainActor.assumeIsolated {
                 self?.clearRestorationReloadObserver()
-                completion(repository.contact(restorationToken: token))
+                completion(lookup(repository))
             }
         }
     }
@@ -1931,6 +1953,38 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             .environment(\.pushPlaceReference) { [weak self, weak nav] ref in
                 self?.pushGuidePlaceDetail(place: ref.place, on: nav, appDelegate: appDelegate)
             }
+    }
+
+    // MARK: - Open-contact wake
+
+    /// Open the contact named by `…://open-contact?id=<GuessWho ID>` — the Mail
+    /// extension's compose popover sends this. On Catalyst the People list is
+    /// mounted with the contact's row selected and its detail in the secondary
+    /// column, the same end state as clicking that row. The Mail extension is
+    /// Catalyst-only, so other platforms ignore the wake.
+    private func handleOpenContactWake(_ url: URL, entry: String) {
+        Self.lifecycleLog.notice("open-contact wake received", ["entry": entry])
+        #if targetEnvironment(macCatalyst)
+        guard let guessWhoID = MailContactLink.contactID(from: url, scheme: LinkedInHandoffScheme.scheme) else {
+            Self.lifecycleLog.error("open-contact wake carried no usable contact ID")
+            return
+        }
+        guard let appDelegate = UIApplication.shared.delegate as? GuessWhoAppDelegate else { return }
+        resolveContactWhenLoaded(appDelegate: appDelegate) { [weak self] contact in
+            guard let self, let contact, let split = self.split else {
+                Self.lifecycleLog.notice("open-contact: contact not found")
+                return
+            }
+            // Selecting the sidebar row highlights it and mounts the People
+            // list unless it is already showing.
+            self.sidebar?.select(.people)
+            (self.supplementaryNavigationController(in: split)?.viewControllers.first
+                as? ContactsListViewController)?.select(contactID: contact.contactID)
+            self.showContactDetail(contact: contact, appDelegate: appDelegate)
+        } lookup: { repository in
+            repository.contact(guessWhoID: guessWhoID)
+        }
+        #endif
     }
 
     // MARK: - Apple Maps guide import wake

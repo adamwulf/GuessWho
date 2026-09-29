@@ -112,6 +112,48 @@ struct MailContactSnapshotTests {
     }
 
     @Test
+    func cacheWrittenBeforeDetailFieldsStillDecodes() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("contact-cache.plist")
+        try writePropertyList([
+            "version": MailContactSnapshot.currentVersion,
+            "generatedAt": Date(timeIntervalSince1970: 0),
+            "summariesByAddress": [
+                "ada@example.com": [
+                    ["displayName": "Ada Lovelace", "highlightReasons": [String]()],
+                ],
+            ],
+        ], to: url)
+
+        let contents = try #require(try MailContactCacheStore(fileURL: url).read())
+        let summary = try #require(contents.summaries(forAddress: "ada@example.com").first)
+        #expect(summary.displayName == "Ada Lovelace")
+        #expect(summary.contactID == nil)
+        #expect(summary.emailAddresses.isEmpty)
+        #expect(summary.phoneNumbers.isEmpty)
+        #expect(summary.birthday == nil)
+    }
+
+    @Test
+    func detailFieldsRoundTripThroughTheStore() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = MailContactCacheStore(fileURL: directory.appendingPathComponent("contact-cache.plist"))
+        let detailed = MailContactSummary(
+            displayName: "Ada Lovelace",
+            contactID: "40000000-0000-4000-8000-000000000004",
+            emailAddresses: [MailLabeledValue(label: "work", value: "ada@example.com")],
+            phoneNumbers: [MailLabeledValue(label: "mobile", value: "555-0100")],
+            birthday: "December 10, 1815")
+        var snapshot = MailContactSnapshot(generatedAt: Date(timeIntervalSince1970: 0))
+        snapshot.add(detailed, forAddresses: ["ada@example.com"])
+
+        try store.write(snapshot)
+        #expect(try store.read() == .current(snapshot))
+    }
+
+    @Test
     func newerFormatStillNamesKnownAddresses() throws {
         let directory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -149,6 +191,63 @@ struct MailContactSnapshotTests {
 
     private func writePropertyList(_ plist: [String: Any], to url: URL) throws {
         try PropertyListSerialization.data(fromPropertyList: plist, format: .binary, options: 0).write(to: url)
+    }
+}
+
+@Suite("Mail handoff: flag color")
+struct MailFlagColorTests {
+
+    @Test
+    func noReasonMeansNoFlag() {
+        #expect(MailFlagColor.color(for: []) == nil)
+    }
+
+    @Test
+    func eachReasonHasItsOwnColor() {
+        #expect(MailFlagColor.color(for: [.favoriteContact]) == .blue)
+        #expect(MailFlagColor.color(for: [.favoriteGroupMember]) == .green)
+        #expect(MailFlagColor.color(for: [.favoriteOrganizationMember]) == .orange)
+    }
+
+    @Test
+    func personBeatsGroupBeatsOrganization() {
+        #expect(MailFlagColor.color(for: [.favoriteContact, .favoriteGroupMember, .favoriteOrganizationMember]) == .blue)
+        #expect(MailFlagColor.color(for: [.favoriteGroupMember, .favoriteOrganizationMember]) == .green)
+    }
+
+    @Test
+    func unrecognizedReasonStillFlagsWithMailsDefaultColor() {
+        #expect(MailFlagColor.color(for: [MailHighlightReason(rawValue: "favoriteTeam")]) == .mailDefault)
+        // A known reason still wins over an unknown one.
+        #expect(MailFlagColor.color(for: [MailHighlightReason(rawValue: "favoriteTeam"), .favoriteGroupMember]) == .green)
+    }
+}
+
+@Suite("Mail handoff: open-contact link")
+struct MailContactLinkTests {
+
+    private let id = "40000000-0000-4000-8000-000000000004"
+
+    @Test
+    func urlRoundTripsTheContactID() throws {
+        let url = try #require(MailContactLink.url(scheme: "guesswho-linkedin-debug", contactID: id.uppercased()))
+        #expect(url.absoluteString == "guesswho-linkedin-debug://open-contact?id=\(id)")
+        #expect(MailContactLink.contactID(from: url, scheme: "guesswho-linkedin-debug") == id)
+    }
+
+    @Test
+    func urlRefusesAnIDThatIsNotAUUID() {
+        #expect(MailContactLink.url(scheme: "guesswho-linkedin", contactID: "not-a-uuid") == nil)
+        #expect(MailContactLink.url(scheme: "guesswho-linkedin", contactID: "") == nil)
+    }
+
+    @Test
+    func parsingRejectsOtherSchemesHostsAndIDs() throws {
+        let scheme = "guesswho-linkedin"
+        #expect(MailContactLink.contactID(from: try #require(URL(string: "other://open-contact?id=\(id)")), scheme: scheme) == nil)
+        #expect(MailContactLink.contactID(from: try #require(URL(string: "\(scheme)://import-guide?id=\(id)")), scheme: scheme) == nil)
+        #expect(MailContactLink.contactID(from: try #require(URL(string: "\(scheme)://open-contact")), scheme: scheme) == nil)
+        #expect(MailContactLink.contactID(from: try #require(URL(string: "\(scheme)://open-contact?id=oops")), scheme: scheme) == nil)
     }
 }
 

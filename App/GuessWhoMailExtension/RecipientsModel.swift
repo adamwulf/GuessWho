@@ -112,12 +112,18 @@ final class RecipientsModel {
         }
 
         var rows: [Row] = []
+        // One person can be in the window under several of their addresses;
+        // they get one row, at their first address.
+        var seenContactIDs = Set<String>()
         for recipient in recipients {
             let summaries = recipient.normalized.map { snapshot?.summaries(forAddress: $0) ?? [] } ?? []
             if summaries.isEmpty {
                 rows.append(Row(id: recipient.address, address: recipient.address, summary: nil))
             }
             for (index, summary) in summaries.enumerated() {
+                if let contactID = summary.contactID, !seenContactIDs.insert(contactID).inserted {
+                    continue
+                }
                 rows.append(Row(id: "\(recipient.address)#\(index)", address: recipient.address, summary: summary))
             }
         }
