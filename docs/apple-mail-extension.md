@@ -70,9 +70,14 @@ formats, or the code that writes or drains them.
   (`RecipientsModel.showNow`) before it returns the view controller; keep
   that first lookup synchronous.
 - **The detail page changes the popover's size.** The list is sized from its
-  row count and the detail page has a fixed height, so opening or leaving a
-  detail page changes the hosted view's preferred size. Whether Mail resizes
-  the popover for that change is unverified (same unknown as above): hand-check
+  row count and the detail page has a fixed height. `RecipientsView` reports
+  each height change through `onSizeChange`, and `RecipientsViewController`
+  sets its own `preferredContentSize` from it. Don't go back to forwarding the
+  child `NSHostingController`'s preferred size from
+  `preferredContentSizeDidChange(for:)`: AppKit never calls that for a child
+  view controller, so the extension kept reporting the list's size and Mail
+  left the detail page clipped at that height. Whether Mail resizes the
+  popover once the extension reports the new size is unverified: hand-check
   it, and if Mail keeps the first size, give both pages one fixed height.
 - **The GuessWho button is a wake URL.** The extension opens
   `<app wake scheme>://open-contact?id=<GuessWho ID>` with `NSWorkspace`

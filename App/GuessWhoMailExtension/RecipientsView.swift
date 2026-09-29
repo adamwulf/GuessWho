@@ -8,10 +8,11 @@ import SwiftUI
 /// contact has an ID, a GuessWho button that opens the contact in the app.
 ///
 /// Sized explicitly (from the row count on the list, a fixed height on the
-/// detail page) so the hosting controller can report an exact preferred size
-/// to Mail's popover.
+/// detail page). Each later size change goes to `onSizeChange` so the view
+/// controller can resize Mail's popover.
 struct RecipientsView: View {
     let model: RecipientsModel
+    let onSizeChange: (CGSize) -> Void
 
     /// The row whose detail page is showing; nil shows the list. Held by ID so
     /// a recipient edit that drops the row also returns to the list.
@@ -37,6 +38,9 @@ struct RecipientsView: View {
         .frame(width: Self.width, height: height)
         .clipped()
         .animation(.easeInOut(duration: 0.25), value: selectedRow?.id)
+        .onChange(of: height) { _, newHeight in
+            onSizeChange(CGSize(width: Self.width, height: newHeight))
+        }
     }
 
     /// The selected row, only while it is still in the list and has details.
