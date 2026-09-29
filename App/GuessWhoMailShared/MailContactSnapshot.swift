@@ -31,6 +31,31 @@ struct MailHighlightReason: RawRepresentable, Hashable, Codable, Sendable {
     }
 }
 
+/// The flag color Mail shows on a message from a highlighted sender.
+///
+/// Lives here, not in the extension, because MailKit is unavailable to the app
+/// and the choice is worth testing: the extension only maps each case to
+/// `MEMessageAction.Flag`. A reason wins in this order — the person, then a
+/// group, then an organization — so a favorite who is also in a favorite group
+/// stays the person's color.
+enum MailFlagColor: Equatable, Sendable {
+    case blue
+    case green
+    case orange
+    /// Mail's own flag color, for a reason this build doesn't recognize.
+    case mailDefault
+
+    /// The color for a message whose sender's summaries carry `reasons`, or
+    /// nil when there is no reason to flag it.
+    static func color(for reasons: Set<MailHighlightReason>) -> MailFlagColor? {
+        guard !reasons.isEmpty else { return nil }
+        if reasons.contains(.favoriteContact) { return .blue }
+        if reasons.contains(.favoriteGroupMember) { return .green }
+        if reasons.contains(.favoriteOrganizationMember) { return .orange }
+        return .mailDefault
+    }
+}
+
 /// One phone number or email address on a contact, with a label the app has
 /// already turned into plain text (for example "work"), so the extension needs
 /// no Contacts framework to show it.

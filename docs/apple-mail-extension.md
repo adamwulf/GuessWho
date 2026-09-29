@@ -9,7 +9,7 @@ formats, or the code that writes or drains them.
 
 ## What it does
 
-- **Highlights mail from favorite people.** For each newly received message, the extension looks the sender up in the contact cache. If any matching contact is a favorite, belongs to a favorite group, works at a favorite organization, or belongs to a favorite department, Mail shows the message with a blue background.
+- **Highlights mail from favorite people.** For each newly received message, the extension looks the sender up in the contact cache. If any matching contact is a favorite, belongs to a favorite group, works at a favorite organization, or belongs to a favorite department, the extension flags the message. The flag color follows the reason (`MailFlagColor`): blue for a favorite contact, green for a favorite group member, orange for a favorite organization or department member, and Mail's default flag color for a reason this build does not recognize. When a sender has several reasons, the first in that order wins. The extension sets the flag only when the message downloads and never changes it afterward; that Mail's Flag menu clears it is expected but unverified.
 - **Records mail from known people.** For every message whose sender is in the cache, the extension appends one metadata-only entry to the journal. The app records it under **Recent Email** on every matching contact and advances Last Interaction.
 - **Shows who you are writing to.** In a compose window, a toolbar button (tooltip **Recipient details**) opens a popover listing each recipient with a photo or initials, name, title, and organization. A recipient the cache does not know gets a plain **No contact details** row. One person appears once, even when the window holds two of their addresses. Clicking a known row slides in a detail page (photo, name, title, organization, emails, phone numbers, birthday) with a **Back** button and, when the contact has a GuessWho ID, a **GuessWho** button that opens the contact in the app.
 
@@ -159,7 +159,7 @@ outcome — contents or decode failure — for one on-disk version of the file
 once; plain I/O errors are retried on the next read.
 
 With a `.newerFormat` cache, the extension still journals known senders but
-colors nothing, and the compose popover shows addresses only.
+flags nothing, and the compose popover shows addresses only.
 
 **Publisher bounds.** The app projection accepts at most 256 KiB of thumbnail data from one contact and at most 8 MiB across the snapshot, charging repeated bytes once per normalized address because the plist stores one summary per address key. Contacts remain in the cache when their thumbnail is omitted. These limits keep compose lookup bounded without changing sender recognition or highlight reasons.
 
@@ -300,8 +300,8 @@ Apple has never documented Mail’s `message:` URL scheme. Mail has long answere
 
 Automated tests cover the shared formats, cache projection, address matching, cache publication rules, preservation after a favorite-group read failure, and release of failed mail writes for retry. After enabling the extension, verify the OS-hosted MailKit behavior end to end:
 
-- Mail from a favorite contact, a favorite group member, a favorite organization member, or a member of a favorite department arrives with a blue background. After changing a favorite group in Contacts.app, activate GuessWho before checking the new Mail highlight because this app excludes group-only changes from its Contacts history request.
-- Mail from a known, non-favorite sender arrives uncolored and produces one journal entry; mail from an unknown sender produces none.
+- Mail from a favorite contact, a favorite group member, a favorite organization member, or a member of a favorite department arrives flagged (blue for a contact, green for a group, orange for an organization or department). Clearing the flag in Mail's Flag menu should work and is unverified. After changing a favorite group in Contacts.app, activate GuessWho before checking the new Mail highlight because this app excludes group-only changes from its Contacts history request.
+- Mail from a known, non-favorite sender arrives unflagged and produces one journal entry; mail from an unknown sender produces none.
 - The matching contact page shows the message under **Recent Email**, advances Last Interaction, and offers **Open in Mail** only for a safe Message-ID link.
 - On the first incoming message for a known contact that has no GuessWho identity yet, the app transparently adds its private identity URL to the Contacts card before storing activity.
 - `~/Library/Group Containers/<TeamID>.com.milestonemade.guesswho/Mail/incoming-messages.jsonl` holds only the metadata fields above.

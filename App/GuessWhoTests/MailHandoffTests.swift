@@ -194,6 +194,35 @@ struct MailContactSnapshotTests {
     }
 }
 
+@Suite("Mail handoff: flag color")
+struct MailFlagColorTests {
+
+    @Test
+    func noReasonMeansNoFlag() {
+        #expect(MailFlagColor.color(for: []) == nil)
+    }
+
+    @Test
+    func eachReasonHasItsOwnColor() {
+        #expect(MailFlagColor.color(for: [.favoriteContact]) == .blue)
+        #expect(MailFlagColor.color(for: [.favoriteGroupMember]) == .green)
+        #expect(MailFlagColor.color(for: [.favoriteOrganizationMember]) == .orange)
+    }
+
+    @Test
+    func personBeatsGroupBeatsOrganization() {
+        #expect(MailFlagColor.color(for: [.favoriteContact, .favoriteGroupMember, .favoriteOrganizationMember]) == .blue)
+        #expect(MailFlagColor.color(for: [.favoriteGroupMember, .favoriteOrganizationMember]) == .green)
+    }
+
+    @Test
+    func unrecognizedReasonStillFlagsWithMailsDefaultColor() {
+        #expect(MailFlagColor.color(for: [MailHighlightReason(rawValue: "favoriteTeam")]) == .mailDefault)
+        // A known reason still wins over an unknown one.
+        #expect(MailFlagColor.color(for: [MailHighlightReason(rawValue: "favoriteTeam"), .favoriteGroupMember]) == .green)
+    }
+}
+
 @Suite("Mail handoff: open-contact link")
 struct MailContactLinkTests {
 

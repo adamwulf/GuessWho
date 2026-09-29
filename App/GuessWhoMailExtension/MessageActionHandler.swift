@@ -2,8 +2,9 @@ import Foundation
 import MailKit
 import os
 
-/// Looks at each newly downloaded message's sender, colors mail from
-/// highlighted contacts blue, and journals one metadata-only entry per message
+/// Looks at each newly downloaded message's sender, flags mail from
+/// highlighted contacts (the flag color follows why they are highlighted, see
+/// `MailFlagColor`), and journals one metadata-only entry per message
 /// from any known contact for the app to store.
 ///
 /// Fail-open: when the cache or the journal can't be used, the message is
@@ -68,9 +69,21 @@ final class MessageActionHandler: NSObject, MEMessageActionHandler, Sendable {
         }
 
         // A newer-format cache yields no summaries, so the message is left
-        // uncolored rather than guessed at.
-        guard contents.summaries(forAddress: sender).contains(where: \.isHighlighted) else { return nil }
-        return .action(.setBackgroundColor(.blue))
+        // unflagged rather than guessed at. Two cards can share the sender's
+        // address; their reasons count together.
+        let reasons = contents.summaries(forAddress: sender)
+            .reduce(into: Set<MailHighlightReason>()) { $0.formUnion($1.highlightReasons) }
+        guard let color = MailFlagColor.color(for: reasons) else { return nil }
+        return .action(.flag(Self.flag(for: color)))
+    }
+
+    private static func flag(for color: MailFlagColor) -> MEMessageAction.Flag {
+        switch color {
+        case .blue: return .blue
+        case .green: return .green
+        case .orange: return .orange
+        case .mailDefault: return .defaultColor
+        }
     }
 
     /// Appends the message's metadata. A message with no usable Message-ID has
