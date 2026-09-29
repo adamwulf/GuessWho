@@ -70,7 +70,11 @@ formats, or the code that writes or drains them.
   (`RecipientsModel.showNow`) before it returns the view controller; keep
   that first lookup synchronous.
 - **The detail page changes the popover's size.** The list is sized from its
-  row count and the detail page has a fixed height. `RecipientsView` reports
+  row count, and the detail page from its measured content (header, divider,
+  and the scrolling content's natural height). Both pages share one maximum
+  height, `RecipientsView.maximumHeight` (420pt), and scroll past it. Opening
+  a row clears the last measured detail height, so the popover keeps the
+  list's height until the new page reports its own. `RecipientsView` reports
   each height change through `onSizeChange`, and `RecipientsViewController`
   sets its own `preferredContentSize` from it. Don't go back to the child
   `NSHostingController`'s `.preferredContentSize` sizing option: it changes
@@ -317,6 +321,6 @@ Automated tests cover the shared formats, cache projection, address matching, ca
 - On the first incoming message for a known contact that has no GuessWho identity yet, the app transparently adds its private identity URL to the Contacts card before storing activity.
 - `~/Library/Group Containers/<TeamID>.com.milestonemade.guesswho/Mail/incoming-messages.jsonl` holds only the metadata fields above.
 - A compose window shows the toolbar button; its popover opens sized to its rows (nothing clipped, even when one address matches two contacts), stays filled, and reopening it after adding or removing recipients shows the new list. No new `GuessWhoMailExtension-*.ips` appears in `~/Library/Logs/DiagnosticReports/`.
-- Clicking a known recipient slides in a detail page; **Back** returns to the list; **GuessWho** brings GuessWho forward with that contact selected. The popover is neither clipped nor left at the list's size on the detail page. A person with two addresses in the window appears once.
+- Clicking a known recipient slides in a detail page; **Back** returns to the list; **GuessWho** brings GuessWho forward with that contact selected. The popover is neither clipped nor left at the list's size on the detail page: a contact with little to show gets a short page with no empty space below it, and one with many emails or phone numbers stops at the list's maximum height and scrolls. A person with two addresses in the window appears once.
 - Opening a generated message link may or may not select the message — both are acceptable.
 - The Mail extension log shows no unexpected errors and never includes addresses or subjects.

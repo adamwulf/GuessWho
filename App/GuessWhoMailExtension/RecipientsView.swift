@@ -7,9 +7,10 @@ import SwiftUI
 /// a known recipient slides in a detail page with a Back button and, when the
 /// contact has an ID, a GuessWho button that opens the contact in the app.
 ///
-/// Sized explicitly (from the row count on the list, a fixed height on the
-/// detail page). Each later size change goes to `onSizeChange` so the view
-/// controller can resize Mail's popover.
+/// Sized explicitly: the list from its row count, the detail page from its
+/// measured content, both capped at `maximumHeight` and scrolling past it.
+/// Each later size change goes to `onSizeChange` so the view controller can
+/// resize Mail's popover.
 struct RecipientsView: View {
     let model: RecipientsModel
     let onSizeChange: (CGSize) -> Void
@@ -17,6 +18,10 @@ struct RecipientsView: View {
     /// The row whose detail page is showing; nil shows the list. Held by ID so
     /// a recipient edit that drops the row also returns to the list.
     @State private var selectedRowID: String?
+    /// The open detail page's full height, as it reports it. Cleared when a
+    /// row is opened, so the popover keeps the list's height until the new
+    /// page reports, instead of showing the previous page's height first.
+    @State private var detailHeight: CGFloat?
 
     static let width: CGFloat = 320
     static let rowHeight: CGFloat = 52
@@ -24,13 +29,16 @@ struct RecipientsView: View {
     static let messageHeight: CGFloat = 72
     static let verticalPadding: CGFloat = 6
     static let maximumHeight: CGFloat = 420
-    static let detailHeight: CGFloat = 380
 
     var body: some View {
         ZStack {
             if let row = selectedRow, let summary = row.summary {
-                RecipientDetailView(summary: summary, onBack: { selectedRowID = nil })
-                    .transition(.move(edge: .trailing))
+                RecipientDetailView(
+                    summary: summary,
+                    onBack: { selectedRowID = nil },
+                    onHeightChange: { detailHeight = $0 }
+                )
+                .transition(.move(edge: .trailing))
             } else {
                 list.transition(.move(edge: .leading))
             }
@@ -83,6 +91,7 @@ struct RecipientsView: View {
             RecipientRowView(row: row)
         } else {
             Button {
+                detailHeight = nil
                 selectedRowID = row.id
             } label: {
                 RecipientRowView(row: row)
@@ -93,7 +102,13 @@ struct RecipientsView: View {
     }
 
     private var height: CGFloat {
-        if selectedRow != nil { return Self.detailHeight }
+        if selectedRow != nil, let detailHeight {
+            return min(detailHeight, Self.maximumHeight)
+        }
+        return listHeight
+    }
+
+    private var listHeight: CGFloat {
         guard !model.rows.isEmpty else { return Self.messageHeight }
         let notice = model.status == .contactsUnavailable ? Self.noticeHeight + 1 : 0
         let list = CGFloat(model.rows.count) * Self.rowHeight + 2 * Self.verticalPadding
@@ -143,10 +158,13 @@ private struct RecipientRowView: View {
 
 /// The detail page for one contact: a header bar (Back, and GuessWho when the
 /// contact can be opened in the app), then their photo, name, work line, and
-/// the emails, phone numbers, and birthday the cache holds.
+/// the emails, phone numbers, and birthday the cache holds. Reports its full
+/// height (header, divider, and the scrolling content's natural height) to
+/// `onHeightChange`; the content scrolls when the popover caps that height.
 private struct RecipientDetailView: View {
     let summary: MailContactSummary
     let onBack: () -> Void
+    let onHeightChange: (CGFloat) -> Void
 
     private static let headerHeight: CGFloat = 36
 
@@ -165,6 +183,12 @@ private struct RecipientDetailView: View {
                 }
                 .padding(12)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                // Measured inside the scroll view, so the height is the
+                // content's own and doesn't follow the popover's. The
+                // divider is 1pt.
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contentHeight in
+                    onHeightChange(Self.headerHeight + 1 + contentHeight)
+                }
             }
         }
     }
