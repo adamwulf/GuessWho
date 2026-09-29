@@ -4,8 +4,9 @@ import SwiftUI
 
 /// The view controller Mail shows in the compose-window popover. MailKit
 /// requires an `MEExtensionViewController` subclass, so the SwiftUI list is
-/// hosted in a child `NSHostingController`, and Mail sizes the popover from
-/// this controller's `preferredContentSize`. The first size is measured in
+/// hosted in a child `NSHostingController`. The popover's size is reported
+/// through this controller's `preferredContentSize` and the hosted view's
+/// constraints (see below). The first size is measured in
 /// `loadView()`; `viewController(for:)` fills the model with
 /// `RecipientsModel.showNow(_:)` before it creates this controller, so the
 /// rows are in place by then. Later sizes (opening or leaving a detail page,
