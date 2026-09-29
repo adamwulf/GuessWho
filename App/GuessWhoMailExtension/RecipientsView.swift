@@ -1,28 +1,52 @@
 import AppKit
 import SwiftUI
 
-/// The compose popover: one row per recipient. A known recipient shows a photo
-/// (or initials), name, title, and organization; one the contact cache doesn't
-/// know shows its address and a plain note.
+/// The compose popover. Its first page is one row per recipient: a known
+/// recipient shows a photo (or initials), name, title, and organization; one
+/// the contact cache doesn't know shows its address and a plain note. Clicking
+/// a known recipient slides in a detail page with a Back button and, when the
+/// contact has an ID, a GuessWho button that opens the contact in the app.
 ///
-/// Sized explicitly from the row count so the hosting controller can report an
-/// exact preferred size to Mail's popover.
+/// Sized explicitly (from the row count on the list, a fixed height on the
+/// detail page) so the hosting controller can report an exact preferred size
+/// to Mail's popover.
 struct RecipientsView: View {
     let model: RecipientsModel
 
-    private static let width: CGFloat = 320
-    private static let rowHeight: CGFloat = 52
-    private static let noticeHeight: CGFloat = 36
-    private static let messageHeight: CGFloat = 72
-    private static let verticalPadding: CGFloat = 6
-    private static let maximumHeight: CGFloat = 420
+    /// The row whose detail page is showing; nil shows the list. Held by ID so
+    /// a recipient edit that drops the row also returns to the list.
+    @State private var selectedRowID: String?
+
+    static let width: CGFloat = 320
+    static let rowHeight: CGFloat = 52
+    static let noticeHeight: CGFloat = 36
+    static let messageHeight: CGFloat = 72
+    static let verticalPadding: CGFloat = 6
+    static let maximumHeight: CGFloat = 420
+    static let detailHeight: CGFloat = 380
 
     var body: some View {
-        content.frame(width: Self.width, height: height)
+        ZStack {
+            if let row = selectedRow, let summary = row.summary {
+                RecipientDetailView(summary: summary, onBack: { selectedRowID = nil })
+                    .transition(.move(edge: .trailing))
+            } else {
+                list.transition(.move(edge: .leading))
+            }
+        }
+        .frame(width: Self.width, height: height)
+        .clipped()
+        .animation(.easeInOut(duration: 0.25), value: selectedRow?.id)
+    }
+
+    /// The selected row, only while it is still in the list and has details.
+    private var selectedRow: RecipientsModel.Row? {
+        guard let selectedRowID else { return nil }
+        return model.rows.first { $0.id == selectedRowID && $0.summary != nil }
     }
 
     @ViewBuilder
-    private var content: some View {
+    private var list: some View {
         if model.rows.isEmpty {
             Text("Add recipients to see who they are.")
                 .foregroundStyle(.secondary)
@@ -39,7 +63,7 @@ struct RecipientsView: View {
                 ScrollView {
                     VStack(spacing: 0) {
                         ForEach(model.rows) { row in
-                            RecipientRowView(row: row)
+                            rowView(row)
                                 .frame(height: Self.rowHeight)
                         }
                     }
@@ -49,7 +73,23 @@ struct RecipientsView: View {
         }
     }
 
+    @ViewBuilder
+    private func rowView(_ row: RecipientsModel.Row) -> some View {
+        if row.summary == nil {
+            RecipientRowView(row: row)
+        } else {
+            Button {
+                selectedRowID = row.id
+            } label: {
+                RecipientRowView(row: row)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
     private var height: CGFloat {
+        if selectedRow != nil { return Self.detailHeight }
         guard !model.rows.isEmpty else { return Self.messageHeight }
         let notice = model.status == .contactsUnavailable ? Self.noticeHeight + 1 : 0
         let list = CGFloat(model.rows.count) * Self.rowHeight + 2 * Self.verticalPadding
@@ -62,7 +102,7 @@ private struct RecipientRowView: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            RecipientAvatar(summary: row.summary)
+            RecipientAvatar(summary: row.summary, size: 36)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
                     .font(.headline)
@@ -73,6 +113,11 @@ private struct RecipientRowView: View {
                     .lineLimit(1)
             }
             Spacer(minLength: 0)
+            if row.summary != nil {
+                Image(systemName: "chevron.right")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+            }
         }
         .padding(.horizontal, 12)
         .help(row.address)
@@ -92,10 +137,103 @@ private struct RecipientRowView: View {
     }
 }
 
+/// The detail page for one contact: a header bar (Back, and GuessWho when the
+/// contact can be opened in the app), then their photo, name, work line, and
+/// the emails, phone numbers, and birthday the cache holds.
+private struct RecipientDetailView: View {
+    let summary: MailContactSummary
+    let onBack: () -> Void
+
+    private static let headerHeight: CGFloat = 36
+
+    var body: some View {
+        VStack(spacing: 0) {
+            header
+            Divider()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    identity
+                    valueSection("Email", values: summary.emailAddresses)
+                    valueSection("Phone", values: summary.phoneNumbers)
+                    if let birthday = summary.birthday {
+                        valueSection("Birthday", values: [MailLabeledValue(label: "", value: birthday)])
+                    }
+                }
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+
+    private var header: some View {
+        HStack {
+            Button(action: onBack) {
+                Label("Back", systemImage: "chevron.left")
+            }
+            .buttonStyle(.borderless)
+            Spacer()
+            if let contactID = summary.contactID {
+                Button("GuessWho") {
+                    GuessWhoAppLink.open(contactID: contactID)
+                }
+                .buttonStyle(.borderless)
+                .help("Open in GuessWho")
+            }
+        }
+        .padding(.horizontal, 12)
+        .frame(height: Self.headerHeight)
+    }
+
+    private var identity: some View {
+        HStack(spacing: 12) {
+            RecipientAvatar(summary: summary, size: 56)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(summary.displayName)
+                    .font(.title3.weight(.semibold))
+                    .lineLimit(2)
+                ForEach(workLines, id: \.self) { line in
+                    Text(line)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+            }
+        }
+    }
+
+    private var workLines: [String] {
+        [summary.jobTitle, summary.organization]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+
+    @ViewBuilder
+    private func valueSection(_ title: String, values: [MailLabeledValue]) -> some View {
+        if !values.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(title)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .textCase(.uppercase)
+                ForEach(Array(values.enumerated()), id: \.offset) { _, entry in
+                    VStack(alignment: .leading, spacing: 0) {
+                        if !entry.label.isEmpty {
+                            Text(entry.label)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Text(entry.value)
+                            .textSelection(.enabled)
+                    }
+                }
+            }
+        }
+    }
+}
+
 private struct RecipientAvatar: View {
     let summary: MailContactSummary?
-
-    private static let size: CGFloat = 36
+    let size: CGFloat
 
     var body: some View {
         Group {
@@ -108,7 +246,7 @@ private struct RecipientAvatar: View {
                     .fill(Color.accentColor.gradient)
                     .overlay {
                         Text(initials)
-                            .font(.system(size: 14, weight: .semibold))
+                            .font(.system(size: size * 0.39, weight: .semibold))
                             .foregroundStyle(.white)
                     }
             } else {
@@ -120,7 +258,7 @@ private struct RecipientAvatar: View {
                     }
             }
         }
-        .frame(width: Self.size, height: Self.size)
+        .frame(width: size, height: size)
         .clipShape(Circle())
     }
 

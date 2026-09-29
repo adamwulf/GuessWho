@@ -31,9 +31,21 @@ struct MailHighlightReason: RawRepresentable, Hashable, Codable, Sendable {
     }
 }
 
+/// One phone number or email address on a contact, with a label the app has
+/// already turned into plain text (for example "work"), so the extension needs
+/// no Contacts framework to show it.
+struct MailLabeledValue: Codable, Sendable, Equatable {
+    var label: String
+    var value: String
+}
+
 /// What the Mail extension may show about one contact. Deliberately small:
 /// the snapshot is read on every incoming message, so it carries only what
 /// the highlight decision and the compose popover need.
+///
+/// `contactID` and everything after it are optional or defaulted on decode, so
+/// a cache written before those fields existed still reads (see the version
+/// rules on `MailContactSnapshot`).
 struct MailContactSummary: Codable, Sendable, Equatable {
     var displayName: String
     var organization: String?
@@ -43,19 +55,53 @@ struct MailContactSummary: Codable, Sendable, Equatable {
     /// these bytes once per address because the encoded summary repeats there.
     var thumbnail: Data?
     var highlightReasons: Set<MailHighlightReason>
+    /// The contact's GuessWho ID (the UUID in its `guesswho://contact/<uuid>`
+    /// URL). Nil for a contact the app has not given an ID yet; such a contact
+    /// cannot be opened in the app from the popover.
+    var contactID: String?
+    var emailAddresses: [MailLabeledValue]
+    var phoneNumbers: [MailLabeledValue]
+    /// The birthday as display text, for example "November 30, 1982".
+    var birthday: String?
 
     init(
         displayName: String,
         organization: String? = nil,
         jobTitle: String? = nil,
         thumbnail: Data? = nil,
-        highlightReasons: Set<MailHighlightReason> = []
+        highlightReasons: Set<MailHighlightReason> = [],
+        contactID: String? = nil,
+        emailAddresses: [MailLabeledValue] = [],
+        phoneNumbers: [MailLabeledValue] = [],
+        birthday: String? = nil
     ) {
         self.displayName = displayName
         self.organization = organization
         self.jobTitle = jobTitle
         self.thumbnail = thumbnail
         self.highlightReasons = highlightReasons
+        self.contactID = contactID
+        self.emailAddresses = emailAddresses
+        self.phoneNumbers = phoneNumbers
+        self.birthday = birthday
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case displayName, organization, jobTitle, thumbnail, highlightReasons
+        case contactID, emailAddresses, phoneNumbers, birthday
+    }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        displayName = try container.decode(String.self, forKey: .displayName)
+        organization = try container.decodeIfPresent(String.self, forKey: .organization)
+        jobTitle = try container.decodeIfPresent(String.self, forKey: .jobTitle)
+        thumbnail = try container.decodeIfPresent(Data.self, forKey: .thumbnail)
+        highlightReasons = try container.decode(Set<MailHighlightReason>.self, forKey: .highlightReasons)
+        contactID = try container.decodeIfPresent(String.self, forKey: .contactID)
+        emailAddresses = try container.decodeIfPresent([MailLabeledValue].self, forKey: .emailAddresses) ?? []
+        phoneNumbers = try container.decodeIfPresent([MailLabeledValue].self, forKey: .phoneNumbers) ?? []
+        birthday = try container.decodeIfPresent(String.self, forKey: .birthday)
     }
 
     /// True for any reason, including ones this build doesn't recognize.

@@ -22,6 +22,8 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>GuessWhoAppGroup</key>
 	<string>$(GUESSWHO_APP_GROUP)</string>
+	<key>GuessWhoLinkedInURLScheme</key>
+	<string>$(GUESSWHO_LINKEDIN_URL_SCHEME)</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>$(MACOSX_DEPLOYMENT_TARGET)</string>
 	<key>NSHumanReadableDescription</key>

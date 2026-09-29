@@ -15,3 +15,8 @@ PRODUCT_BUNDLE_IDENTIFIER = com.milestonemade.guesswho.mail
 // suffix tells you which copy PlugInKit elected, and so which build Mail is
 // running.
 GUESSWHO_MAIL_EXTENSION_DISPLAY_NAME = GuessWho Debug
+
+// App wake scheme — must match GUESSWHO_LINKEDIN_URL_SCHEME in
+// GuessWho-Debug.xcconfig. The compose popover opens a contact in the app
+// with `<scheme>://open-contact?id=…`.
+GUESSWHO_LINKEDIN_URL_SCHEME = guesswho-linkedin-debug

@@ -11,7 +11,7 @@ formats, or the code that writes or drains them.
 
 - **Highlights mail from favorite people.** For each newly received message, the extension looks the sender up in the contact cache. If any matching contact is a favorite, belongs to a favorite group, works at a favorite organization, or belongs to a favorite department, Mail shows the message with a blue background.
 - **Records mail from known people.** For every message whose sender is in the cache, the extension appends one metadata-only entry to the journal. The app records it under **Recent Email** on every matching contact and advances Last Interaction.
-- **Shows who you are writing to.** In a compose window, a toolbar button (tooltip **Recipient details**) opens a popover listing each recipient with a photo or initials, name, title, and organization. A recipient the cache does not know gets a plain **No contact details** row.
+- **Shows who you are writing to.** In a compose window, a toolbar button (tooltip **Recipient details**) opens a popover listing each recipient with a photo or initials, name, title, and organization. A recipient the cache does not know gets a plain **No contact details** row. One person appears once, even when the window holds two of their addresses. Clicking a known row slides in a detail page (photo, name, title, organization, emails, phone numbers, birthday) with a **Back** button and, when the contact has a GuessWho ID, a **GuessWho** button that opens the contact in the app.
 
 ## The pieces
 
@@ -69,6 +69,22 @@ formats, or the code that writes or drains them.
   `viewController(for:)` fills the model synchronously
   (`RecipientsModel.showNow`) before it returns the view controller; keep
   that first lookup synchronous.
+- **The detail page changes the popover's size.** The list is sized from its
+  row count and the detail page has a fixed height, so opening or leaving a
+  detail page changes the hosted view's preferred size. Whether Mail resizes
+  the popover for that change is unverified (same unknown as above): hand-check
+  it, and if Mail keeps the first size, give both pages one fixed height.
+- **The GuessWho button is a wake URL.** The extension opens
+  `<app wake scheme>://open-contact?id=<GuessWho ID>` with `NSWorkspace`
+  (`GuessWhoAppLink`); `MailContactLink` in `GuessWhoMailShared` builds and
+  parses it. The scheme is the app's per-configuration wake scheme
+  (`guesswho-linkedin[-debug]`), read from the extension's own
+  `GuessWhoLinkedInURLScheme` Info.plist key, fed by
+  `GUESSWHO_LINKEDIN_URL_SCHEME` in the extension's xcconfigs (keep them equal
+  to the app's). The app's scene delegate routes the host to
+  `handleOpenContactWake`, which waits for the first contacts load, selects the
+  People row, and shows the detail. The ID is the bare GuessWho UUID, never a
+  Contacts identifier.
 
 ## App Group and the `Mail/` directory
 
@@ -114,9 +130,14 @@ UTF-8 bytes. A key built any other way silently never matches.
 dictionary from normalized address to every `MailContactSummary` carrying that
 address (two cards can share an address; "any summary highlighted" means
 highlighted). A summary holds `displayName`, optional `organization`,
-`jobTitle`, and `thumbnail` data, and a set of `highlightReasons`. Build one
-with `add(_:forAddresses:)`, which normalizes every key; publish it with
-`MailContactCacheStore.write(_:)`.
+`jobTitle`, and `thumbnail` data, and a set of `highlightReasons`. For the
+popover's detail page it also holds the contact's GuessWho ID (`contactID`,
+nil until the app has given the card one), its `emailAddresses` and
+`phoneNumbers` (each `MailLabeledValue`, the label already turned into plain
+text by the app so the extension needs no Contacts framework), and a
+`birthday` display string. These four decode as absent when an older app wrote
+the cache. Build a snapshot with `add(_:forAddresses:)`, which normalizes
+every key; publish it with `MailContactCacheStore.write(_:)`.
 
 **Highlight reasons are an open set.** `MailHighlightReason` is a string
 wrapper, not an enum: `favoriteContact`, `favoriteGroupMember`, and
@@ -285,5 +306,6 @@ Automated tests cover the shared formats, cache projection, address matching, ca
 - On the first incoming message for a known contact that has no GuessWho identity yet, the app transparently adds its private identity URL to the Contacts card before storing activity.
 - `~/Library/Group Containers/<TeamID>.com.milestonemade.guesswho/Mail/incoming-messages.jsonl` holds only the metadata fields above.
 - A compose window shows the toolbar button; its popover opens sized to its rows (nothing clipped, even when one address matches two contacts), stays filled, and reopening it after adding or removing recipients shows the new list. No new `GuessWhoMailExtension-*.ips` appears in `~/Library/Logs/DiagnosticReports/`.
+- Clicking a known recipient slides in a detail page; **Back** returns to the list; **GuessWho** brings GuessWho forward with that contact selected. The popover is neither clipped nor left at the list's size on the detail page. A person with two addresses in the window appears once.
 - Opening a generated message link may or may not select the message — both are acceptable.
 - The Mail extension log shows no unexpected errors and never includes addresses or subjects.
