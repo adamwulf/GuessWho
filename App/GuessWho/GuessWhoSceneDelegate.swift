@@ -42,6 +42,11 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// stored `NSObjectProtocol` token never crosses an actor boundary.
     private var restorationReloadObserver: NSObjectProtocol?
 
+    /// Wake sheets that asked to close while another sheet covered them; each
+    /// closes once nothing covers it (`dismissHandoffSheet`). Weak, so a sheet
+    /// that goes away some other way drops out.
+    private let sheetsAwaitingDismissal = NSHashTable<UIViewController>.weakObjects()
+
     #if DEBUG && targetEnvironment(macCatalyst)
     private var navBenchmarkTask: Task<Void, Never>?
     #endif
@@ -2413,6 +2418,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             photoPayload?.decodedData().flatMap { UIImage(data: $0) }
         }.value
 
+        let sheet = HandoffSheetBox()
         let confirm = LinkedInConfirmView(
             contactID: matchID,
             contactDisplayName: contact.displayName,
@@ -2425,7 +2431,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
                 return photo.flatMap { UIImage(data: $0.data) }
             },
             onConfirm: { [weak self, weak repo] selected in
-                self?.dismissPresented()
+                self?.dismissHandoffSheet(sheet.sheet)
                 guard let repo else { return }
                 let fields = Self.packageFields(from: selected)
                 Self.handoffLog.notice("confirm: applying \(fields.map(\.rawValue).sorted().joined(separator: ","))")
@@ -2453,10 +2459,10 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
                     }
                 }
             },
-            onCancel: { [weak self] in self?.dismissPresented() }
+            onCancel: { [weak self] in self?.dismissHandoffSheet(sheet.sheet) }
         )
 
-        presentHandoffSheet(
+        sheet.sheet = presentHandoffSheet(
             confirm,
             // Wider sheet so the two columns (esp. About / multi-line values) have room.
             size: CGSize(width: 840, height: 660),
@@ -2491,7 +2497,9 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     ///     editor's Cancel runs a discard confirmation), so a swipe-down /
     ///     Escape can't bypass them. The confirm sheet holds nothing but
     ///     checkbox state, so it stays interactively dismissible.
-    /// - Returns: the presented sheet, or nil when there was no presenter.
+    /// - Returns: the presented sheet, or nil when there was no presenter. A
+    ///   caller whose sheet closes itself from code passes it to
+    ///   `dismissHandoffSheet`, never dismisses whatever is on top.
     @discardableResult
     private func presentHandoffSheet(
         _ view: some View,
@@ -2501,10 +2509,12 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         isModal: Bool = false,
         metadata: [String: CustomStringConvertible] = [:]
     ) -> UIViewController? {
-        let hosting = UIHostingController(rootView: view)
+        let hosting = HandoffSheetHostingController(rootView: view)
         hosting.modalPresentationStyle = .formSheet
         hosting.preferredContentSize = size
         hosting.isModalInPresentation = isModal
+        // A sheet this one covered may be waiting to close.
+        hosting.onDidDisappear = { [weak self] in self?.dismissUncoveredHandoffSheets() }
         guard let presenter = topmostPresenter() else {
             Self.handoffLog.error("\(phase): NO presenter available — \(what) not shown")
             return nil
@@ -2679,6 +2689,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             return
         }
 
+        let sheet = HandoffSheetBox()
         let view = TLSBatchImportView(
             candidates: candidates,
             skippedPersonCount: skippedPersonCount,
@@ -2687,11 +2698,13 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
                 guard let self, let repo else { return ["The contacts service is unavailable."] }
                 return await self.importTLSSelections(selections, repo: repo)
             },
-            onCancel: { [weak self] in self?.dismissPresented() },
-            onComplete: { [weak self] in self?.dismissPresented() }
+            onCancel: { [weak self] in self?.dismissHandoffSheet(sheet.sheet) },
+            // Also runs on its own when an import finishes cleanly, maybe
+            // while a later wake's sheet covers this one.
+            onComplete: { [weak self] in self?.dismissHandoffSheet(sheet.sheet) }
         )
 
-        presentHandoffSheet(
+        sheet.sheet = presentHandoffSheet(
             view,
             size: CGSize(width: 840, height: 700),
             phase: "tls-batch",
@@ -2963,8 +2976,30 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         return presenter
     }
 
-    private func dismissPresented() {
-        topmostPresenter()?.dismiss(animated: true)
+    /// Close `sheet`, a wake's sheet from `presentHandoffSheet`, and nothing
+    /// else. A wake can present another sheet over it — a Mail Add Contact
+    /// click while a roster import runs — and closing whatever is on top
+    /// would close that sheet and lose its typed edits. UIKit can't dismiss a
+    /// covered sheet without also dismissing everything above it, so a
+    /// covered sheet waits in `sheetsAwaitingDismissal` until the sheet over
+    /// it has gone.
+    private func dismissHandoffSheet(_ sheet: UIViewController?) {
+        guard let sheet, sheet.presentingViewController != nil, !sheet.isBeingDismissed else { return }
+        if sheet.presentedViewController == nil {
+            sheet.dismiss(animated: true)
+        } else {
+            Self.handoffLog.notice("sheet covered by another — closing it once that one has gone")
+            sheetsAwaitingDismissal.add(sheet)
+        }
+    }
+
+    /// Close each waiting sheet that nothing covers any more. Runs when a
+    /// wake's sheet leaves the screen.
+    private func dismissUncoveredHandoffSheets() {
+        for sheet in sheetsAwaitingDismissal.allObjects where sheet.presentedViewController == nil {
+            sheetsAwaitingDismissal.remove(sheet)
+            dismissHandoffSheet(sheet)
+        }
     }
 
     @MainActor
@@ -3009,7 +3044,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
 
     /// Present `body` on `presenter`, but only once any dismissal transition
     /// already running on it has finished. The matched-contact confirm flow
-    /// calls `dismissPresented()` and *then*, ~half a second later, tries to
+    /// calls `dismissHandoffSheet` and *then*, ~half a second later, tries to
     /// surface an apply-failure alert. During that window the confirm sheet is
     /// still animating out, so a bare `present(_:animated:)` races the dismissal
     /// and UIKit silently drops it — the user saw neither the saved data nor an
@@ -3346,6 +3381,26 @@ extension GuessWhoSceneDelegate: UINavigationControllerDelegate {
 @MainActor
 private final class CreatedContactIDBox {
     var id: ContactID?
+}
+
+/// One-slot box carrying a wake's sheet to its own close buttons. The sheet
+/// view is built before `presentHandoffSheet` creates the controller that
+/// hosts it, so the controller is filled in after the call returns.
+@MainActor
+private final class HandoffSheetBox {
+    weak var sheet: UIViewController?
+}
+
+/// Hosts a wake's sheet (`presentHandoffSheet`) and reports when it has left
+/// the screen, so a sheet it covered can finish closing
+/// (`dismissHandoffSheet`).
+private final class HandoffSheetHostingController<Content: View>: UIHostingController<Content> {
+    var onDidDisappear: (() -> Void)?
+
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        onDidDisappear?()
+    }
 }
 
 /// Reference box so a value-type `RestorationState.Selection` can ride along as
