@@ -46,6 +46,7 @@ struct MailDisplayNameTests {
         ("\"Jane \\\"JD\\\" Doe\" <jane@example.com>", "Jane \"JD\" Doe"),
         ("\"Back\\\\slash\" <jane@example.com>", "Back\\slash"),
         ("Zoë 山田 <zoe@example.com>", "Zoë 山田"),
+        ("'Jane Doe' <jane@example.com>", "Jane Doe"),
     ])
     func readsTheName(_ testCase: (raw: String, expected: String)) {
         #expect(MailAddressNormalizer.displayName(testCase.raw) == testCase.expected)
@@ -59,6 +60,7 @@ struct MailDisplayNameTests {
         "jane@example.com <jane@example.com>",
         "Jane@Example.com <jane@example.com>",
         "\"jane@example.com\" <jane@example.com>",
+        "'jane@example.com' <jane@example.com>",
     ])
     func hasNoName(_ raw: String) {
         #expect(MailAddressNormalizer.displayName(raw) == nil)

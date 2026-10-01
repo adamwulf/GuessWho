@@ -67,10 +67,12 @@ enum MailAddressNormalizer {
     ///
     /// The name is the text before the LAST `<`, trimmed. When it is a quoted
     /// string, the surrounding double quotes are removed and each
-    /// backslash-escaped character (`\"`, `\\`) is unescaped. Returns nil when
-    /// `raw` has no `<` (a bare address), when the name is empty, or when it is
-    /// only the address again. Best effort, not an RFC 5322 parser: comments,
-    /// encoded words, and group syntax come back as written.
+    /// backslash-escaped character (`\"`, `\\`) is unescaped. Then one pair of
+    /// surrounding single quotes is removed too, because Outlook writes names
+    /// as `'Jane Doe' <jane@example.com>`. Returns nil when `raw` has no `<`
+    /// (a bare address), when the name is empty, or when it is only the
+    /// address again. Best effort, not an RFC 5322 parser: comments, encoded
+    /// words, and group syntax come back as written.
     static func displayName(_ raw: String) -> String? {
         guard let open = raw.lastIndex(of: "<") else { return nil }
         var name = raw[..<open].trimmingCharacters(in: .whitespacesAndNewlines)
@@ -86,6 +88,9 @@ enum MailAddressNormalizer {
                 }
             }
             name = unquoted.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        if name.count >= 2, name.hasPrefix("'"), name.hasSuffix("'") {
+            name = String(name.dropFirst().dropLast()).trimmingCharacters(in: .whitespacesAndNewlines)
         }
         guard !name.isEmpty else { return nil }
         if let address = normalize(raw), name.caseInsensitiveCompare(address) == .orderedSame {

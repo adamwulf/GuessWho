@@ -132,8 +132,9 @@ formats, or the code that writes or drains them.
 - **Display names from Mail.** `MEEmailAddress.rawString` can hold a display
   name (`"Jane Doe" <jane@example.com>`); `MailAddressNormalizer.displayName`
   takes the text before the last `<`, removes one pair of surrounding
-  quotes, and unescapes `\"` and `\\`. It is best effort, not an RFC 5322
-  parser. Whether Mail's compose session puts a display name in `rawString`
+  double quotes and unescapes `\"` and `\\`, then removes one pair of
+  surrounding single quotes (Outlook writes `'Jane Doe' <jane@example.com>`).
+  It is best effort, not an RFC 5322 parser. Whether Mail's compose session puts a display name in `rawString`
   at all is unverified; when it doesn't, unknown rows and the editor have
   only the address.
 
