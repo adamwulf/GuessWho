@@ -120,15 +120,16 @@ formats, or the code that writes or drains them.
     (refusing the URL when that fails) and applies the name rules again.
     Nothing more is needed, because the values only pre-fill an editor the
     user must save. `handleNewContactWake` waits for the first contacts load.
-    If a contact already lists the address (the cache can lag a contact
-    created moments ago, or the user clicks Add again after saving), that
-    contact opens as for `open-contact`. Otherwise it presents the standard
+    If an editor from an earlier click is still open, the wake does nothing
+    more than bring the app forward: the open editor stays as it is, whichever
+    recipient it was for, and no second editor appears. Otherwise, if a
+    contact already lists the address (the cache can lag a contact created
+    moments ago, or the user clicks Add again after saving), that contact
+    opens as for `open-contact`. Otherwise it presents the standard
     new-contact editor (`ContactEditView`) as a sheet, seeded by
     `Contact.newPersonSeed(name:email:)` — the same name split as an event
     invitee's Add Contact. Save creates a brand-new contact and then selects
-    it in People with its detail showing; Cancel creates nothing. A second
-    click while the first editor is still open is not caught: it presents a
-    second editor over the first.
+    it in People with its detail showing; Cancel creates nothing.
 - **Display names from Mail.** `MEEmailAddress.rawString` can hold a display
   name (`"Jane Doe" <jane@example.com>`); `MailAddressNormalizer.displayName`
   takes the text before the last `<`, removes one pair of surrounding
@@ -367,6 +368,7 @@ Automated tests cover the shared formats, the wake URLs, display-name reading, t
 - A recipient who isn't a contact shows the name Mail gave and the address (or the address and **No contact details** when Mail gives no name), with an **Add Contact** button and no chevron; the row stays the normal height. Note whether Mail gives a display name at all, and update *Display names from Mail* with the answer.
 - Clicking **Add Contact** brings GuessWho forward with the new-contact editor filled in with that name (split into its parts) and address. **Save** closes the editor and shows the new contact selected in People with its detail open; **Cancel** adds nothing. After the app republishes the cache, reopening the popover shows that recipient as a known contact.
 - Clicking **Add Contact** for an address that already belongs to a contact (for example, clicking it again after saving, before the cache republishes) opens that contact instead of the editor.
+- While the editor is open, clicking **Add Contact** again, for the same recipient or another one, brings GuessWho forward with the same editor and its typed changes; no second editor appears. After Save or Cancel, the next click opens a new editor.
 - With GuessWho quit, clicking **Add Contact** launches it (the URL arrives in `scene(_:willConnectTo:)`), and the editor still appears filled in with the name and address once contacts load. With GuessWho quit, clicking **Add Contact** for an address that already belongs to a contact launches it and opens that contact.
 - While the popover says "Contact details aren't available right now.", no row has an **Add Contact** button.
 - Opening a generated message link may or may not select the message — both are acceptable.

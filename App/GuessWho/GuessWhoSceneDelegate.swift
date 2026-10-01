@@ -52,6 +52,9 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// walking the split's child stack.
     private var split: UISplitViewController?
     private var sidebar: SidebarViewController?
+    /// The Mail Add Contact editor while it is on screen, so another Add
+    /// click keeps it instead of stacking a second one.
+    private weak var mailNewContactEditor: UIViewController?
     #endif
 
     func scene(
@@ -2020,13 +2023,15 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// cache doesn't know. Presents the standard new-contact editor
     /// pre-filled with the name and address (`presentMailNewContact`).
     ///
-    /// When a contact already lists the address, that contact opens instead:
-    /// the extension's cache can lag a contact created moments ago, and the
-    /// user can click Add again after saving. (A second click while the first
-    /// editor is still open presents a second editor.) Any app can open this
-    /// URL, so the parser treats its values as untrusted; they only pre-fill
-    /// an editor the user must save. The Mail extension is Catalyst-only, so
-    /// other platforms ignore the wake.
+    /// While an editor from an earlier click is still open, the wake only
+    /// brings the app forward (Launch Services already did) and the open
+    /// editor stays as it is, whichever recipient it was for. Otherwise, when
+    /// a contact already lists the address, that contact opens instead: the
+    /// extension's cache can lag a contact created moments ago, and the user
+    /// can click Add again after saving. Any app can open this URL, so the
+    /// parser treats its values as untrusted; they only pre-fill an editor the
+    /// user must save. The Mail extension is Catalyst-only, so other platforms
+    /// ignore the wake.
     private func handleNewContactWake(_ url: URL, entry: String) {
         Self.lifecycleLog.notice("mail-new-contact wake received", ["entry": entry])
         #if targetEnvironment(macCatalyst)
@@ -2041,6 +2046,16 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             // launch it is still loading.
             await repository.waitUntilInitialLoadCompletes()
             guard let self else { return }
+            // Checked after the wait, so two clicks during a cold launch
+            // still get one editor: the first presents before the second
+            // resumes. `presentingViewController` is set as soon as
+            // `present` is called; one that is being dismissed has had its
+            // Save or Cancel, so the click gets a new editor.
+            if let editor = self.mailNewContactEditor,
+               editor.presentingViewController != nil, !editor.isBeingDismissed {
+                Self.lifecycleLog.notice("mail-new-contact: editor already open — keeping it")
+                return
+            }
             if let existingID = repository.contactIDs(matchingEmail: request.email).first,
                let existing = repository.contact(id: existingID) {
                 guard let split = self.split else {
@@ -2100,7 +2115,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         // autocomplete candidates from the repository.
         .environment(appDelegate.contactsRepository)
 
-        presentHandoffSheet(
+        mailNewContactEditor = presentHandoffSheet(
             editor,
             // The editor's Catalyst ideal frame.
             size: CGSize(width: 560, height: 720),
@@ -2476,6 +2491,8 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     ///     editor's Cancel runs a discard confirmation), so a swipe-down /
     ///     Escape can't bypass them. The confirm sheet holds nothing but
     ///     checkbox state, so it stays interactively dismissible.
+    /// - Returns: the presented sheet, or nil when there was no presenter.
+    @discardableResult
     private func presentHandoffSheet(
         _ view: some View,
         size: CGSize,
@@ -2483,17 +2500,18 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         what: String,
         isModal: Bool = false,
         metadata: [String: CustomStringConvertible] = [:]
-    ) {
+    ) -> UIViewController? {
         let hosting = UIHostingController(rootView: view)
         hosting.modalPresentationStyle = .formSheet
         hosting.preferredContentSize = size
         hosting.isModalInPresentation = isModal
         guard let presenter = topmostPresenter() else {
             Self.handoffLog.error("\(phase): NO presenter available — \(what) not shown")
-            return
+            return nil
         }
         Self.handoffLog.notice("\(phase): presenting \(what)", metadata)
         presenter.present(hosting, animated: true)
+        return hosting
     }
 
     /// No-match half of the LinkedIn import: present the app's standard
