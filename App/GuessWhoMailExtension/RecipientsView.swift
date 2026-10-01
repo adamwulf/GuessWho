@@ -3,9 +3,11 @@ import SwiftUI
 
 /// The compose popover. Its first page is one row per recipient: a known
 /// recipient shows a photo (or initials), name, title, and organization; one
-/// the contact cache doesn't know shows its address and a plain note. Clicking
-/// a known recipient slides in a detail page with a Back button and, when the
-/// contact has an ID, a GuessWho button that opens the contact in the app.
+/// the contact cache doesn't know shows the name Mail gave (if any) and its
+/// address, and, when the cache was readable, an Add Contact button that opens
+/// the app's new-contact editor filled in with them. Clicking a known
+/// recipient slides in a detail page with a Back button and, when the contact
+/// has an ID, a GuessWho button that opens the contact in the app.
 ///
 /// Sized explicitly: the list from its row count, the detail page from its
 /// measured content, both capped at `maximumHeight` and scrolling past it.
@@ -96,16 +98,27 @@ struct RecipientsView: View {
     @ViewBuilder
     private func rowView(_ row: RecipientsModel.Row) -> some View {
         if row.summary == nil {
-            RecipientRowView(row: row)
+            RecipientRowView(row: row, onAdd: addAction(for: row))
         } else {
             Button {
                 selectedRowID = row.id
             } label: {
-                RecipientRowView(row: row)
+                RecipientRowView(row: row, onAdd: nil)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
         }
+    }
+
+    /// Adds an unknown recipient, only when the cache was fully readable (so
+    /// the person really is unknown, not just unreadable) and the token is a
+    /// valid address.
+    private func addAction(for row: RecipientsModel.Row) -> (() -> Void)? {
+        guard model.status == .ready, row.summary == nil, let email = row.normalizedAddress else {
+            return nil
+        }
+        let name = row.displayName
+        return { GuessWhoAppLink.openNewContact(email: email, name: name) }
     }
 
     private var height: CGFloat {
@@ -125,6 +138,8 @@ struct RecipientsView: View {
 
 private struct RecipientRowView: View {
     let row: RecipientsModel.Row
+    /// Shows an Add Contact button at the row's end when set.
+    let onAdd: (() -> Void)?
 
     var body: some View {
         HStack(spacing: 10) {
@@ -143,19 +158,33 @@ private struct RecipientRowView: View {
                 Image(systemName: "chevron.right")
                     .font(.footnote.weight(.semibold))
                     .foregroundStyle(.tertiary)
+            } else if let onAdd {
+                Button(action: onAdd) {
+                    Image(systemName: "person.crop.circle.badge.plus")
+                        .imageScale(.large)
+                }
+                .buttonStyle(.borderless)
+                .help("Add Contact")
+                .accessibilityLabel("Add Contact")
             }
         }
         .padding(.horizontal, 12)
         .help(row.address)
     }
 
+    /// The contact's name; for an unknown recipient, the name Mail gave, or
+    /// else the address.
     private var title: String {
-        guard let name = row.summary?.displayName, !name.isEmpty else { return row.address }
-        return name
+        if let summary = row.summary {
+            return summary.displayName.isEmpty ? row.address : summary.displayName
+        }
+        return row.displayName ?? row.address
     }
 
     private var subtitle: String {
-        guard let summary = row.summary else { return "No contact details" }
+        guard let summary = row.summary else {
+            return row.displayName == nil ? "No contact details" : row.address
+        }
         let details = [summary.jobTitle, summary.organization]
             .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
