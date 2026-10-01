@@ -2022,10 +2022,11 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     ///
     /// When a contact already lists the address, that contact opens instead:
     /// the extension's cache can lag a contact created moments ago, and the
-    /// user can click Add twice. Any app can open this URL, so the parser
-    /// treats its values as untrusted; they only pre-fill an editor the user
-    /// must save. The Mail extension is Catalyst-only, so other platforms
-    /// ignore the wake.
+    /// user can click Add again after saving. (A second click while the first
+    /// editor is still open presents a second editor.) Any app can open this
+    /// URL, so the parser treats its values as untrusted; they only pre-fill
+    /// an editor the user must save. The Mail extension is Catalyst-only, so
+    /// other platforms ignore the wake.
     private func handleNewContactWake(_ url: URL, entry: String) {
         Self.lifecycleLog.notice("mail-new-contact wake received", ["entry": entry])
         #if targetEnvironment(macCatalyst)

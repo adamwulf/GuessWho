@@ -11,7 +11,8 @@ formats, or the code that writes or drains them.
 
 - **Highlights mail from favorite people — currently switched off** (`MessageActionHandler.flagsHighlightedSenders` is `false`; the flag logic and its tests remain, and journaling is unaffected). When it is on, for each newly received message, the extension looks the sender up in the contact cache. If any matching contact is a favorite, belongs to a favorite group, works at a favorite organization, or belongs to a favorite department, the extension flags the message. The flag color follows the reason (`MailFlagColor`): blue for a favorite contact, green for a favorite group member, orange for a favorite organization or department member, and Mail's default flag color for a reason this build does not recognize. When a sender has several reasons, the first in that order wins. The extension sets the flag only when the message downloads and never changes it afterward; that Mail's Flag menu clears it is expected but unverified.
 - **Records mail from known people.** For every message whose sender is in the cache, the extension appends one metadata-only entry to the journal. The app records it under **Recent Email** on every matching contact and advances Last Interaction.
-- **Shows who you are writing to.** In a compose window, a toolbar button (tooltip **Recipient details**) opens a popover listing each recipient with a photo or initials, name, title, and organization. A recipient the cache does not know gets a plain **No contact details** row. One person appears once, even when the window holds two of their addresses. Clicking a known row slides in a detail page (photo, name, title, organization, emails, phone numbers, birthday) with a **Back** button and, when the contact has a GuessWho ID, a **GuessWho** button that opens the contact in the app.
+- **Shows who you are writing to.** In a compose window, a toolbar button (tooltip **Recipient details**) opens a popover listing each recipient with a photo or initials, name, title, and organization. One person appears once, even when the window holds two of their addresses. Clicking a known row slides in a detail page (photo, name, title, organization, emails, phone numbers, birthday) with a **Back** button and, when the contact has a GuessWho ID, a **GuessWho** button that opens the contact in the app.
+- **Adds a recipient you don't have yet.** A recipient the cache does not know gets a row with the name Mail gave for them and their address, or only the address and **No contact details** when there is no name. When the cache was fully readable and the recipient is a valid address, the row has an **Add Contact** button (`person.crop.circle.badge.plus`). It brings GuessWho forward with the new-contact editor filled in with the name and address, so the user can add what else they know and save; Cancel adds nothing. When the cache can't be read ("Contact details aren't available right now."), there is no button, because the extension can't tell whether the person is already a contact. Unknown rows don't open a detail page. Whether Mail's compose session gives a display name at all is unverified (see *Display names from Mail*).
 
 ## The pieces
 
@@ -22,7 +23,7 @@ formats, or the code that writes or drains them.
 | Compose popover | `ComposeSessionHandler.swift`, `RecipientsModel.swift`, `RecipientsView.swift`, `RecipientsViewController.swift` | `MEComposeSessionHandler` + a SwiftUI list hosted in an `MEExtensionViewController`. |
 | Shared format | `App/GuessWhoMailShared/` | Foundation-only code compiled into both the extension and the app: address normalization, cache and journal formats and stores, Message-ID handling, and App Group lookup. |
 | App bridge | `App/GuessWho/Support/MailBridgeController.swift` | Publishes the contact cache, drains the journal, and records contact mail activity. |
-| Shared tests | `App/GuessWhoTests/MailHandoffTests.swift` | Cache, journal, bounds, concurrency, and forward compatibility. |
+| Shared tests | `App/GuessWhoTests/MailHandoffTests.swift` | Cache, journal, bounds, concurrency, forward compatibility, display names, and the wake URLs. |
 | Bridge tests | `App/GuessWhoTests/MailBridgeControllerTests.swift` | Projection, normalization, thumbnail budget, no-op writes, and newer-format preservation. |
 
 ## Target and embedding
@@ -97,17 +98,44 @@ formats, or the code that writes or drains them.
   follows. Whether Mail resizes the popover for them is unverified:
   hand-check it, and if Mail keeps the first size, give both pages one fixed
   height.
-- **The GuessWho button is a wake URL.** The extension opens
-  `<app wake scheme>://open-contact?id=<GuessWho ID>` with `NSWorkspace`
-  (`GuessWhoAppLink`); `MailContactLink` in `GuessWhoMailShared` builds and
-  parses it. The scheme is the app's per-configuration wake scheme
+- **The GuessWho and Add Contact buttons are wake URLs.** The extension opens
+  them with `NSWorkspace` (`GuessWhoAppLink`), and Launch Services brings the
+  app forward. The scheme is the app's per-configuration wake scheme
   (`guesswho-linkedin[-debug]`), read from the extension's own
   `GuessWhoLinkedInURLScheme` Info.plist key, fed by
   `GUESSWHO_LINKEDIN_URL_SCHEME` in the extension's xcconfigs (keep them equal
-  to the app's). The app's scene delegate routes the host to
-  `handleOpenContactWake`, which waits for the first contacts load, selects the
-  People row, and shows the detail. The ID is the bare GuessWho UUID, never a
-  Contacts identifier.
+  to the app's). Both URLs are built and parsed in
+  `GuessWhoMailShared/MailContactLink.swift`, and the app's scene delegate
+  routes each host to its handler (Catalyst only):
+  - `<scheme>://open-contact?id=<GuessWho ID>` (`MailContactLink`) — the
+    **GuessWho** button. `handleOpenContactWake` waits for the first contacts
+    load, selects the People row, and shows the detail. The ID is the bare
+    GuessWho UUID, never a Contacts identifier.
+  - `<scheme>://new-contact?email=<address>[&name=<display name>]`
+    (`MailNewContactLink`) — the **Add Contact** button. The URL carries the
+    normalized address and, when Mail gave one, the trimmed display name,
+    cut to 256 UTF-8 bytes at a whole character; the name is left out when it
+    is only the address again. Any app on the Mac can open this URL, so the
+    app parses every value as untrusted: it normalizes the address again
+    (refusing the URL when that fails) and applies the name rules again.
+    Nothing more is needed, because the values only pre-fill an editor the
+    user must save. `handleNewContactWake` waits for the first contacts load.
+    If a contact already lists the address (the cache can lag a contact
+    created moments ago, or the user clicks Add again after saving), that
+    contact opens as for `open-contact`. Otherwise it presents the standard
+    new-contact editor (`ContactEditView`) as a sheet, seeded by
+    `Contact.newPersonSeed(name:email:)` — the same name split as an event
+    invitee's Add Contact. Save creates a brand-new contact and then selects
+    it in People with its detail showing; Cancel creates nothing. A second
+    click while the first editor is still open is not caught: it presents a
+    second editor over the first.
+- **Display names from Mail.** `MEEmailAddress.rawString` can hold a display
+  name (`"Jane Doe" <jane@example.com>`); `MailAddressNormalizer.displayName`
+  takes the text before the last `<`, removes one pair of surrounding
+  quotes, and unescapes `\"` and `\\`. It is best effort, not an RFC 5322
+  parser. Whether Mail's compose session puts a display name in `rawString`
+  at all is unverified; when it doesn't, unknown rows and the editor have
+  only the address.
 
 ## App Group and the `Mail/` directory
 
@@ -299,7 +327,11 @@ The drainer claims up to ten batches of 50 entries per pass and renews both acti
 - It journals only messages from senders in the contact cache, and only the
   fields above. Unknown senders leave no trace.
 - It never annotates compose recipients; the popover only displays what the
-  cache holds.
+  cache holds and the addresses and names Mail gives for the recipients.
+- It passes a recipient's address and display name to the app only when the
+  user clicks **Add Contact**, and only in the wake URL it gives Launch
+  Services. Nothing is written to the App Group, and the app saves nothing
+  until the user saves the editor.
 - Its log lines carry fixed messages and, for failures, only the error's
   type, `NSError` domain, and code (`LoggedError.fingerprint`) — never an
   error description, file path, coding path, address, or subject.
@@ -321,7 +353,7 @@ Apple has never documented Mail’s `message:` URL scheme. Mail has long answere
 
 ## Human runtime checks
 
-Automated tests cover the shared formats, cache projection, address matching, cache publication rules, preservation after a favorite-group read failure, and release of failed mail writes for retry. After enabling the extension, verify the OS-hosted MailKit behavior end to end:
+Automated tests cover the shared formats, the wake URLs, display-name reading, the new-contact name split, cache projection, address matching, cache publication rules, preservation after a favorite-group read failure, and release of failed mail writes for retry. After enabling the extension, verify the OS-hosted MailKit behavior end to end:
 
 - Flagging is switched off (`flagsHighlightedSenders`), so no message is flagged; skip this check and the next until it is turned back on. When on: mail from a favorite contact, a favorite group member, a favorite organization member, or a member of a favorite department arrives flagged (blue for a contact, green for a group, orange for an organization or department). Clearing the flag in Mail's Flag menu should work and is unverified. After changing a favorite group in Contacts.app, activate GuessWho before checking the new Mail highlight because this app excludes group-only changes from its Contacts history request.
 - Mail from a known, non-favorite sender arrives unflagged and produces one journal entry; mail from an unknown sender produces none.
@@ -330,5 +362,9 @@ Automated tests cover the shared formats, cache projection, address matching, ca
 - `~/Library/Group Containers/<TeamID>.com.milestonemade.guesswho/Mail/incoming-messages.jsonl` holds only the metadata fields above.
 - A compose window shows the toolbar button; its popover opens sized to its rows (nothing clipped, even when one address matches two contacts), stays filled, and reopening it after adding or removing recipients shows the new list. No new `GuessWhoMailExtension-*.ips` appears in `~/Library/Logs/DiagnosticReports/`.
 - Clicking a known recipient slides in a detail page; **Back** returns to the list; **GuessWho** brings GuessWho forward with that contact selected. The popover is neither clipped nor left at the list's size on the detail page: a contact with little to show gets a short page with no empty space below it, and one with many emails or phone numbers stops at the list's maximum height and scrolls. Clicking **Back** and then immediately opening the same contact, or another one, still sizes the page to its content (up to the maximum height). A person with two addresses in the window appears once.
+- A recipient who isn't a contact shows the name Mail gave and the address (or the address and **No contact details** when Mail gives no name), with an **Add Contact** button and no chevron; the row stays the normal height. Note whether Mail gives a display name at all, and update *Display names from Mail* with the answer.
+- Clicking **Add Contact** brings GuessWho forward with the new-contact editor filled in with that name (split into its parts) and address. **Save** closes the editor and shows the new contact selected in People with its detail open; **Cancel** adds nothing. After the app republishes the cache, reopening the popover shows that recipient as a known contact.
+- Clicking **Add Contact** for an address that already belongs to a contact (for example, clicking it again after saving, before the cache republishes) opens that contact instead of the editor.
+- While the popover says "Contact details aren't available right now.", no row has an **Add Contact** button.
 - Opening a generated message link may or may not select the message — both are acceptable.
 - The Mail extension log shows no unexpected errors and never includes addresses or subjects.
