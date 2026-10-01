@@ -395,7 +395,7 @@ struct EventDetailView: View {
             .buttonStyle(.plain)
         } else if let email = attendee.email {
             Button {
-                addingContactSeed = AddingContactSeed(contact: contactSeed(from: attendee, email: email))
+                addingContactSeed = AddingContactSeed(contact: .newPersonSeed(name: attendee.name, email: email))
             } label: {
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
@@ -429,37 +429,6 @@ struct EventDetailView: View {
     /// add-new-contact flow).
     private func matchedContactID(forEmail email: String) -> ContactID? {
         repository.contactIDs(matchingEmail: email).first
-    }
-
-    /// Build the seed `Contact` handed to `ContactEditView` for an
-    /// unmatched attendee. `localID` is empty so the adapter's save path
-    /// takes the brand-new-contact branch. The display name is run
-    /// through Foundation's `PersonNameComponents` parse strategy so
-    /// prefix/given/middle/family/suffix all land in the right fields
-    /// (e.g. "Dr. Jane Q. Doe Jr." splits correctly). When the attendee
-    /// name is missing or is just the email itself, we leave the name
-    /// fields empty rather than letting the parser shove the email into
-    /// `givenName`. If the parser throws on an unusual display name we
-    /// fall back to dropping the trimmed string into `givenName`.
-    private func contactSeed(from attendee: EventAttendee, email: String) -> Contact {
-        let trimmed = attendee.name.trimmingCharacters(in: .whitespacesAndNewlines)
-        let parsed: PersonNameComponents?
-        let givenFallback: String
-        if trimmed.isEmpty || trimmed.caseInsensitiveCompare(email) == .orderedSame {
-            parsed = nil
-            givenFallback = ""
-        } else {
-            parsed = try? PersonNameComponents(trimmed, strategy: .name)
-            givenFallback = parsed == nil ? trimmed : ""
-        }
-        return Contact(
-            namePrefix: parsed?.namePrefix ?? "",
-            givenName: parsed?.givenName ?? givenFallback,
-            middleName: parsed?.middleName ?? "",
-            familyName: parsed?.familyName ?? "",
-            nameSuffix: parsed?.nameSuffix ?? "",
-            emailAddresses: [LabeledValue(label: "", value: email)]
-        )
     }
 
     /// Split the event's contact links by the linked contact's type, mirroring
