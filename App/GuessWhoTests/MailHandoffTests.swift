@@ -34,6 +34,39 @@ struct MailAddressNormalizerTests {
     }
 }
 
+@Suite("Mail handoff: display name")
+struct MailDisplayNameTests {
+
+    @Test(arguments: [
+        ("\"Jane Doe\" <jane@example.com>", "Jane Doe"),
+        ("Jane Doe <jane@example.com>", "Jane Doe"),
+        ("  Jane Doe   <jane@example.com>  ", "Jane Doe"),
+        ("\" Jane Doe \" <jane@example.com>", "Jane Doe"),
+        ("\"Doe, Jane <work>\" <jane@example.com>", "Doe, Jane <work>"),
+        ("\"Jane \\\"JD\\\" Doe\" <jane@example.com>", "Jane \"JD\" Doe"),
+        ("\"Back\\\\slash\" <jane@example.com>", "Back\\slash"),
+        ("Zoë 山田 <zoe@example.com>", "Zoë 山田"),
+        ("'Jane Doe' <jane@example.com>", "Jane Doe"),
+    ])
+    func readsTheName(_ testCase: (raw: String, expected: String)) {
+        #expect(MailAddressNormalizer.displayName(testCase.raw) == testCase.expected)
+    }
+
+    @Test(arguments: [
+        "jane@example.com",
+        "<jane@example.com>",
+        "  <jane@example.com>",
+        "\"\" <jane@example.com>",
+        "jane@example.com <jane@example.com>",
+        "Jane@Example.com <jane@example.com>",
+        "\"jane@example.com\" <jane@example.com>",
+        "'jane@example.com' <jane@example.com>",
+    ])
+    func hasNoName(_ raw: String) {
+        #expect(MailAddressNormalizer.displayName(raw) == nil)
+    }
+}
+
 @Suite("Mail handoff: contact snapshot")
 struct MailContactSnapshotTests {
 
@@ -248,6 +281,96 @@ struct MailContactLinkTests {
         #expect(MailContactLink.contactID(from: try #require(URL(string: "\(scheme)://import-guide?id=\(id)")), scheme: scheme) == nil)
         #expect(MailContactLink.contactID(from: try #require(URL(string: "\(scheme)://open-contact")), scheme: scheme) == nil)
         #expect(MailContactLink.contactID(from: try #require(URL(string: "\(scheme)://open-contact?id=oops")), scheme: scheme) == nil)
+    }
+}
+
+@Suite("Mail handoff: new-contact link")
+struct MailNewContactLinkTests {
+
+    private let scheme = "guesswho-linkedin-debug"
+
+    private func roundTrip(email: String, name: String?) throws -> MailNewContactLink.Request? {
+        let url = try #require(MailNewContactLink.url(scheme: scheme, email: email, name: name))
+        return MailNewContactLink.request(from: url, scheme: scheme)
+    }
+
+    @Test
+    func urlRoundTripsTheNormalizedAddressAndName() throws {
+        let url = try #require(MailNewContactLink.url(scheme: scheme, email: " Jane@Example.COM ", name: "  Jane Doe "))
+        #expect(url.scheme == scheme)
+        #expect(url.host == MailNewContactLink.host)
+        #expect(MailNewContactLink.request(from: url, scheme: scheme)
+            == MailNewContactLink.Request(email: "jane@example.com", name: "Jane Doe"))
+    }
+
+    @Test(arguments: [nil, "", "   \n", "jane@example.com", "JANE@example.com"] as [String?])
+    func omitsAMissingOrRepeatedName(_ name: String?) throws {
+        let url = try #require(MailNewContactLink.url(scheme: scheme, email: "jane@example.com", name: name))
+        #expect(!url.absoluteString.contains("name="))
+        #expect(MailNewContactLink.request(from: url, scheme: scheme)
+            == MailNewContactLink.Request(email: "jane@example.com", name: nil))
+    }
+
+    @Test
+    func clipsALongNameAtAWholeCharacter() throws {
+        let limit = MailNewContactLink.maximumNameUTF8Length
+        // "é" as "e" plus a combining acute accent: one character, three
+        // UTF-8 bytes. Two ASCII letters first put the limit mid-character.
+        let combining = "e\u{301}"
+        let name = "ab" + String(repeating: combining, count: limit)
+        let request = try #require(try roundTrip(email: "jane@example.com", name: name))
+        let clipped = try #require(request.name)
+        #expect(clipped.utf8.count <= limit)
+        #expect(clipped.utf8.count > limit - combining.utf8.count)
+        #expect(clipped == "ab" + String(repeating: combining, count: (limit - 2) / combining.utf8.count))
+    }
+
+    @Test
+    func parserAppliesTheNameRulesToAHandBuiltURL() throws {
+        var components = URLComponents()
+        components.scheme = scheme
+        components.host = MailNewContactLink.host
+        components.queryItems = [
+            URLQueryItem(name: "email", value: "Jane@Example.com"),
+            URLQueryItem(name: "name", value: "  " + String(repeating: "x", count: 1_000) + "  "),
+        ]
+        let url = try #require(components.url)
+        let request = try #require(MailNewContactLink.request(from: url, scheme: scheme))
+        #expect(request.email == "jane@example.com")
+        #expect(request.name == String(repeating: "x", count: MailNewContactLink.maximumNameUTF8Length))
+    }
+
+    @Test(arguments: [
+        "Jane & Joe = \"Friends\" #1 + more?",
+        "Line one\nLine two\r\nthree",
+        "Zoë 山田 👩🏽‍💻 %41 %",
+        "name=evil&email=attacker@example.com",
+    ])
+    func hostileNameRoundTripsAsText(_ name: String) throws {
+        let request = try #require(try roundTrip(email: "jane@example.com", name: name))
+        #expect(request == MailNewContactLink.Request(email: "jane@example.com", name: name))
+    }
+
+    @Test(arguments: ["", "jane", "jane@", "@example.com", "jane doe@example.com", "a@b@example.com"])
+    func refusesAnInvalidAddress(_ email: String) throws {
+        #expect(MailNewContactLink.url(scheme: scheme, email: email, name: "Jane") == nil)
+        var components = URLComponents()
+        components.scheme = scheme
+        components.host = MailNewContactLink.host
+        components.queryItems = [URLQueryItem(name: "email", value: email), URLQueryItem(name: "name", value: "Jane")]
+        let url = try #require(components.url)
+        #expect(MailNewContactLink.request(from: url, scheme: scheme) == nil)
+    }
+
+    @Test
+    func parsingRejectsOtherSchemesHostsAndMissingAddresses() throws {
+        let query = "email=jane@example.com&name=Jane"
+        #expect(MailNewContactLink.request(from: try #require(URL(string: "other://new-contact?\(query)")), scheme: scheme) == nil)
+        #expect(MailNewContactLink.request(from: try #require(URL(string: "\(scheme)://open-contact?\(query)")), scheme: scheme) == nil)
+        #expect(MailNewContactLink.request(from: try #require(URL(string: "\(scheme)://new-contact?name=Jane")), scheme: scheme) == nil)
+        #expect(MailNewContactLink.request(from: try #require(URL(string: "\(scheme)://new-contact")), scheme: scheme) == nil)
+        #expect(MailNewContactLink.request(from: try #require(URL(string: "\(scheme)://new-contact?\(query)")), scheme: scheme)
+            == MailNewContactLink.Request(email: "jane@example.com", name: "Jane"))
     }
 }
 

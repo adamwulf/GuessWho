@@ -107,6 +107,19 @@ Native Contacts fields receive name, nickname, job title, organization, and
 photo. TLS-only values upsert the custom sidecar fields `dschool ama`,
 `dschool role`, `dschool department`, and `dschool location`.
 
+A clean import closes the review sheet on its own. Another wake can cover the
+sheet while the import runs — a Mail **Add Contact** editor, or a failed
+import's alert. The sheet then never closes whatever is on top of it (that
+would drop the editor's typed edits). It waits, and closes after what covers it
+has closed (`dismissHandoffSheet` in `GuessWhoSceneDelegate`). The matched-contact
+confirm sheet closes the same way. Hand-check on Mac Catalyst: start a roster
+import, open a Mail Add Contact editor over it, and let the import finish. The
+editor must keep its edits, and the review sheet must close after the editor's
+Save or Cancel. Do the same with a failed browser import's alert as the cover:
+the review sheet must close after its **OK**. Whether UIKit routes an alert's
+close through the presenting sheet's `dismiss(animated:completion:)`, which
+this depends on, is unverified.
+
 ## The two LinkedIn layouts (desktop vs. mobile)
 
 linkedin.com serves two entirely different DOMs for the same `/in/<slug>` URL,

@@ -16,7 +16,8 @@ final class RecipientsModel {
     enum Status: Equatable {
         case ready
         /// The cache couldn't be read, hasn't been published yet, or is in a
-        /// newer format; every row shows only its address.
+        /// newer format; every row shows only the name Mail gave (if any) and
+        /// the address, with no Add Contact button.
         case contactsUnavailable
     }
 
@@ -25,6 +26,11 @@ final class RecipientsModel {
         /// What Mail shows for the recipient: the bare address when valid,
         /// otherwise the raw token text.
         let address: String
+        /// The name Mail gave with the address, when it gave one.
+        let displayName: String?
+        /// The normalized address, for adding the recipient as a new
+        /// contact; nil when the token is not a valid address.
+        let normalizedAddress: String?
         /// Nil for a recipient the cache doesn't know.
         let summary: MailContactSummary?
     }
@@ -34,6 +40,10 @@ final class RecipientsModel {
     struct Recipient: Sendable {
         let address: String
         let normalized: String?
+        /// From the token's raw text (`"Jane Doe" <jane@example.com>`).
+        /// Whether Mail's compose session includes a name there is
+        /// unverified, so this is often nil.
+        let displayName: String?
     }
 
     private(set) var status: Status = .ready
@@ -86,7 +96,11 @@ final class RecipientsModel {
                 ?? MailAddressNormalizer.normalize(address.rawString)
             let display = normalized ?? address.rawString.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !display.isEmpty, seen.insert(display).inserted else { continue }
-            recipients.append(Recipient(address: display, normalized: normalized))
+            recipients.append(Recipient(
+                address: display,
+                normalized: normalized,
+                displayName: MailAddressNormalizer.displayName(address.rawString)
+            ))
         }
         return recipients
     }
@@ -118,15 +132,25 @@ final class RecipientsModel {
         for recipient in recipients {
             let summaries = recipient.normalized.map { snapshot?.summaries(forAddress: $0) ?? [] } ?? []
             if summaries.isEmpty {
-                rows.append(Row(id: recipient.address, address: recipient.address, summary: nil))
+                rows.append(row(id: recipient.address, recipient: recipient, summary: nil))
             }
             for (index, summary) in summaries.enumerated() {
                 if let contactID = summary.contactID, !seenContactIDs.insert(contactID).inserted {
                     continue
                 }
-                rows.append(Row(id: "\(recipient.address)#\(index)", address: recipient.address, summary: summary))
+                rows.append(row(id: "\(recipient.address)#\(index)", recipient: recipient, summary: summary))
             }
         }
         return (rows, snapshot == nil ? .contactsUnavailable : .ready)
+    }
+
+    private nonisolated static func row(id: String, recipient: Recipient, summary: MailContactSummary?) -> Row {
+        Row(
+            id: id,
+            address: recipient.address,
+            displayName: recipient.displayName,
+            normalizedAddress: recipient.normalized,
+            summary: summary
+        )
     }
 }

@@ -42,6 +42,11 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// stored `NSObjectProtocol` token never crosses an actor boundary.
     private var restorationReloadObserver: NSObjectProtocol?
 
+    /// Wake sheets that asked to close while a sheet or alert covered them;
+    /// each closes after what covers it has closed (`dismissHandoffSheet`).
+    /// Weak, so a sheet that goes away some other way drops out.
+    private let sheetsAwaitingDismissal = NSHashTable<UIViewController>.weakObjects()
+
     #if DEBUG && targetEnvironment(macCatalyst)
     private var navBenchmarkTask: Task<Void, Never>?
     #endif
@@ -52,6 +57,9 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// walking the split's child stack.
     private var split: UISplitViewController?
     private var sidebar: SidebarViewController?
+    /// The Mail Add Contact editor while it is on screen, so another Add
+    /// click keeps it instead of stacking a second one.
+    private weak var mailNewContactEditor: UIViewController?
     #endif
 
     func scene(
@@ -131,8 +139,10 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// Route incoming wake URLs by host: `…://import-guide?url=…` (the share
     /// extension's Apple Maps guide bounce) goes to the guide importer;
     /// `…://open-contact?id=…` (the Mail compose popover's GuessWho button)
-    /// opens that contact; everything else stays on the LinkedIn handoff path,
-    /// which owns its own scheme filtering and logging.
+    /// opens that contact; `…://new-contact?email=…` (the popover's Add
+    /// Contact button) opens a pre-filled new-contact editor; everything else
+    /// stays on the LinkedIn handoff path, which owns its own scheme filtering
+    /// and logging.
     private func handleIncomingURLs(urlContexts: Set<UIOpenURLContext>, entry: String) {
         let guideContexts = urlContexts.filter { context in
             context.url.scheme == LinkedInHandoffScheme.scheme
@@ -148,7 +158,17 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         for context in contactContexts {
             handleOpenContactWake(context.url, entry: entry)
         }
-        let remaining = urlContexts.subtracting(guideContexts).subtracting(contactContexts)
+        let newContactContexts = urlContexts.filter { context in
+            context.url.scheme == LinkedInHandoffScheme.scheme
+                && context.url.host == MailNewContactLink.host
+        }
+        for context in newContactContexts {
+            handleNewContactWake(context.url, entry: entry)
+        }
+        let remaining = urlContexts
+            .subtracting(guideContexts)
+            .subtracting(contactContexts)
+            .subtracting(newContactContexts)
         if !remaining.isEmpty {
             handleLinkedInHandoff(urlContexts: remaining, entry: entry)
         }
@@ -1975,17 +1995,144 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
                 Self.lifecycleLog.notice("open-contact: contact not found")
                 return
             }
-            // Selecting the sidebar row highlights it and mounts the People
-            // list unless it is already showing.
-            self.sidebar?.select(.people)
-            (self.supplementaryNavigationController(in: split)?.viewControllers.first
-                as? ContactsListViewController)?.select(contactID: contact.contactID)
-            self.showContactDetail(contact: contact, appDelegate: appDelegate)
+            self.showContactInPeople(contact, split: split, appDelegate: appDelegate)
         } lookup: { repository in
             repository.contact(guessWhoID: guessWhoID)
         }
         #endif
     }
+
+    #if targetEnvironment(macCatalyst)
+    /// Select `contact`'s row in the People list and show its detail in the
+    /// secondary column — the same end state as clicking that row. Where the
+    /// Mail wakes land.
+    private func showContactInPeople(
+        _ contact: Contact,
+        split: UISplitViewController,
+        appDelegate: GuessWhoAppDelegate
+    ) {
+        // Selecting the sidebar row highlights it and mounts the People
+        // list unless it is already showing.
+        sidebar?.select(.people)
+        (supplementaryNavigationController(in: split)?.viewControllers.first
+            as? ContactsListViewController)?.select(contactID: contact.contactID)
+        showContactDetail(contact: contact, appDelegate: appDelegate)
+    }
+    #endif
+
+    // MARK: - Mail new-contact wake
+
+    /// Add the Mail recipient named by
+    /// `…://new-contact?email=<address>[&name=<display name>]` — the Mail
+    /// extension's compose popover sends this for a recipient its contact
+    /// cache doesn't know. Presents the standard new-contact editor
+    /// pre-filled with the name and address (`presentMailNewContact`).
+    ///
+    /// While an editor from an earlier click is still open, the wake only
+    /// brings the app forward (Launch Services already did) and the open
+    /// editor stays as it is, whichever recipient it was for. Otherwise, when
+    /// a contact already lists the address, that contact opens instead: the
+    /// extension's cache can lag a contact created moments ago, and the user
+    /// can click Add again after saving. Any app can open this URL, so the
+    /// parser treats its values as untrusted; they only pre-fill an editor the
+    /// user must save. The Mail extension is Catalyst-only, so other platforms
+    /// ignore the wake.
+    private func handleNewContactWake(_ url: URL, entry: String) {
+        Self.lifecycleLog.notice("mail-new-contact wake received", ["entry": entry])
+        #if targetEnvironment(macCatalyst)
+        guard let request = MailNewContactLink.request(from: url, scheme: LinkedInHandoffScheme.scheme) else {
+            Self.lifecycleLog.error("mail-new-contact wake carried no usable email address")
+            return
+        }
+        guard let appDelegate = UIApplication.shared.delegate as? GuessWhoAppDelegate else { return }
+        Task { @MainActor [weak self] in
+            let repository = appDelegate.contactsRepository
+            // The duplicate check below needs the contacts cache; at cold
+            // launch it is still loading.
+            await repository.waitUntilInitialLoadCompletes()
+            guard let self else { return }
+            // Checked after the wait, so two clicks during a cold launch
+            // still get one editor: the first presents before the second
+            // resumes. `presentingViewController` is set as soon as
+            // `present` is called; one that is being dismissed has had its
+            // Save or Cancel, so the click gets a new editor.
+            if let editor = self.mailNewContactEditor,
+               editor.presentingViewController != nil, !editor.isBeingDismissed {
+                Self.lifecycleLog.notice("mail-new-contact: editor already open — keeping it")
+                return
+            }
+            if let existingID = repository.contactIDs(matchingEmail: request.email).first,
+               let existing = repository.contact(id: existingID) {
+                guard let split = self.split else {
+                    Self.lifecycleLog.error("mail-new-contact: no split view — existing contact not shown")
+                    return
+                }
+                Self.lifecycleLog.notice("mail-new-contact: address already on a contact — opening it")
+                self.showContactInPeople(existing, split: split, appDelegate: appDelegate)
+                return
+            }
+            self.presentMailNewContact(request, appDelegate: appDelegate)
+        }
+        #endif
+    }
+
+    #if targetEnvironment(macCatalyst)
+    /// The standard new-contact editor (`ContactEditView`), pre-filled with a
+    /// Mail recipient's name and address, as a sheet over whatever is on
+    /// screen — the same shape as the LinkedIn import's no-match form. Save
+    /// creates a brand-new contact and, once the sheet's dismissal has
+    /// started, selects it in the People list with its detail showing; Cancel
+    /// creates nothing.
+    private func presentMailNewContact(_ request: MailNewContactLink.Request, appDelegate: GuessWhoAppDelegate) {
+        let repo = appDelegate.contactsRepository
+        let seed = Contact.newPersonSeed(name: request.name, email: request.email)
+        // Carries the new identity from the save to `onDone`, which run at
+        // different moments (the save itself, then the dismissal).
+        let created = CreatedContactIDBox()
+
+        let editor = ContactEditView(
+            newContactSeed: seed,
+            save: { edited in
+                // Throwing leaves the sheet open behind the editor's own
+                // "Couldn't save" alert, with the user's work intact — the
+                // right reading, since nothing was created.
+                let contact = try await repo.createContact(edited)
+                Self.lifecycleLog.notice("mail-new-contact: created")
+                created.id = contact.contactID
+            },
+            onDone: { [weak self] in
+                // The editor dismisses itself on the statement right after
+                // `onDone`, so hop off this turn: the detail column changes
+                // once the dismissal has started.
+                Task { @MainActor in
+                    guard let self, let split = self.split,
+                          let contactID = created.id, let contact = repo.contact(id: contactID)
+                    else {
+                        Self.lifecycleLog.error("mail-new-contact: created contact not shown")
+                        return
+                    }
+                    self.showContactInPeople(contact, split: split, appDelegate: appDelegate)
+                }
+            }
+        )
+        .environment(appDelegate.service)
+        // The editor's Company / Department / Related rows read their
+        // autocomplete candidates from the repository.
+        .environment(appDelegate.contactsRepository)
+
+        mailNewContactEditor = presentHandoffSheet(
+            editor,
+            // The editor's Catalyst ideal frame.
+            size: CGSize(width: 560, height: 720),
+            phase: "mail-new-contact",
+            what: "pre-filled editor",
+            // The editor owns its exits (Cancel confirms a discard, Save
+            // writes the contact), so a swipe-down / Escape must not bypass
+            // them.
+            isModal: true
+        )
+    }
+    #endif
 
     // MARK: - Apple Maps guide import wake
 
@@ -2271,6 +2418,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             photoPayload?.decodedData().flatMap { UIImage(data: $0) }
         }.value
 
+        let sheet = HandoffSheetBox()
         let confirm = LinkedInConfirmView(
             contactID: matchID,
             contactDisplayName: contact.displayName,
@@ -2283,7 +2431,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
                 return photo.flatMap { UIImage(data: $0.data) }
             },
             onConfirm: { [weak self, weak repo] selected in
-                self?.dismissPresented()
+                self?.dismissHandoffSheet(sheet.sheet)
                 guard let repo else { return }
                 let fields = Self.packageFields(from: selected)
                 Self.handoffLog.notice("confirm: applying \(fields.map(\.rawValue).sorted().joined(separator: ","))")
@@ -2311,10 +2459,10 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
                     }
                 }
             },
-            onCancel: { [weak self] in self?.dismissPresented() }
+            onCancel: { [weak self] in self?.dismissHandoffSheet(sheet.sheet) }
         )
 
-        presentHandoffSheet(
+        sheet.sheet = presentHandoffSheet(
             confirm,
             // Wider sheet so the two columns (esp. About / multi-line values) have room.
             size: CGSize(width: 840, height: 660),
@@ -2324,23 +2472,35 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         )
     }
 
-    /// Hosts one of the LinkedIn handoff's SwiftUI dialogs — the matched-contact
-    /// confirm sheet or the no-match new-contact form — as a form sheet over
-    /// whatever is on screen, and logs whether it actually got shown.
+    /// Hosts a wake's SwiftUI dialog as a form sheet over whatever is on
+    /// screen, and logs whether it actually got shown. The callers: the
+    /// LinkedIn handoff's matched-contact confirm sheet (`"diff"`), its
+    /// no-match new-contact form (`"new-contact"`), and its TLS roster review
+    /// (`"tls-batch"`); and the Mail Add Contact wake's pre-filled editor
+    /// (`"mail-new-contact"`).
     ///
     /// Presents from the topmost VC. With no presenter (window not yet key, or a
     /// teardown race) the sheet would silently never appear — log that instead.
     /// The presenter resolves BEFORE the "presenting" line so a failure reads as
     /// a clean "NO presenter available", not "presenting" followed by a
-    /// contradiction.
+    /// contradiction. Both lines go to the handoff logger
+    /// (`app.linkedin-handoff`) for every caller, so for the Mail flow they
+    /// sit apart from its other lines, which go to the lifecycle logger
+    /// (`app.lifecycle.scene`).
     ///
     /// - Parameters:
-    ///   - phase: the handoff-timeline tag the surrounding lines already use
-    ///     (`"diff"`, `"new-contact"`), so one grep still walks the whole import.
+    ///   - phase: the tag on this function's "presenting" / "NO presenter
+    ///     available" lines. `"new-contact"` and `"mail-new-contact"` match
+    ///     their flows' other log lines; the `"diff"` and `"tls-batch"` flows
+    ///     log their other lines under `confirm:` and `TLS batch:`.
     ///   - isModal: pass `true` for a dialog that owns its own exits (the
     ///     editor's Cancel runs a discard confirmation), so a swipe-down /
     ///     Escape can't bypass them. The confirm sheet holds nothing but
     ///     checkbox state, so it stays interactively dismissible.
+    /// - Returns: the presented sheet, or nil when there was no presenter. A
+    ///   caller whose sheet closes itself from code passes it to
+    ///   `dismissHandoffSheet`, never dismisses whatever is on top.
+    @discardableResult
     private func presentHandoffSheet(
         _ view: some View,
         size: CGSize,
@@ -2348,17 +2508,21 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         what: String,
         isModal: Bool = false,
         metadata: [String: CustomStringConvertible] = [:]
-    ) {
-        let hosting = UIHostingController(rootView: view)
+    ) -> UIViewController? {
+        let hosting = HandoffSheetHostingController(rootView: view)
         hosting.modalPresentationStyle = .formSheet
         hosting.preferredContentSize = size
         hosting.isModalInPresentation = isModal
+        // A sheet this one covered, or this one itself, may be waiting to
+        // close.
+        hosting.onDismissal = { [weak self] in self?.scheduleUncoveredHandoffSheetSweep() }
         guard let presenter = topmostPresenter() else {
             Self.handoffLog.error("\(phase): NO presenter available — \(what) not shown")
-            return
+            return nil
         }
         Self.handoffLog.notice("\(phase): presenting \(what)", metadata)
         presenter.present(hosting, animated: true)
+        return hosting
     }
 
     /// No-match half of the LinkedIn import: present the app's standard
@@ -2526,6 +2690,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             return
         }
 
+        let sheet = HandoffSheetBox()
         let view = TLSBatchImportView(
             candidates: candidates,
             skippedPersonCount: skippedPersonCount,
@@ -2534,11 +2699,13 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
                 guard let self, let repo else { return ["The contacts service is unavailable."] }
                 return await self.importTLSSelections(selections, repo: repo)
             },
-            onCancel: { [weak self] in self?.dismissPresented() },
-            onComplete: { [weak self] in self?.dismissPresented() }
+            onCancel: { [weak self] in self?.dismissHandoffSheet(sheet.sheet) },
+            // Also runs on its own when an import finishes cleanly, maybe
+            // while a later wake's sheet covers this one.
+            onComplete: { [weak self] in self?.dismissHandoffSheet(sheet.sheet) }
         )
 
-        presentHandoffSheet(
+        sheet.sheet = presentHandoffSheet(
             view,
             size: CGSize(width: 840, height: 700),
             phase: "tls-batch",
@@ -2810,8 +2977,36 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         return presenter
     }
 
-    private func dismissPresented() {
-        topmostPresenter()?.dismiss(animated: true)
+    /// Close `sheet`, a wake's sheet from `presentHandoffSheet`, and nothing
+    /// else. A wake can present another sheet over it — a Mail Add Contact
+    /// click while a roster import runs — and closing whatever is on top
+    /// would close that sheet and lose its typed edits. UIKit can't dismiss a
+    /// covered sheet without also dismissing everything above it, so a
+    /// covered sheet waits in `sheetsAwaitingDismissal` until what covers it
+    /// — another sheet or an alert — has closed (see
+    /// `HandoffSheetHostingController`).
+    private func dismissHandoffSheet(_ sheet: UIViewController?) {
+        guard let sheet, sheet.presentingViewController != nil, !sheet.isBeingDismissed else { return }
+        if sheet.presentedViewController == nil {
+            sheet.dismiss(animated: true)
+        } else {
+            Self.handoffLog.notice("sheet covered — closing it once what covers it has closed")
+            sheetsAwaitingDismissal.add(sheet)
+        }
+    }
+
+    /// Close each waiting sheet that nothing covers any more, on the next
+    /// main-queue turn: this runs as a dismissal finishes, and the next
+    /// dismissal shouldn't start inside that one's transition.
+    private func scheduleUncoveredHandoffSheetSweep() {
+        guard sheetsAwaitingDismissal.count > 0 else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            for sheet in self.sheetsAwaitingDismissal.allObjects where sheet.presentedViewController == nil {
+                self.sheetsAwaitingDismissal.remove(sheet)
+                self.dismissHandoffSheet(sheet)
+            }
+        }
     }
 
     @MainActor
@@ -2856,7 +3051,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
 
     /// Present `body` on `presenter`, but only once any dismissal transition
     /// already running on it has finished. The matched-contact confirm flow
-    /// calls `dismissPresented()` and *then*, ~half a second later, tries to
+    /// calls `dismissHandoffSheet` and *then*, ~half a second later, tries to
     /// surface an apply-failure alert. During that window the confirm sheet is
     /// still animating out, so a bare `present(_:animated:)` races the dismissal
     /// and UIKit silently drops it — the user saw neither the saved data nor an
@@ -3186,13 +3381,46 @@ extension GuessWhoSceneDelegate: UINavigationControllerDelegate {
     }
 }
 
-/// One-slot box carrying the identity of the contact the LinkedIn new-contact
-/// editor just created, from its save closure to its `onDone` — the two run at
-/// different moments (the save itself, then the dismissal), so the value can't
-/// simply be returned.
+/// One-slot box carrying the identity of the contact a pre-filled new-contact
+/// editor (LinkedIn import, Mail recipient) just created, from its save
+/// closure to its `onDone` — the two run at different moments (the save
+/// itself, then the dismissal), so the value can't simply be returned.
 @MainActor
 private final class CreatedContactIDBox {
     var id: ContactID?
+}
+
+/// One-slot box carrying a wake's sheet to its own close buttons. The sheet
+/// view is built before `presentHandoffSheet` creates the controller that
+/// hosts it, so the controller is filled in after the call returns.
+@MainActor
+private final class HandoffSheetBox {
+    weak var sheet: UIViewController?
+}
+
+/// Hosts a wake's sheet (`presentHandoffSheet`) and reports each finished
+/// dismissal that could uncover a sheet waiting to close
+/// (`dismissHandoffSheet`): its own, and that of anything presented over it.
+private final class HandoffSheetHostingController<Content: View>: UIHostingController<Content> {
+    var onDismissal: (() -> Void)?
+
+    /// This sheet has left the screen, so a sheet it covered may be uncovered.
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        onDismissal?()
+    }
+
+    /// UIKit asks the presenting controller to dismiss what it presented, so
+    /// this also runs when an alert or another sheet over this one closes,
+    /// including one that closes itself. That covers the presentations that
+    /// aren't wake sheets, such as the wake failure alerts.
+    override func dismiss(animated flag: Bool, completion: (() -> Void)? = nil) {
+        let onDismissal = self.onDismissal
+        super.dismiss(animated: flag) {
+            completion?()
+            onDismissal?()
+        }
+    }
 }
 
 /// Reference box so a value-type `RestorationState.Selection` can ride along as

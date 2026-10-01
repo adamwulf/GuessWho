@@ -5,8 +5,8 @@ import GuessWhoSync
 /// SwiftUI sheet editor for creating a brand-new Contact. The
 /// existing-contact edit flow lives inline in `ContactDetailView`; this
 /// sheet only runs the new-contact path — "Add Contact" from an EventKit
-/// attendee, and the LinkedIn import's no-match case — where there's no
-/// detail view to flip into yet.
+/// attendee, the LinkedIn import's no-match case, and "Add Contact" for a
+/// Mail compose recipient — where there's no detail view to flip into yet.
 ///
 /// Row implementations live under `Rows/`. Shared utilities (LabelPicker,
 /// LabelOptions, LabeledTextSection, PlatformKeyboardType) live next to
@@ -15,7 +15,8 @@ import GuessWhoSync
 /// `onDone` fires after a successful save. On the default save path the
 /// caller is responsible for reconcile + repository reload; a caller that
 /// supplies its own `save:` owns whatever that path needs instead (the
-/// LinkedIn import's `createContact` refreshes the record itself).
+/// LinkedIn import and the Mail recipient flow both save through
+/// `createContact`, which refreshes the record itself).
 struct ContactEditView: View {
     @Environment(SyncService.self) private var service
     @Environment(\.dismiss) private var dismiss
