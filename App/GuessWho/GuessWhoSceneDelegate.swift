@@ -42,9 +42,9 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// stored `NSObjectProtocol` token never crosses an actor boundary.
     private var restorationReloadObserver: NSObjectProtocol?
 
-    /// Wake sheets that asked to close while another sheet covered them; each
-    /// closes once nothing covers it (`dismissHandoffSheet`). Weak, so a sheet
-    /// that goes away some other way drops out.
+    /// Wake sheets that asked to close while a sheet or alert covered them;
+    /// each closes after what covers it has closed (`dismissHandoffSheet`).
+    /// Weak, so a sheet that goes away some other way drops out.
     private let sheetsAwaitingDismissal = NSHashTable<UIViewController>.weakObjects()
 
     #if DEBUG && targetEnvironment(macCatalyst)
@@ -2513,8 +2513,9 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         hosting.modalPresentationStyle = .formSheet
         hosting.preferredContentSize = size
         hosting.isModalInPresentation = isModal
-        // A sheet this one covered may be waiting to close.
-        hosting.onDidDisappear = { [weak self] in self?.dismissUncoveredHandoffSheets() }
+        // A sheet this one covered, or this one itself, may be waiting to
+        // close.
+        hosting.onDismissal = { [weak self] in self?.scheduleUncoveredHandoffSheetSweep() }
         guard let presenter = topmostPresenter() else {
             Self.handoffLog.error("\(phase): NO presenter available — \(what) not shown")
             return nil
@@ -2981,24 +2982,30 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// click while a roster import runs — and closing whatever is on top
     /// would close that sheet and lose its typed edits. UIKit can't dismiss a
     /// covered sheet without also dismissing everything above it, so a
-    /// covered sheet waits in `sheetsAwaitingDismissal` until the sheet over
-    /// it has gone.
+    /// covered sheet waits in `sheetsAwaitingDismissal` until what covers it
+    /// — another sheet or an alert — has closed (see
+    /// `HandoffSheetHostingController`).
     private func dismissHandoffSheet(_ sheet: UIViewController?) {
         guard let sheet, sheet.presentingViewController != nil, !sheet.isBeingDismissed else { return }
         if sheet.presentedViewController == nil {
             sheet.dismiss(animated: true)
         } else {
-            Self.handoffLog.notice("sheet covered by another — closing it once that one has gone")
+            Self.handoffLog.notice("sheet covered — closing it once what covers it has closed")
             sheetsAwaitingDismissal.add(sheet)
         }
     }
 
-    /// Close each waiting sheet that nothing covers any more. Runs when a
-    /// wake's sheet leaves the screen.
-    private func dismissUncoveredHandoffSheets() {
-        for sheet in sheetsAwaitingDismissal.allObjects where sheet.presentedViewController == nil {
-            sheetsAwaitingDismissal.remove(sheet)
-            dismissHandoffSheet(sheet)
+    /// Close each waiting sheet that nothing covers any more, on the next
+    /// main-queue turn: this runs as a dismissal finishes, and the next
+    /// dismissal shouldn't start inside that one's transition.
+    private func scheduleUncoveredHandoffSheetSweep() {
+        guard sheetsAwaitingDismissal.count > 0 else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            for sheet in self.sheetsAwaitingDismissal.allObjects where sheet.presentedViewController == nil {
+                self.sheetsAwaitingDismissal.remove(sheet)
+                self.dismissHandoffSheet(sheet)
+            }
         }
     }
 
@@ -3391,15 +3398,28 @@ private final class HandoffSheetBox {
     weak var sheet: UIViewController?
 }
 
-/// Hosts a wake's sheet (`presentHandoffSheet`) and reports when it has left
-/// the screen, so a sheet it covered can finish closing
-/// (`dismissHandoffSheet`).
+/// Hosts a wake's sheet (`presentHandoffSheet`) and reports each finished
+/// dismissal that could uncover a sheet waiting to close
+/// (`dismissHandoffSheet`): its own, and that of anything presented over it.
 private final class HandoffSheetHostingController<Content: View>: UIHostingController<Content> {
-    var onDidDisappear: (() -> Void)?
+    var onDismissal: (() -> Void)?
 
+    /// This sheet has left the screen, so a sheet it covered may be uncovered.
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
-        onDidDisappear?()
+        onDismissal?()
+    }
+
+    /// UIKit asks the presenting controller to dismiss what it presented, so
+    /// this also runs when an alert or another sheet over this one closes,
+    /// including one that closes itself. That covers the presentations that
+    /// aren't wake sheets, such as the wake failure alerts.
+    override func dismiss(animated flag: Bool, completion: (() -> Void)? = nil) {
+        let onDismissal = self.onDismissal
+        super.dismiss(animated: flag) {
+            completion?()
+            onDismissal?()
+        }
     }
 }
 
