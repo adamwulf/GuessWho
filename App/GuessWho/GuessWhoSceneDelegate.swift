@@ -2468,9 +2468,10 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// (`app.lifecycle.scene`).
     ///
     /// - Parameters:
-    ///   - phase: the timeline tag the caller's surrounding lines already use
-    ///     (`"diff"`, `"new-contact"`, `"tls-batch"`, `"mail-new-contact"`), so
-    ///     one grep still walks the whole flow.
+    ///   - phase: the tag on this function's "presenting" / "NO presenter
+    ///     available" lines. `"new-contact"` and `"mail-new-contact"` match
+    ///     their flows' other log lines; the `"diff"` and `"tls-batch"` flows
+    ///     log their other lines under `confirm:` and `TLS batch:`.
     ///   - isModal: pass `true` for a dialog that owns its own exits (the
     ///     editor's Cancel runs a discard confirmation), so a swipe-down /
     ///     Escape can't bypass them. The confirm sheet holds nothing but
