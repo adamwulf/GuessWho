@@ -10,6 +10,10 @@ struct LabeledTextSection: View {
     @Binding var items: [LabeledValue]
     let labelOptions: [String]
     let keyboardType: PlatformKeyboardType
+    /// Applied to every edit before it is stored, so a row can rewrite
+    /// pasted text (e.g. email strips a display name). Must return its
+    /// input unchanged for text it doesn't rewrite.
+    var normalizeValue: (String) -> String = { $0 }
 
     var body: some View {
         Section {
@@ -24,7 +28,7 @@ struct LabeledTextSection: View {
                     )
                     TextField(placeholder, text: Binding(
                         get: { items[idx].value },
-                        set: { items[idx] = LabeledValue(label: items[idx].label, value: $0) }
+                        set: { items[idx] = LabeledValue(label: items[idx].label, value: normalizeValue($0)) }
                     ))
                     .applyKeyboard(keyboardType)
                     #if !targetEnvironment(macCatalyst)

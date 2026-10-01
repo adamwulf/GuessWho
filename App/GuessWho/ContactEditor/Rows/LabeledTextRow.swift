@@ -28,7 +28,8 @@ struct EmailRow: View {
                 model.isDirty = true
             }),
             labelOptions: LabelOptions.email,
-            keyboardType: .emailAddress
+            keyboardType: .emailAddress,
+            normalizeValue: EmailAddressFieldInput.normalized
         )
     }
 }
