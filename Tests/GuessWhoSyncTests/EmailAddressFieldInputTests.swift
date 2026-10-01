@@ -29,6 +29,13 @@ struct EmailAddressFieldInputTests {
     }
 
     @Test
+    func trailingRecipientSeparatorIsDropped() {
+        #expect(EmailAddressFieldInput.normalized("Saira Cooper <saira.cooper@rice.edu>;") == "saira.cooper@rice.edu")
+        #expect(EmailAddressFieldInput.normalized("Saira Cooper <saira.cooper@rice.edu>,") == "saira.cooper@rice.edu")
+        #expect(EmailAddressFieldInput.normalized("Saira Cooper <saira.cooper@rice.edu> ; \n") == "saira.cooper@rice.edu")
+    }
+
+    @Test
     func addressCaseIsKept() {
         #expect(EmailAddressFieldInput.normalized("Saira Cooper <Saira.Cooper@Rice.edu>") == "Saira.Cooper@Rice.edu")
     }
@@ -41,6 +48,8 @@ struct EmailAddressFieldInputTests {
             "saira.cooper@rice.edu",
             // Whitespace a user is typing must survive.
             "saira.cooper@rice.edu ",
+            // A separator after a bare address is the user's to keep or fix.
+            "saira.cooper@rice.edu;",
             // Still being typed: no closing bracket yet.
             "Saira Cooper <saira.cooper@ri",
             "Saira Cooper",
@@ -69,7 +78,12 @@ struct EmailAddressFieldInputTests {
 
     @Test
     func severalAddressesAreLeftForTheUserToFix() {
-        let text = "Saira Cooper <saira.cooper@rice.edu>, Ann Lee <ann.lee@rice.edu>"
-        #expect(EmailAddressFieldInput.normalized(text) == text)
+        let untouched = [
+            "Saira Cooper <saira.cooper@rice.edu>, Ann Lee <ann.lee@rice.edu>",
+            "Saira Cooper <saira.cooper@rice.edu>; Ann Lee <ann.lee@rice.edu>;",
+        ]
+        for text in untouched {
+            #expect(EmailAddressFieldInput.normalized(text) == text)
+        }
     }
 }

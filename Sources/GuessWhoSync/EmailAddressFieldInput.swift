@@ -18,14 +18,19 @@ public enum EmailAddressFieldInput {
     /// display-name address — a bare address, or one still being typed — must
     /// come back untouched, whitespace included.
     ///
-    /// The match is deliberately narrow: the trimmed text must end with `>`,
+    /// The match is deliberately narrow: once surrounding whitespace and any
+    /// trailing `;` or `,` (a recipient list's separator, which some clients
+    /// copy along with the address) are dropped, the text must end with `>`,
     /// hold exactly one `<` and one `>`, and the part between them must look
     /// like an address (one `@` with text on both sides, no whitespace). A
     /// paste of several addresses (`A <a@x.com>, B <b@x.com>`) has more than
     /// one bracket pair and is left for the user to fix rather than silently
     /// cut down to one address.
     public static func normalized(_ text: String) -> String {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        var trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        while let last = trimmed.last, last == ";" || last == "," || last.isWhitespace {
+            trimmed.removeLast()
+        }
         guard trimmed.hasSuffix(">"),
               trimmed.count(where: { $0 == "<" }) == 1,
               trimmed.count(where: { $0 == ">" }) == 1,
