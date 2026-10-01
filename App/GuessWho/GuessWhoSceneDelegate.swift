@@ -131,8 +131,10 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// Route incoming wake URLs by host: `…://import-guide?url=…` (the share
     /// extension's Apple Maps guide bounce) goes to the guide importer;
     /// `…://open-contact?id=…` (the Mail compose popover's GuessWho button)
-    /// opens that contact; everything else stays on the LinkedIn handoff path,
-    /// which owns its own scheme filtering and logging.
+    /// opens that contact; `…://new-contact?email=…` (the popover's Add
+    /// Contact button) opens a pre-filled new-contact editor; everything else
+    /// stays on the LinkedIn handoff path, which owns its own scheme filtering
+    /// and logging.
     private func handleIncomingURLs(urlContexts: Set<UIOpenURLContext>, entry: String) {
         let guideContexts = urlContexts.filter { context in
             context.url.scheme == LinkedInHandoffScheme.scheme
@@ -148,7 +150,17 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         for context in contactContexts {
             handleOpenContactWake(context.url, entry: entry)
         }
-        let remaining = urlContexts.subtracting(guideContexts).subtracting(contactContexts)
+        let newContactContexts = urlContexts.filter { context in
+            context.url.scheme == LinkedInHandoffScheme.scheme
+                && context.url.host == MailNewContactLink.host
+        }
+        for context in newContactContexts {
+            handleNewContactWake(context.url, entry: entry)
+        }
+        let remaining = urlContexts
+            .subtracting(guideContexts)
+            .subtracting(contactContexts)
+            .subtracting(newContactContexts)
         if !remaining.isEmpty {
             handleLinkedInHandoff(urlContexts: remaining, entry: entry)
         }
@@ -1975,17 +1987,130 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
                 Self.lifecycleLog.notice("open-contact: contact not found")
                 return
             }
-            // Selecting the sidebar row highlights it and mounts the People
-            // list unless it is already showing.
-            self.sidebar?.select(.people)
-            (self.supplementaryNavigationController(in: split)?.viewControllers.first
-                as? ContactsListViewController)?.select(contactID: contact.contactID)
-            self.showContactDetail(contact: contact, appDelegate: appDelegate)
+            self.showContactInPeople(contact, split: split, appDelegate: appDelegate)
         } lookup: { repository in
             repository.contact(guessWhoID: guessWhoID)
         }
         #endif
     }
+
+    #if targetEnvironment(macCatalyst)
+    /// Select `contact`'s row in the People list and show its detail in the
+    /// secondary column — the same end state as clicking that row. Where the
+    /// Mail wakes land.
+    private func showContactInPeople(
+        _ contact: Contact,
+        split: UISplitViewController,
+        appDelegate: GuessWhoAppDelegate
+    ) {
+        // Selecting the sidebar row highlights it and mounts the People
+        // list unless it is already showing.
+        sidebar?.select(.people)
+        (supplementaryNavigationController(in: split)?.viewControllers.first
+            as? ContactsListViewController)?.select(contactID: contact.contactID)
+        showContactDetail(contact: contact, appDelegate: appDelegate)
+    }
+    #endif
+
+    // MARK: - Mail new-contact wake
+
+    /// Add the Mail recipient named by
+    /// `…://new-contact?email=<address>[&name=<display name>]` — the Mail
+    /// extension's compose popover sends this for a recipient its contact
+    /// cache doesn't know. Presents the standard new-contact editor
+    /// pre-filled with the name and address (`presentMailNewContact`).
+    ///
+    /// When a contact already lists the address, that contact opens instead:
+    /// the extension's cache can lag a contact created moments ago, and the
+    /// user can click Add twice. Any app can open this URL, so the parser
+    /// treats its values as untrusted; they only pre-fill an editor the user
+    /// must save. The Mail extension is Catalyst-only, so other platforms
+    /// ignore the wake.
+    private func handleNewContactWake(_ url: URL, entry: String) {
+        Self.lifecycleLog.notice("mail-new-contact wake received", ["entry": entry])
+        #if targetEnvironment(macCatalyst)
+        guard let request = MailNewContactLink.request(from: url, scheme: LinkedInHandoffScheme.scheme) else {
+            Self.lifecycleLog.error("mail-new-contact wake carried no usable email address")
+            return
+        }
+        guard let appDelegate = UIApplication.shared.delegate as? GuessWhoAppDelegate else { return }
+        Task { @MainActor [weak self] in
+            let repository = appDelegate.contactsRepository
+            // The duplicate check below needs the contacts cache; at cold
+            // launch it is still loading.
+            await repository.waitUntilInitialLoadCompletes()
+            guard let self else { return }
+            if let existingID = repository.contactIDs(matchingEmail: request.email).first,
+               let existing = repository.contact(id: existingID) {
+                guard let split = self.split else {
+                    Self.lifecycleLog.error("mail-new-contact: no split view — existing contact not shown")
+                    return
+                }
+                Self.lifecycleLog.notice("mail-new-contact: address already on a contact — opening it")
+                self.showContactInPeople(existing, split: split, appDelegate: appDelegate)
+                return
+            }
+            self.presentMailNewContact(request, appDelegate: appDelegate)
+        }
+        #endif
+    }
+
+    #if targetEnvironment(macCatalyst)
+    /// The standard new-contact editor (`ContactEditView`), pre-filled with a
+    /// Mail recipient's name and address, as a sheet over whatever is on
+    /// screen — the same shape as the LinkedIn import's no-match form. Save
+    /// creates a brand-new contact and, once the sheet is gone, selects it in
+    /// the People list with its detail showing; Cancel creates nothing.
+    private func presentMailNewContact(_ request: MailNewContactLink.Request, appDelegate: GuessWhoAppDelegate) {
+        let repo = appDelegate.contactsRepository
+        let seed = Contact.newPersonSeed(name: request.name, email: request.email)
+        // Carries the new identity from the save to `onDone`, which run at
+        // different moments (the save itself, then the dismissal).
+        let created = CreatedContactIDBox()
+
+        let editor = ContactEditView(
+            newContactSeed: seed,
+            save: { edited in
+                // Throwing leaves the sheet open behind the editor's own
+                // "Couldn't save" alert, with the user's work intact — the
+                // right reading, since nothing was created.
+                let contact = try await repo.createContact(edited)
+                Self.lifecycleLog.notice("mail-new-contact: created")
+                created.id = contact.contactID
+            },
+            onDone: { [weak self] in
+                // The editor dismisses itself on the statement right after
+                // `onDone`, so hop off this turn: the detail column changes
+                // once the dismissal has started.
+                Task { @MainActor in
+                    guard let self, let split = self.split,
+                          let contactID = created.id, let contact = repo.contact(id: contactID)
+                    else {
+                        Self.lifecycleLog.error("mail-new-contact: created contact not shown")
+                        return
+                    }
+                    self.showContactInPeople(contact, split: split, appDelegate: appDelegate)
+                }
+            }
+        )
+        .environment(appDelegate.service)
+        // The editor's Company / Department / Related rows read their
+        // autocomplete candidates from the repository.
+        .environment(appDelegate.contactsRepository)
+
+        presentHandoffSheet(
+            editor,
+            // The editor's Catalyst ideal frame.
+            size: CGSize(width: 560, height: 720),
+            phase: "mail-new-contact",
+            what: "pre-filled editor",
+            // The editor owns its exits (Cancel confirms a discard, Save
+            // writes the contact), so a swipe-down / Escape must not bypass
+            // them.
+            isModal: true
+        )
+    }
+    #endif
 
     // MARK: - Apple Maps guide import wake
 
@@ -3186,10 +3311,10 @@ extension GuessWhoSceneDelegate: UINavigationControllerDelegate {
     }
 }
 
-/// One-slot box carrying the identity of the contact the LinkedIn new-contact
-/// editor just created, from its save closure to its `onDone` — the two run at
-/// different moments (the save itself, then the dismissal), so the value can't
-/// simply be returned.
+/// One-slot box carrying the identity of the contact a pre-filled new-contact
+/// editor (LinkedIn import, Mail recipient) just created, from its save
+/// closure to its `onDone` — the two run at different moments (the save
+/// itself, then the dismissal), so the value can't simply be returned.
 @MainActor
 private final class CreatedContactIDBox {
     var id: ContactID?
