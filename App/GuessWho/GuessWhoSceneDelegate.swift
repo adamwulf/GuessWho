@@ -2060,8 +2060,9 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// The standard new-contact editor (`ContactEditView`), pre-filled with a
     /// Mail recipient's name and address, as a sheet over whatever is on
     /// screen — the same shape as the LinkedIn import's no-match form. Save
-    /// creates a brand-new contact and, once the sheet is gone, selects it in
-    /// the People list with its detail showing; Cancel creates nothing.
+    /// creates a brand-new contact and, once the sheet's dismissal has
+    /// started, selects it in the People list with its detail showing; Cancel
+    /// creates nothing.
     private func presentMailNewContact(_ request: MailNewContactLink.Request, appDelegate: GuessWhoAppDelegate) {
         let repo = appDelegate.contactsRepository
         let seed = Contact.newPersonSeed(name: request.name, email: request.email)
@@ -2450,19 +2451,26 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         )
     }
 
-    /// Hosts one of the LinkedIn handoff's SwiftUI dialogs — the matched-contact
-    /// confirm sheet or the no-match new-contact form — as a form sheet over
-    /// whatever is on screen, and logs whether it actually got shown.
+    /// Hosts a wake's SwiftUI dialog as a form sheet over whatever is on
+    /// screen, and logs whether it actually got shown. The callers: the
+    /// LinkedIn handoff's matched-contact confirm sheet (`"diff"`), its
+    /// no-match new-contact form (`"new-contact"`), and its TLS roster review
+    /// (`"tls-batch"`); and the Mail Add Contact wake's pre-filled editor
+    /// (`"mail-new-contact"`).
     ///
     /// Presents from the topmost VC. With no presenter (window not yet key, or a
     /// teardown race) the sheet would silently never appear — log that instead.
     /// The presenter resolves BEFORE the "presenting" line so a failure reads as
     /// a clean "NO presenter available", not "presenting" followed by a
-    /// contradiction.
+    /// contradiction. Both lines go to the handoff logger
+    /// (`app.linkedin-handoff`) for every caller, so for the Mail flow they
+    /// sit apart from its other lines, which go to the lifecycle logger
+    /// (`app.lifecycle.scene`).
     ///
     /// - Parameters:
-    ///   - phase: the handoff-timeline tag the surrounding lines already use
-    ///     (`"diff"`, `"new-contact"`), so one grep still walks the whole import.
+    ///   - phase: the timeline tag the caller's surrounding lines already use
+    ///     (`"diff"`, `"new-contact"`, `"tls-batch"`, `"mail-new-contact"`), so
+    ///     one grep still walks the whole flow.
     ///   - isModal: pass `true` for a dialog that owns its own exits (the
     ///     editor's Cancel runs a discard confirmation), so a swipe-down /
     ///     Escape can't bypass them. The confirm sheet holds nothing but

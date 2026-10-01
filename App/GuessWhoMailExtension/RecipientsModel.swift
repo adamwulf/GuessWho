@@ -16,7 +16,8 @@ final class RecipientsModel {
     enum Status: Equatable {
         case ready
         /// The cache couldn't be read, hasn't been published yet, or is in a
-        /// newer format; every row shows only its address.
+        /// newer format; every row shows only the name Mail gave (if any) and
+        /// the address, with no Add Contact button.
         case contactsUnavailable
     }
 

@@ -211,7 +211,8 @@ outcome — contents or decode failure — for one on-disk version of the file
 once; plain I/O errors are retried on the next read.
 
 With a `.newerFormat` cache, the extension still journals known senders but
-flags nothing, and the compose popover shows addresses only.
+flags nothing, and the compose popover shows each recipient as only the name
+Mail gave (if any) and the address, with no **Add Contact** button.
 
 **Publisher bounds.** The app projection accepts at most 256 KiB of thumbnail data from one contact and at most 8 MiB across the snapshot, charging repeated bytes once per normalized address because the plist stores one summary per address key. Contacts remain in the cache when their thumbnail is omitted. These limits keep compose lookup bounded without changing sender recognition or highlight reasons.
 
@@ -366,6 +367,7 @@ Automated tests cover the shared formats, the wake URLs, display-name reading, t
 - A recipient who isn't a contact shows the name Mail gave and the address (or the address and **No contact details** when Mail gives no name), with an **Add Contact** button and no chevron; the row stays the normal height. Note whether Mail gives a display name at all, and update *Display names from Mail* with the answer.
 - Clicking **Add Contact** brings GuessWho forward with the new-contact editor filled in with that name (split into its parts) and address. **Save** closes the editor and shows the new contact selected in People with its detail open; **Cancel** adds nothing. After the app republishes the cache, reopening the popover shows that recipient as a known contact.
 - Clicking **Add Contact** for an address that already belongs to a contact (for example, clicking it again after saving, before the cache republishes) opens that contact instead of the editor.
+- With GuessWho quit, clicking **Add Contact** launches it (the URL arrives in `scene(_:willConnectTo:)`), and the editor still appears filled in with the name and address once contacts load. With GuessWho quit, clicking **Add Contact** for an address that already belongs to a contact launches it and opens that contact.
 - While the popover says "Contact details aren't available right now.", no row has an **Add Contact** button.
 - Opening a generated message link may or may not select the message — both are acceptable.
 - The Mail extension log shows no unexpected errors and never includes addresses or subjects.
