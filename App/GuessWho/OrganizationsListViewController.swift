@@ -152,6 +152,7 @@ final class OrganizationsListViewController: UIViewController {
         tableView.estimatedRowHeight = 44
         tableView.sectionIndexBackgroundColor = .clear
         tableView.register(OrganizationCell.self, forCellReuseIdentifier: CellID.organization.rawValue)
+        keepSafeAreaOutOfListRowMargins()
         view.addSubview(tableView)
         NSLayoutConstraint.activate([
             tableView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),

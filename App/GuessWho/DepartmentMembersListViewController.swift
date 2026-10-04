@@ -348,6 +348,7 @@ final class DepartmentMembersListViewController: UIViewController {
         tableView.estimatedRowHeight = 56
         tableView.sectionIndexBackgroundColor = .clear
         tableView.register(ContactCell.self, forCellReuseIdentifier: CellID.contact.rawValue)
+        keepSafeAreaOutOfListRowMargins()
         view.addSubview(tableView)
         NSLayoutConstraint.activate([
             tableView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
