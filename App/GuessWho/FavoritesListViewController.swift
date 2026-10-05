@@ -141,6 +141,7 @@ final class FavoritesListViewController: UIViewController {
         tableView.rowHeight = UITableView.automaticDimension
         tableView.estimatedRowHeight = 56
         tableView.register(FavoriteCell.self, forCellReuseIdentifier: CellID.favorite.rawValue)
+        keepSafeAreaOutOfListRowMargins()
         view.addSubview(tableView)
         NSLayoutConstraint.activate([
             tableView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),

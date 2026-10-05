@@ -162,6 +162,7 @@ final class GuidePlacesListViewController: UIViewController {
         tableView.rowHeight = UITableView.automaticDimension
         tableView.estimatedRowHeight = 56
         tableView.register(PlaceCell.self, forCellReuseIdentifier: CellID.place.rawValue)
+        keepSafeAreaOutOfListRowMargins()
         view.addSubview(tableView)
         NSLayoutConstraint.activate([
             tableView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),

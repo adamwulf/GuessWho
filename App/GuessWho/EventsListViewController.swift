@@ -167,6 +167,7 @@ final class EventsListViewController: UIViewController {
         tableView.estimatedRowHeight = 56
         tableView.register(EventCell.self, forCellReuseIdentifier: CellID.event.rawValue)
         tableView.register(UITableViewCell.self, forCellReuseIdentifier: CellID.pager.rawValue)
+        keepSafeAreaOutOfListRowMargins()
         view.addSubview(tableView)
         NSLayoutConstraint.activate([
             tableView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
