@@ -132,7 +132,10 @@ struct ContactsRepositoryCreateContactTests {
             sidecars: InMemorySidecarStore(),
             deviceID: "device-test"
         )
-        let repo = ContactsRepository(contacts: store, sync: sync)
+        // A private center keeps a parallel suite's sidecar-watcher posts on
+        // `.default` from scheduling a projection refresh over the cache.
+        let repo = ContactsRepository(
+            contacts: store, sync: sync, notificationCenter: NotificationCenter())
         await repo.reload()
 
         let created = try await repo.createContact(Contact(givenName: "Zoe"))
