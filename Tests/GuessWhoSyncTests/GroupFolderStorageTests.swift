@@ -436,7 +436,8 @@ struct GroupFolderStorageTests {
                 #expect(throws: GroupHierarchyError.recordUnavailable(key)) {
                     try sync.setGroupFolderParent(id: folder.id, parentFolderID: nil)
                 }
-                #expect(try SidecarEnvelopeCodec.encode(#require(store.read(key))) == SidecarEnvelopeCodec.encode(unknown))
+                let stored = try #require(try store.read(key))
+                #expect(try SidecarEnvelopeCodec.encode(stored) == SidecarEnvelopeCodec.encode(unknown))
             }
         }
     }
@@ -461,7 +462,8 @@ struct GroupFolderStorageTests {
         #expect(throws: GroupHierarchyError.recordUnavailable(key)) {
             try sync.setGroupPlacement(identityID: identity.id, parentFolderID: nil)
         }
-        #expect(try SidecarEnvelopeCodec.encode(#require(store.read(key))) == SidecarEnvelopeCodec.encode(SidecarEnvelope(entityID: original.entityID, fields: fields)))
+        let stored = try #require(try store.read(key))
+        #expect(try SidecarEnvelopeCodec.encode(stored) == SidecarEnvelopeCodec.encode(SidecarEnvelope(entityID: original.entityID, fields: fields)))
     }
 
     /// Raw envelope bytes whose `fields` hold one good name cell and one cell

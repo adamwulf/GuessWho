@@ -99,7 +99,7 @@ struct ContactsRepositoryCreateContactTests {
     }
 
     @Test @MainActor
-    func create_stampsCreatedAndModifiedAtTheSameTime() async throws {
+    func create_stampsCreatedModifiedAndViewedAtTheSameTime() async throws {
         let before = Date()
         let (repo, _, sync) = await makeRepo()
         let created = try await repo.createContact(Contact(givenName: "Ada"))
@@ -112,6 +112,38 @@ struct ContactsRepositoryCreateContactTests {
         #expect(createdAt.timeIntervalSince(before) >= -0.01)
         #expect(createdAt.timeIntervalSince(after) <= 0.01)
         #expect(timestamps.lastModified == createdAt)
+        #expect(timestamps.lastViewed == createdAt)
+    }
+
+    @Test @MainActor
+    func create_refreshesTimestampCache_soTimeSortsSeeIt() async throws {
+        // A never-stamped 'Amy' would win the alphabetical tie-break. The new
+        // 'Zoe' must lead both time sorts WITHOUT a reload, proving the
+        // creation write upserted the in-memory cache, not just the disk.
+        let existing = Contact(
+            localID: "existing",
+            givenName: "Amy",
+            urlAddresses: [LabeledValue(label: "g", value: "\(SidecarKey.guessWhoContactURLPrefix)30000000-0000-0000-0000-000000000001")]
+        )
+        let store = InMemoryContactStore(contacts: [existing])
+        let sync = GuessWhoSync(
+            contacts: store,
+            events: InMemoryEventStore(),
+            sidecars: InMemorySidecarStore(),
+            deviceID: "device-test"
+        )
+        // A private center keeps a parallel suite's sidecar-watcher posts on
+        // `.default` from scheduling a projection refresh over the cache.
+        let repo = ContactsRepository(
+            contacts: store, sync: sync, notificationCenter: NotificationCenter())
+        await repo.reload()
+
+        let created = try await repo.createContact(Contact(givenName: "Zoe"))
+
+        repo.sortOrder = .lastViewed
+        #expect(repo.people.map(\.localID) == [created.localID, "existing"])
+        repo.sortOrder = .lastModified
+        #expect(repo.people.map(\.localID) == [created.localID, "existing"])
     }
 
     @Test @MainActor
@@ -170,6 +202,7 @@ struct ContactsRepositoryCreateContactTests {
         // Sidecar dates round-trip through their ISO-8601 wire precision.
         #expect(abs(try #require(timestamps.createdAt).timeIntervalSince(pending.createdAt)) < 0.01)
         #expect(abs(try #require(timestamps.lastModified).timeIntervalSince(pending.createdAt)) < 0.01)
+        #expect(abs(try #require(timestamps.lastViewed).timeIntervalSince(pending.createdAt)) < 0.01)
         #expect(secondJournal.pendingRepairs().isEmpty)
     }
 }
