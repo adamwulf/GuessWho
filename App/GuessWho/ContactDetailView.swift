@@ -645,6 +645,9 @@ struct ContactDetailView: View {
         #if targetEnvironment(macCatalyst)
         list
             .listStyle(.inset)
+            // `.inset` pins section headers, and a pinned header can leave the
+            // top scroll-edge blur over most of the pane (see TitledSection).
+            .environment(\.sectionTitlesAsRows, true)
             .environment(\.editMode, $editMode)
             .modifier(EditFieldAlert(
                 field: $editingField, draft: $fieldDraft,
@@ -713,7 +716,7 @@ struct ContactDetailView: View {
     @ViewBuilder
     private var editableNotesSection: some View {
         let notes = noteItems
-        Section {
+        TitledSection("Dated Notes") {
             ForEach(notes, id: \.id) { note in
                 noteRow(note)
                     // Delete-only rows in the active edit-mode list: apply the
@@ -739,8 +742,6 @@ struct ContactDetailView: View {
             }
             .disabled(notesStore == nil || showingNewNoteEditor)
             .centeredRowContent()
-        } header: {
-            Text("Dated Notes").centeredSectionHeader()
         }
     }
 
@@ -752,7 +753,7 @@ struct ContactDetailView: View {
     private var editableSidecarFieldsSection: some View {
         let fields = fieldsStore?.fields ?? []
         if !fields.isEmpty {
-            Section {
+            TitledSection("Custom Fields") {
                 ForEach(fields, id: \.id) { field in
                     EditableSidecarFieldRow(
                         name: field.field,
@@ -772,8 +773,6 @@ struct ContactDetailView: View {
                         Task { await fieldsStore?.deleteField(fieldID) }
                     }
                 }
-            } header: {
-                Text("Custom Fields").centeredSectionHeader()
             }
         }
     }
@@ -1426,7 +1425,7 @@ struct ContactDetailView: View {
     private func contactNotesSection(_ contact: Contact) -> some View {
         let note = contact.note.trimmingCharacters(in: .whitespacesAndNewlines)
         if !note.isEmpty {
-            Section {
+            TitledSection("Contact Notes") {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("note")
                         .font(.caption)
@@ -1436,8 +1435,6 @@ struct ContactDetailView: View {
                         .textSelection(.enabled)
                 }
                 .centeredRowContent()
-            } header: {
-                Text("Contact Notes").centeredSectionHeader()
             }
         }
     }
@@ -1602,13 +1599,11 @@ struct ContactDetailView: View {
     @ViewBuilder
     private var recentEventsSection: some View {
         if !recentEvents.isEmpty {
-            Section {
+            TitledSection("Recent Events") {
                 ForEach(recentEvents, id: \.id) { event in
                     recentEventRow(event)
                         .centeredRowContent()
                 }
-            } header: {
-                Text("Recent Events").centeredSectionHeader()
             }
         }
     }
@@ -1643,13 +1638,11 @@ struct ContactDetailView: View {
     @ViewBuilder
     private var recentMailSection: some View {
         if !mailActivities.isEmpty {
-            Section {
+            TitledSection("Recent Email") {
                 ForEach(mailActivities.prefix(10)) { activity in
                     mailActivityRow(activity)
                         .centeredRowContent()
                 }
-            } header: {
-                Text("Recent Email").centeredSectionHeader()
             }
         }
     }
@@ -1713,13 +1706,11 @@ struct ContactDetailView: View {
                     contactID: entry.contact.contactID
                 )
             }
-            Section {
+            TitledSection("Referenced By") {
                 ForEach(rows) { row in
                     InfoRow(data: row)
                         .centeredRowContent()
                 }
-            } header: {
-                Text("Referenced By").centeredSectionHeader()
             }
         }
     }
@@ -1756,15 +1747,13 @@ struct ContactDetailView: View {
     private func associatedOrganizationSection(_ contact: Contact) -> some View {
         if let organization = associatedOrganization(of: contact) {
             let department = contact.departmentName.trimmingCharacters(in: .whitespacesAndNewlines)
-            Section {
+            TitledSection("Associated Organization") {
                 associatedOrganizationRow(organization)
                     .centeredRowContent()
                 if !department.isEmpty {
                     departmentRow(department, organization: organization)
                         .centeredRowContent()
                 }
-            } header: {
-                Text("Associated Organization").centeredSectionHeader()
             }
         } else if let phantomName = phantomOrganizationName(of: contact) {
             // The person names a company that has no record of its own yet — a
@@ -1772,11 +1761,9 @@ struct ContactDetailView: View {
             // organization gets, tapping through to the read-only phantom page.
             // (No department drill-down here: that destination is keyed on a
             // real organization's ContactID, which a phantom lacks.)
-            Section {
+            TitledSection("Associated Organization") {
                 phantomOrganizationRow(phantomName)
                     .centeredRowContent()
-            } header: {
-                Text("Associated Organization").centeredSectionHeader()
             }
         }
     }
@@ -1830,13 +1817,11 @@ struct ContactDetailView: View {
         if contact.contactType == .organization {
             let people = repository.contactsAssociated(with: contact)
             if !people.isEmpty {
-                Section {
+                TitledSection("Associated Contacts") {
                     ForEach(people, id: \.contactID) { person in
                         associatedContactRow(person)
                             .centeredRowContent()
                     }
-                } header: {
-                    Text("Associated Contacts").centeredSectionHeader()
                 }
             }
         }
@@ -1877,13 +1862,11 @@ struct ContactDetailView: View {
         if contact.contactType == .organization {
             let departments = repository.departments(in: contact)
             if !departments.isEmpty {
-                Section {
+                TitledSection("Departments") {
                     ForEach(departments, id: \.self) { department in
                         departmentRow(department, organization: contact)
                             .centeredRowContent()
                     }
-                } header: {
-                    Text("Departments").centeredSectionHeader()
                 }
             }
         }
@@ -1947,13 +1930,11 @@ struct ContactDetailView: View {
     @ViewBuilder
     private func groupsSection(_ contact: Contact) -> some View {
         if !memberGroups.isEmpty {
-            Section {
+            TitledSection("Groups") {
                 ForEach(memberGroups, id: \.localID) { group in
                     groupRow(group)
                         .centeredRowContent()
                 }
-            } header: {
-                Text("Groups").centeredSectionHeader()
             }
         }
     }
@@ -2108,13 +2089,11 @@ struct ContactDetailView: View {
     @ViewBuilder
     private func debugSection(_ contact: Contact) -> some View {
         let rows = debugRows(for: contact)
-        Section {
+        TitledSection("Debug") {
             ForEach(rows) { row in
                 InfoRow(data: row)
                     .centeredRowContent()
             }
-        } header: {
-            Text("Debug").centeredSectionHeader()
         }
     }
 
@@ -2155,7 +2134,7 @@ struct ContactDetailView: View {
     private var notesSection: some View {
         let notes = noteItems
         if !notes.isEmpty || showingNewNoteEditor {
-            Section {
+            TitledSection("Dated Notes") {
                 ForEach(notes, id: \.id) { note in
                     noteRow(note)
                         .centeredRowContent()
@@ -2167,8 +2146,6 @@ struct ContactDetailView: View {
                 if showingNewNoteEditor {
                     newNoteEditorRows
                 }
-            } header: {
-                Text("Dated Notes").centeredSectionHeader()
             }
         }
     }
@@ -2210,15 +2187,13 @@ struct ContactDetailView: View {
         @ViewBuilder row: @escaping (ContactLink) -> some View
     ) -> some View {
         if !links.isEmpty {
-            Section {
+            TitledSection(title) {
                 ForEach(links, id: \.id) { link in
                     row(link).centeredRowContent()
                 }
                 .onDelete { offsets in
                     for i in offsets { delete(links[i].id) }
                 }
-            } header: {
-                Text(title).centeredSectionHeader()
             }
         }
     }

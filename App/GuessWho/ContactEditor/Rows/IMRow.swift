@@ -4,7 +4,7 @@ import GuessWhoSync
 struct IMRow: View {
     @Binding var model: ContactEditModel
     var body: some View {
-        Section {
+        TitledSection("Instant Message") {
             ForEach(model.edited.instantMessageAddresses.indices, id: \.self) { idx in
                 VStack(alignment: .leading) {
                     // Picker drives InstantMessageAddress.service (the
@@ -42,8 +42,6 @@ struct IMRow: View {
                 Label("Add IM", systemImage: "plus.circle.fill")
             }
             .centeredRowContent()
-        } header: {
-            Text("Instant Message").centeredSectionHeader()
         }
     }
 

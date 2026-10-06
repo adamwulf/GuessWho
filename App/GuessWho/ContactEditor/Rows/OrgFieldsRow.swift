@@ -14,7 +14,7 @@ struct OrgFieldsRow: View {
     }
 
     var body: some View {
-        Section {
+        TitledSection("Organization") {
             // Return moves to the next field through the autocomplete's
             // `onSubmit`, not `.onSubmit`: the modifier takes Return first so
             // a highlighted suggestion is accepted instead.
@@ -52,8 +52,6 @@ struct OrgFieldsRow: View {
             ))
             .onChange(of: model.edited.contactType) { _, _ in model.isDirty = true }
             .centeredRowContent()
-        } header: {
-            Text("Organization").centeredSectionHeader()
         } footer: {
             Text("Organizations appear in their own list, separate from People.")
                 .centeredSectionFooter()

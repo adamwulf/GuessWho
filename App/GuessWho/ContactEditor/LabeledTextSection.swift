@@ -16,7 +16,7 @@ struct LabeledTextSection: View {
     var normalizeValue: (String) -> String = { $0 }
 
     var body: some View {
-        Section {
+        TitledSection(title) {
             ForEach(items.indices, id: \.self) { idx in
                 HStack {
                     LabelPicker(
@@ -45,8 +45,6 @@ struct LabeledTextSection: View {
                 Label("Add \(title)", systemImage: "plus.circle.fill")
             }
             .centeredRowContent()
-        } header: {
-            Text(title).centeredSectionHeader()
         }
     }
 }

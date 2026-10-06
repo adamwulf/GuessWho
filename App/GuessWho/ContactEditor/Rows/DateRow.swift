@@ -5,7 +5,7 @@ struct DateRow: View {
     @Binding var model: ContactEditModel
 
     var body: some View {
-        Section {
+        TitledSection("Dates") {
             ForEach(model.edited.dates.indices, id: \.self) { idx in
                 DateRowEntry(
                     entry: Binding(
@@ -37,8 +37,6 @@ struct DateRow: View {
                 Label("Add Date", systemImage: "plus.circle.fill")
             }
             .centeredRowContent()
-        } header: {
-            Text("Dates").centeredSectionHeader()
         }
     }
 }
