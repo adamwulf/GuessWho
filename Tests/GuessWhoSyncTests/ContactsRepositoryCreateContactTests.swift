@@ -99,7 +99,7 @@ struct ContactsRepositoryCreateContactTests {
     }
 
     @Test @MainActor
-    func create_stampsCreatedAndModifiedAtTheSameTime() async throws {
+    func create_stampsCreatedModifiedAndViewedAtTheSameTime() async throws {
         let before = Date()
         let (repo, _, sync) = await makeRepo()
         let created = try await repo.createContact(Contact(givenName: "Ada"))
@@ -112,6 +112,7 @@ struct ContactsRepositoryCreateContactTests {
         #expect(createdAt.timeIntervalSince(before) >= -0.01)
         #expect(createdAt.timeIntervalSince(after) <= 0.01)
         #expect(timestamps.lastModified == createdAt)
+        #expect(timestamps.lastViewed == createdAt)
     }
 
     @Test @MainActor
@@ -170,6 +171,7 @@ struct ContactsRepositoryCreateContactTests {
         // Sidecar dates round-trip through their ISO-8601 wire precision.
         #expect(abs(try #require(timestamps.createdAt).timeIntervalSince(pending.createdAt)) < 0.01)
         #expect(abs(try #require(timestamps.lastModified).timeIntervalSince(pending.createdAt)) < 0.01)
+        #expect(abs(try #require(timestamps.lastViewed).timeIntervalSince(pending.createdAt)) < 0.01)
         #expect(secondJournal.pendingRepairs().isEmpty)
     }
 }

@@ -125,6 +125,40 @@ final class ContactStoreWriteTests: XCTestCase {
         XCTAssertEqual(count, 1, "a retried create must not duplicate the contact")
     }
 
+    /// A CLI create rides the production repository create, so the new card
+    /// is stamped modified AND viewed at its creation instant — the same
+    /// timestamps the app's own add flows leave.
+    @MainActor
+    func testCLICreateStampsModifiedAndViewedAtCreation() async throws {
+        let fixture = try await MCPProductionFixture.make()
+        defer { fixture.cleanUp() }
+        fixture.gates.cliAccess = .readWrite
+        var fields = WireContactFields()
+        fields.givenName = "Nova"
+        fields.familyName = "Chen"
+
+        let before = Date()
+        let response = await fixture.dispatcher.handle(.contactsCreate(
+            helperId: RequestOrigin.cli.makeHelperId(), messageId: TestMessageID.next(),
+            kind: nil, fields: fields, idempotencyToken: nil))
+        let after = Date()
+        guard case .contact = response else {
+            return XCTFail("expected the created card, got \(String(describing: response))")
+        }
+
+        let createdRecords = await fixture.store.createdRecords
+        let localID = try XCTUnwrap(createdRecords.last?.localID)
+        let guessWhoID = try XCTUnwrap(fixture.guessWhoID(forLocalID: localID))
+        let timestamps = try fixture.sync.contactTimestamps(
+            at: SidecarKey(kind: .contact, id: guessWhoID))
+        let createdAt = try XCTUnwrap(timestamps.createdAt)
+        // Sidecar dates round-trip through their ISO-8601 wire precision.
+        XCTAssertGreaterThanOrEqual(createdAt.timeIntervalSince(before), -0.01)
+        XCTAssertLessThanOrEqual(createdAt.timeIntervalSince(after), 0.01)
+        XCTAssertEqual(timestamps.lastModified, createdAt)
+        XCTAssertEqual(timestamps.lastViewed, createdAt)
+    }
+
     // MARK: - Update (patch semantics + pass-through protections)
 
     func testUpdatePatchesOnlyProvidedFieldsAndCarriesNoteAndIdentityThrough() async {

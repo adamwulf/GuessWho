@@ -1435,10 +1435,13 @@ public final class ContactsRepository: NSObject {
     /// ignored — the store issues one) and pulls it into the repository cache.
     /// Returns the cached contact, whose `contactID` addresses the new record
     /// for follow-up work: opening the detail view, applying LinkedIn extras.
-    /// The single package entry point behind both the app's "+" (blank seed)
-    /// and the LinkedIn no-match import (profile-filled seed). After the
-    /// Contacts write succeeds, it records `createdAt` and `lastModified` in
-    /// the sidecar. That timestamp write also mints the GuessWho identity.
+    /// The single package entry point behind every create: the app's "+"
+    /// (blank seed), the LinkedIn and Mail new-contact editors
+    /// (pre-filled seed), and the CLI/MCP `contacts_create`. After the
+    /// Contacts write succeeds, it records `createdAt`, `lastModified`, and
+    /// `lastViewed` in the sidecar, so a new contact reads as just added,
+    /// edited, and seen whichever surface created it. That timestamp write
+    /// also mints the GuessWho identity.
     public func createContact(_ seed: Contact) async throws -> Contact {
         Self.saveLog.notice("contact save requested", metadata: ["op": "createContact"])
         let created = try await contactsStore.create(seed)
@@ -3358,8 +3361,9 @@ public final class ContactsRepository: NSObject {
         try await stampTimestamps([.viewed, .interacted], for: id)
     }
 
-    /// Persists the two timestamps intrinsic to creating a record in one
-    /// sidecar write. Contacts has no creation-date API, so `createdAt` is only
+    /// Persists the timestamps intrinsic to creating a record (`createdAt`,
+    /// `lastModified`, `lastViewed`) in one sidecar write at one instant.
+    /// Contacts has no creation-date API, so `createdAt` is only
     /// known for contacts Guess Who creates. Best-effort by design: once the
     /// Contacts record exists, a timestamp failure must not make the caller
     /// retry creation and produce a duplicate card. The captured instant is
@@ -3376,9 +3380,9 @@ public final class ContactsRepository: NSObject {
         do {
             let guessWhoID = try await resolveOrMintGuessWhoID(for: id)
             let key = SidecarKey(kind: .contact, id: guessWhoID)
-            try sync.stampContactTimestamps([.created, .modified], at: key, now: createdAt)
-            updateTimestampCache(.created, at: key, to: createdAt)
-            updateTimestampCache(.modified, at: key, to: createdAt)
+            let kinds: [ContactTimestampKind] = [.created, .modified, .viewed]
+            try sync.stampContactTimestamps(kinds, at: key, now: createdAt)
+            for kind in kinds { updateTimestampCache(kind, at: key, to: createdAt) }
             await refreshCacheIfMinted(minted, localID: id.localID)
             if !minted {
                 postDidReload(contactDataChanged: false, mailContactProjectionChanged: false)
