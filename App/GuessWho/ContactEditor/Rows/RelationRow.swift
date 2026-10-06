@@ -9,7 +9,7 @@ struct RelationRow: View {
     @Environment(ContactsRepository.self) private var repository: ContactsRepository?
 
     var body: some View {
-        Section {
+        TitledSection("Related") {
             ForEach(model.edited.contactRelations.indices, id: \.self) { idx in
                 let name = Binding<String>(
                     get: { model.edited.contactRelations[idx].value.name },
@@ -67,8 +67,6 @@ struct RelationRow: View {
                 Label("Add Related", systemImage: "plus.circle.fill")
             }
             .centeredRowContent()
-        } header: {
-            Text("Related").centeredSectionHeader()
         }
     }
 }

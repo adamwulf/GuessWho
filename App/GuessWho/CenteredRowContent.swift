@@ -81,7 +81,8 @@ extension View {
     /// section headers in its own chrome, outside the row body, so
     /// `centeredRowContent()` on the rows doesn't reach them; without this the
     /// header would hug the pane's left edge on Catalyst. Off Catalyst only the
-    /// top padding applies (no width clamp there).
+    /// top padding applies (no width clamp there). `TitledSection` applies this
+    /// to its title, whether the title is drawn as the header or as a row.
     @ViewBuilder
     func centeredSectionHeader() -> some View {
         let withTopMargin = self.padding(.top, ContactDetailLayout.sectionHeaderTopPadding)

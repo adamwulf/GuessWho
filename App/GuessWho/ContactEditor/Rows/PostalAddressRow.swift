@@ -4,7 +4,7 @@ import GuessWhoSync
 struct PostalAddressRow: View {
     @Binding var model: ContactEditModel
     var body: some View {
-        Section {
+        TitledSection("Address") {
             ForEach(model.edited.postalAddresses.indices, id: \.self) { idx in
                 PostalAddressEditor(
                     entry: Binding(
@@ -37,8 +37,6 @@ struct PostalAddressRow: View {
                 Label("Add Address", systemImage: "plus.circle.fill")
             }
             .centeredRowContent()
-        } header: {
-            Text("Address").centeredSectionHeader()
         }
     }
 }

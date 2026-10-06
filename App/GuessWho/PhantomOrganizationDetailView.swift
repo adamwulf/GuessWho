@@ -84,31 +84,31 @@ struct PhantomOrganizationDetailView: View {
             }
 
             if !people.isEmpty {
-                Section {
+                TitledSection("Associated Contacts") {
                     ForEach(people, id: \.contactID) { person in
                         personRow(person)
                             .centeredRowContent()
                     }
-                } header: {
-                    Text("Associated Contacts").centeredSectionHeader()
                 }
             }
 
             if !departments.isEmpty {
-                Section {
+                TitledSection("Departments") {
                     ForEach(departments, id: \.self) { department in
                         phantomDepartmentRow(department, organizationName: name)
                             .centeredRowContent()
                     }
-                } header: {
-                    Text("Departments").centeredSectionHeader()
                 }
             }
         }
         .navigationTitle(name)
 
         #if targetEnvironment(macCatalyst)
-        list.listStyle(.inset)
+        list
+            .listStyle(.inset)
+            // `.inset` pins section headers, and a pinned header can leave the
+            // top scroll-edge blur over most of the pane (see TitledSection).
+            .environment(\.sectionTitlesAsRows, true)
         #else
         list.listStyle(.insetGrouped)
         #endif
