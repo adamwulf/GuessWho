@@ -116,6 +116,34 @@ struct ContactsRepositoryCreateContactTests {
     }
 
     @Test @MainActor
+    func create_refreshesTimestampCache_soTimeSortsSeeIt() async throws {
+        // A never-stamped 'Amy' would win the alphabetical tie-break. The new
+        // 'Zoe' must lead both time sorts WITHOUT a reload, proving the
+        // creation write upserted the in-memory cache, not just the disk.
+        let existing = Contact(
+            localID: "existing",
+            givenName: "Amy",
+            urlAddresses: [LabeledValue(label: "g", value: "\(SidecarKey.guessWhoContactURLPrefix)30000000-0000-0000-0000-000000000001")]
+        )
+        let store = InMemoryContactStore(contacts: [existing])
+        let sync = GuessWhoSync(
+            contacts: store,
+            events: InMemoryEventStore(),
+            sidecars: InMemorySidecarStore(),
+            deviceID: "device-test"
+        )
+        let repo = ContactsRepository(contacts: store, sync: sync)
+        await repo.reload()
+
+        let created = try await repo.createContact(Contact(givenName: "Zoe"))
+
+        repo.sortOrder = .lastViewed
+        #expect(repo.people.map(\.localID) == [created.localID, "existing"])
+        repo.sortOrder = .lastModified
+        #expect(repo.people.map(\.localID) == [created.localID, "existing"])
+    }
+
+    @Test @MainActor
     func failedTimestampWriteIsDurablyRetriedWithOriginalCreationInstant() async throws {
         let defaultsName = "ContactsRepositoryCreateContactTests.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: defaultsName))

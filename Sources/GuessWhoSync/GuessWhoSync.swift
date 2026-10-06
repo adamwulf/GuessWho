@@ -1175,8 +1175,9 @@ public final class GuessWhoSync: @unchecked Sendable {
     }
 
     /// Atomically upserts the requested timestamp cells with the same value.
-    /// Used when creating a contact so `createdAt` and `lastModified` describe
-    /// the same operation and require only one sidecar read/write.
+    /// Used when creating a contact so `createdAt`, `lastModified`, and
+    /// `lastViewed` describe the same operation and require only one sidecar
+    /// read/write.
     public func stampContactTimestamps(
         _ kinds: [ContactTimestampKind],
         at key: SidecarKey,
