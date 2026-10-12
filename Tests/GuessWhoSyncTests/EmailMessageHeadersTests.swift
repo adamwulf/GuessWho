@@ -315,15 +315,19 @@ struct EmailMessageHeadersTests {
         #expect(subject("=?ISO-8859-1?Q?caf=E9?= =?UTF-8?B?5pel5pys6Kqe44Gu5Lu25ZCN?=") == "café日本語の件名")
     }
 
-    @Test func longEncodedWordRunParsesInLinearTime() {
+    @Test func longEncodedWordRunDecodesInLinearTime() {
+        // Called directly, past parse()'s 256 KiB bound: at that size even a
+        // quadratic decoder finishes in about 0.1 s, so only a larger run
+        // separates linear (about 0.6 s in debug) from quadratic (about 20 s).
         let word = "=?UTF-8?Q?a?= "
-        let count = (EmailMessageHeaders.maximumHeaderBytes - 64) / word.utf8.count
+        let count = 4 * 1024 * 1024 / word.utf8.count
         let start = ContinuousClock.now
 
-        let headers = EmailMessageHeaders.parse(message(["Subject: " + String(repeating: word, count: count)]))
+        let decoded = EmailMessageHeaders.decodeEncodedWords(String(repeating: word, count: count))
 
         let elapsed = ContinuousClock.now - start
-        #expect(headers.subject == String(repeating: "a", count: count))
+        // The trailing space follows the last word, so it is kept.
+        #expect(decoded == String(repeating: "a", count: count) + " ")
         #expect(elapsed < .seconds(5), "took \(elapsed)")
     }
 
