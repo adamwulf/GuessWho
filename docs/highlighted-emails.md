@@ -132,6 +132,17 @@ The app speaks `ContactID` only\[^repo]:
   GuessWho ID first. A pre-mint token resolves through the cache, so a later
   drop through the same token does not reconcile again. A write that minted
   refreshes the cached record, like `addNote` and the other contact writes.
+  **Caller precondition:** a caller awaits each call for a contact before it
+  starts the next call for the same contact. A drop of several messages loops
+  with `await`, never a task group or one `Task` per message. Calls that start
+  before the first has minted each reconcile. The Case-A mint derives the ID
+  from the contact's `localID` and display name\[^mint], so they normally
+  resolve to the same ID and every email lands on one envelope, at the cost of
+  extra Contacts reads and saves, cache refreshes, and reload posts. But if the
+  display name changes between two reconciles that both read the contact
+  before either saved, they derive different IDs. A save writes the contact's
+  whole URL list\[^save], so the later save wins, and the email written under
+  the other ID lands on a sidecar that no contact carries.
 - `removeHighlightedEmail(id:for:)` never mints: a contact with no GuessWho ID
   has no stored emails, so it returns without a write.
 
@@ -172,3 +183,5 @@ Writes throw `SidecarUnavailableError` when the sidecar engine is unavailable.
 \[^order]: [HighlightedEmail.sortDate / isNewer(than:)](../Sources/GuessWhoSync/HighlightedEmail.swift:HighlightedEmail.isNewer)
 \[^repo]: [ContactsRepository.highlightedEmails(for:) / highlightEmail(\_:for:) / removeHighlightedEmail(id:for:)](../Sources/GuessWhoSync/ContactsRepository.swift:ContactsRepository.highlightEmail)
 \[^watcher]: [ContactsRepository.postContactCellsDidChange(forContactKeys:)](../Sources/GuessWhoSync/ContactsRepository.swift:ContactsRepository.postContactCellsDidChange)
+\[^mint]: [GuessWhoSync.handleCaseA mints Contact.deterministicGuessWhoID](../Sources/GuessWhoSync/GuessWhoSync.swift:GuessWhoSync.handleCaseA)
+\[^save]: [CNContactStoreAdapter.save → apply(\_:to:) sets urlAddresses from the saved value](../Sources/GuessWhoSync/CNContactStoreAdapter.swift:CNContactStoreAdapter.apply)

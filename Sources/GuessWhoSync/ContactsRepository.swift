@@ -3652,6 +3652,20 @@ public final class ContactsRepository: NSObject {
     /// before the mint resolves through the cache first, so a later drop
     /// through the same token does not reconcile again.
     ///
+    /// **Caller precondition:** await each call for a contact before starting
+    /// the next call for the same contact. A drop of several messages loops
+    /// with `await`, never a task group or one `Task` per message. Then only
+    /// the first call reconciles. Calls that start before the first one has
+    /// minted each reconcile on their own. The Case-A mint derives the ID from
+    /// the contact's `localID` and display name
+    /// (`Contact.deterministicGuessWhoID`), so they normally resolve to the
+    /// same ID and every email lands on one envelope, at the cost of extra
+    /// Contacts reads and saves, cache refreshes, and reload posts. But if
+    /// the display name changes between two reconciles that both read the
+    /// contact before either saved, they derive different IDs. A save writes
+    /// the contact's whole URL list, so the later save wins, and the email
+    /// written under the other ID lands on a sidecar that no contact carries.
+    ///
     /// Posts `.contactsRepositoryHighlightedEmailsDidChange` when the stored
     /// email changed; a repeat drop that changed nothing posts nothing.
     public func highlightEmail(_ email: HighlightedEmail, for id: ContactID) async throws {
