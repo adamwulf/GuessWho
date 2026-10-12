@@ -217,6 +217,41 @@ There is no drop zone and no drop highlight\[^drop].
   The email target refuses an image or file drag that has no Mail type, so
   only the photo drop can take an image.
 
+### Dropping a web address
+
+> **Not wired into the app yet.** Only the package method below exists. The
+> card's drop target still adds nothing for a web link (see "What it accepts"
+> above). The app part of this section is still to write.
+
+A dropped web link that is not a Mail message becomes a website row on the
+contact: a `urlAddresses` value on its Contacts record, not a highlighted
+email. `ContactsRepository.addWebAddresses(_:for:)` takes `[URL]` and a
+`ContactID` and returns how many rows it added\[^addWeb]. It uses the merge
+rules of the LinkedIn import's websites field\[^importWebsites]:
+
+- **Web addresses only.** An `http` or `https` URL counts, in any case. Any
+  other scheme (`mailto:`, `message:`, `file:`, `ftp:`, …) is ignored, not an
+  error. An input with no web address returns 0 and does not read the contact.
+- **No duplicates.** A URL the contact already has, or one repeated in the
+  input, is skipped. The compare key is `urlDedupKey`: lowercased, with no
+  scheme, no leading `www.`, and no trailing slash, so
+  `https://www.example.com/` matches a stored `example.com`\[^dedup]. The
+  first spelling in the input wins, and input order is kept.
+- **Default label.** A new row holds the URL's `absoluteString` with an empty
+  label, so Contacts gives it its default label.
+- **Save and stamp only on a change.** Nothing new: no Contacts save and no
+  stamp. Something new: `saveContact`, then a best-effort Last Modified stamp,
+  so the contact sorts as edited. The stamp is a sidecar write, so it mints the
+  GuessWho ID of a contact that has none.
+- **A gone contact throws.** An id that does not resolve, or a contact with no
+  Contacts record, throws `ContactStoreError.contactNotFound`, like the
+  LinkedIn import. A failed save is rethrown.
+- **Notifications.** The save refreshes the cached record and posts
+  `.contactsRepositoryDidReload` (`contactDataChanged: true`); a stamp that
+  succeeds posts it again\[^webPosts]. No highlighted-email notification is
+  posted.
+- **Logging** records counts only, never a URL.
+
 ### The section
 
 The contact card shows a **Highlighted Emails** section directly above Recent
@@ -278,6 +313,10 @@ later wins over it.
 \[^accept]: [MailDropReader.canAccept(\_:) / isMailMessage(\_:)](../App/GuessWho/Support/MailDropReader.swift:MailDropReader.canAccept)
 \[^scroll]: [ContactDetailView.highlightScrollTarget / ScrollToHighlightedEmailModifier](../App/GuessWho/ContactDetailView.swift:ScrollToHighlightedEmailModifier)
 \[^mapping]: [HighlightedEmail.init?(headers:highlightedAt:)](../Sources/GuessWhoSync/HighlightedEmail.swift:HighlightedEmail.init)
+\[^addWeb]: [ContactsRepository.addWebAddresses(\_:for:)](../Sources/GuessWhoSync/ContactsRepository.swift:ContactsRepository.addWebAddresses)
+\[^importWebsites]: [ContactsRepository.applyLinkedIn — the `.websites` branch](../Sources/GuessWhoSync/ContactsRepository.swift:ContactsRepository.applyLinkedIn)
+\[^dedup]: [ContactsRepository.urlDedupKey / newValues(\_:notIn:key:)](../Sources/GuessWhoSync/ContactsRepository.swift:ContactsRepository.urlDedupKey)
+\[^webPosts]: [ContactsRepository.saveContact → refreshContact(localID:) → postDidReload; stampTimestamps posts its own reload](../Sources/GuessWhoSync/ContactsRepository.swift:ContactsRepository.stampTimestamps)
 \[^section]: [ContactDetailView.highlightedEmailsSection](../App/GuessWho/ContactDetailView.swift:ContactDetailView.highlightedEmailsSection)
 \[^row]: [ContactDetailView.highlightedEmailLabel / mailMessageLabel](../App/GuessWho/ContactDetailView.swift:ContactDetailView.mailMessageLabel)
 \[^removeUI]: [ContactDetailView.highlightedEmailRow / removeHighlightedEmail(\_:)](../App/GuessWho/ContactDetailView.swift:ContactDetailView.highlightedEmailRow)
