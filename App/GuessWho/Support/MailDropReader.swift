@@ -52,14 +52,27 @@ enum MailDropReader {
         fileprivate let messages: [PendingMessage]
     }
 
-    /// True when at least one provider looks like a Mail message. A bare URL
-    /// counts because Catalyst may expose only Mail's `message:` URL; `read`
-    /// drops URLs of any other scheme.
+    /// True when at least one provider looks like a Mail message: it carries
+    /// Mail's message type or `public.email-message` (a Finder `.eml` does
+    /// too), or it carries a URL and is neither a file nor an image.
+    ///
+    /// A bare URL counts because Catalyst may expose only Mail's `message:`
+    /// URL; `read` drops URLs of any other scheme. A file URL or an image
+    /// does not count: `public.file-url` conforms to `public.url`, so
+    /// without this a Finder file or a dragged web image would make the
+    /// whole card accept a drop that adds nothing.
     static func canAccept(_ providers: [NSItemProvider]) -> Bool {
-        let identifiers = [mailMessageTypeIdentifier, UTType.emailMessage.identifier, UTType.url.identifier]
-        return providers.contains { provider in
-            identifiers.contains(where: provider.hasItemConformingToTypeIdentifier)
+        providers.contains(where: isMailMessage)
+    }
+
+    private static func isMailMessage(_ provider: NSItemProvider) -> Bool {
+        if [mailMessageTypeIdentifier, UTType.emailMessage.identifier]
+            .contains(where: provider.hasItemConformingToTypeIdentifier) {
+            return true
         }
+        return provider.hasItemConformingToTypeIdentifier(UTType.url.identifier)
+            && !provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier)
+            && !provider.hasItemConformingToTypeIdentifier(UTType.image.identifier)
     }
 
     /// Starts every load for every provider (the `.eml`, the URL, and the
