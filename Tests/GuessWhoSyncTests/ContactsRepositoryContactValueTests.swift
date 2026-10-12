@@ -645,13 +645,19 @@ struct PhoneNumberComparisonKeyTests {
     }
 
     /// A valid national number keeps its national reading: the type-checked
-    /// parse in the region comes before the `+`-added one. `+3212711234` is
-    /// a valid Belgian number, so the 321 case fails if that order flips.
+    /// parse in the region comes before the `+`-added one. The CN and CO
+    /// numbers are also valid numbers of other countries with a `+` added
+    /// (`+13123456789` is a NANP number, `+3211234567` a Belgian one), so
+    /// those two cases fail if that order flips: they would key
+    /// `13123456789` and `3211234567`. In the US the `+`-added parse never
+    /// runs, so the US cases check only the national reading.
     @Test(arguments: [
         ("020 7946 0958", "GB", "442079460958"),
         ("(212) 555-0123", "US", "12125550123"),
         ("321-271-1234", "US", "13212711234"),
         ("030 123456", "DE", "4930123456"),
+        ("131 2345 6789", "CN", "8613123456789"),
+        ("321 1234567", "CO", "573211234567"),
     ])
     func aValidNationalNumberReadsInTheRegion(raw: String, region: String, key: String) {
         #expect(formatter.comparisonKey(for: raw, region: region) == key)

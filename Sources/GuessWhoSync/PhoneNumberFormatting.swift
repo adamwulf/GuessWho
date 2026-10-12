@@ -75,16 +75,26 @@ public final class PhoneNumberDisplayFormatter {
     ///    reach step 3.
     /// 3. In `region`, without the type check (`ignoreType`), so a number in
     ///    a range the metadata does not list (a fictional 555 number, a newly
-    ///    opened area code) gets a key from the region's country and its
-    ///    digits, when no earlier step took it.
+    ///    opened area code) gets a key from its country code (the one after
+    ///    its `+`, else the region's) and its digits, when no earlier step
+    ///    took it.
     /// 4. Else the digits.
     ///
-    /// Limits: a full number with no `+` whose digits are ALSO a valid
-    /// national number of the region (`1-212-555-0123` on an AT device) is
-    /// read as national in step 1, so it does not match the same number
-    /// written with a `+`. Outside the NANP, a national number with no `+`
-    /// in a range the metadata does not list can be read as another
-    /// country's number in step 2, so it may not match its other spellings.
+    /// Limits:
+    /// - A full number with no `+` whose digits are ALSO a valid national
+    ///   number of the region (`1-212-555-0123` on an AT device) is read as
+    ///   national in step 1, so it does not match the same number written
+    ///   with a `+`.
+    /// - Outside the NANP, a national number with no `+` in a range the
+    ///   metadata does not list can be read as another country's number in
+    ///   step 2, so it may not match its other spellings.
+    /// - In the NANP, where step 2 does not run, a foreign full number with
+    ///   no `+` whose digits look like a NANP number is read as a NANP
+    ///   number in step 3, so it does not match its `+` spelling: on a US
+    ///   device `47 40 61 23 45` keys `14740612345`, while the Norwegian
+    ///   `+47 40 61 23 45` keys `4740612345`. Other foreign numbers with no
+    ///   `+` fall to the digits in step 4, and those match.
+    ///
     /// Display formatting keeps its own single parse.
     func comparisonKey(for raw: String, region: String? = nil) -> String {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)

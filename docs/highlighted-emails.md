@@ -441,8 +441,9 @@ The merge is the LinkedIn import's for each field\[^importValues]:
        unlisted area codes that split this way in the US (the same in CA).
     3. In the device's region, without the type check, so a number in a
        range the metadata does not list (a fictional 555 number, a newly
-       opened area code) gets a key from the region's country and its
-       digits, when no earlier step took it.
+       opened area code) gets a key from its country code (the one after
+       its `+`, else the region's) and its digits, when no earlier step took
+       it.
     4. Else the digits only. Because a parsed key has no `+`, a full number
        that no step parses (`1-555-010-0199` on a GB device) still matches
        the same number written with a `+`.
@@ -455,6 +456,14 @@ The merge is the LinkedIn import's for each field\[^importValues]:
     - Outside the NANP, a national number with no `+` in a range the
       metadata does not list can be read as another country's number in
       step 2, so it may not match its other spellings.
+    - In the NANP, where step 2 does not run, a foreign full number with no
+      `+` whose digits look like a NANP number is read as a NANP number in
+      step 3, so it does not match its `+` spelling. On a US device
+      `47 40 61 23 45` keys `14740612345`, while the Norwegian
+      `+47 40 61 23 45` keys `4740612345` (the reviewer measured the same
+      on CA, JM, and PR devices, and for numbers from DE, DK, NZ, and KR).
+      Other foreign numbers with no `+` fall to the digits in step 4, and
+      those match.
 
   The LinkedIn import uses the same key.
 - **Default label.** A new row has an empty label, so Contacts gives it its

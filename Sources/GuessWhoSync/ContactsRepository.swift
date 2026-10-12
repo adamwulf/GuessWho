@@ -2085,9 +2085,11 @@ public final class ContactsRepository: NSObject {
     /// written with its country code but no `+` matches the same number
     /// written with one. Limits (see `comparisonKey`): such a number whose
     /// digits are also a valid national number of the region (on an AT
-    /// device) reads as national; and outside the NANP a no-`+` national
-    /// number in a range the metadata does not list can read as another
-    /// country's number.
+    /// device) reads as national; outside the NANP a no-`+` national number
+    /// in a range the metadata does not list can read as another country's
+    /// number; and in the NANP a foreign full number with no `+` whose
+    /// digits look like a NANP number reads as NANP, so it does not match
+    /// its `+` spelling.
     private static func phoneDedupKey(_ s: String) -> String {
         PhoneNumberDisplayFormatter.shared.comparisonKey(for: s)
     }
