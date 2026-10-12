@@ -1424,9 +1424,11 @@ struct ContactDetailView: View {
         } else {
             // No photo, not editing: tapping the monogram adds a first photo
             // without opening the editor. Nothing to remove, so go straight to
-            // the picker. The monogram also accepts a dropped image directly
-            // (Catalyst drag from Finder/Photos, iPad split-view drag), so a
-            // first photo can be set without the picker at all.
+            // the picker. The monogram also has an image drop, so a first
+            // photo can be set without the picker at all. Whether an image
+            // dragged from another app (Finder, Photos, iPad split view)
+            // reaches it over the List is not measured since FB24490454; see
+            // docs/highlighted-emails.md, "Dropping an email".
             Button {
                 presentingPhotoPicker = true
             } label: {
