@@ -6,12 +6,14 @@ import UniformTypeIdentifiers
 import GuessWhoSync
 import GuessWhoLogging
 
-/// Builds the only URL the contact card will open for a recorded message.
-/// `MailActivity` stores its normalized Message-ID without angle brackets;
-/// the shared URL validator deliberately accepts only canonical `<...>` form.
-enum MailActivityMailLink {
-    static func url(for activity: MailActivity) -> URL? {
-        MailMessageID.mailDeepLink(for: "<\(activity.messageID)>")
+/// Builds the only URL the contact card will open for a stored message, for
+/// both the Recent Email and the Highlighted Emails rows. `MailActivity` and
+/// `HighlightedEmail` store their normalized Message-ID without angle
+/// brackets; the shared URL validator deliberately accepts only canonical
+/// `<...>` form.
+enum MailMessageLink {
+    static func url(forNormalizedMessageID messageID: String) -> URL? {
+        MailMessageID.mailDeepLink(for: "<\(messageID)>")
     }
 }
 
@@ -181,6 +183,13 @@ struct ContactDetailView: View {
     // mail-only refreshes. A slow older disk read must not restore stale rows.
     @State private var mailActivitiesLoadID = UUID()
     @State private var coarseMailActivityReloadTask: Task<Void, Never>?
+    // Emails the user dropped onto this profile, in the repository's order.
+    // Same newest-wins gate and coarse-reload fallback as mail activity: a drop
+    // of several messages posts one change per message, and the re-reads can
+    // finish out of order.
+    @State private var highlightedEmails: [HighlightedEmail] = []
+    @State private var highlightedEmailsLoadID = UUID()
+    @State private var coarseHighlightedEmailReloadTask: Task<Void, Never>?
     // Imported-guide matches keyed by the individual contact street line they
     // describe. Each summary renders directly below its own address rather than
     // combining counts across a multi-address contact. Loaded async via
@@ -454,6 +463,7 @@ struct ContactDetailView: View {
             // commitActiveEdit() already ran from a button tap.
             commitActiveEdit()
             coarseMailActivityReloadTask?.cancel()
+            coarseHighlightedEmailReloadTask?.cancel()
         }
         .onReceive(NotificationCenter.default.publisher(for: .linkedInImportDidSave)) { _ in
             // A LinkedIn import just saved changes. Re-read so the open card
@@ -485,8 +495,12 @@ struct ContactDetailView: View {
             perform: mailActivityDidChange
         )
         .onReceive(
+            NotificationCenter.default.publisher(for: .contactsRepositoryHighlightedEmailsDidChange),
+            perform: highlightedEmailsDidChange
+        )
+        .onReceive(
             NotificationCenter.default.publisher(for: .contactsRepositoryDidReload),
-            perform: repositoryDidReloadForMailActivity
+            perform: repositoryDidReloadForMailSections
         )
     }
 
@@ -510,45 +524,83 @@ struct ContactDetailView: View {
     }
 
     /// A local mail write or an exact-key synced change named the contacts that
-    /// may have new activity. Resolve every token through the repository before
-    /// comparing: a first mail write can mint the contact identity while this
-    /// card still holds its pre-mint navigation token.
+    /// may have new activity.
     private func mailActivityDidChange(_ notification: Notification) {
-        guard let postingRepository = notification.object as? ContactsRepository,
-              postingRepository === repository,
-              let changed = notification.userInfo?[
-                ContactsRepositoryMailActivityDidChangeKey.contactIDs
-              ] as? [ContactID],
-              let current = resolvedMailActivityContactID()
-        else { return }
-        let applies = changed.contains { changedID in
-            (repository.contact(id: changedID)?.contactID ?? changedID) == current
-        }
-        guard applies else { return }
+        guard let current = mailSectionContactID(
+            changedBy: notification,
+            contactIDsKey: ContactsRepositoryMailActivityDidChangeKey.contactIDs
+        ) else { return }
         coarseMailActivityReloadTask?.cancel()
         Task { await reloadMailActivities(for: current) }
     }
 
+    /// A highlight or remove on this device, or an exact-key synced change,
+    /// named the contacts whose highlighted emails may have changed. A drop of
+    /// several messages posts once per message; `reloadHighlightedEmails`
+    /// keeps only the newest re-read.
+    private func highlightedEmailsDidChange(_ notification: Notification) {
+        guard let current = mailSectionContactID(
+            changedBy: notification,
+            contactIDsKey: ContactsRepositoryHighlightedEmailsDidChangeKey.contactIDs
+        ) else { return }
+        coarseHighlightedEmailReloadTask?.cancel()
+        Task { await reloadHighlightedEmails(for: current) }
+    }
+
+    /// This card's resolved contact when `notification` is a scoped change
+    /// from this view's repository that names it, else nil. Resolve every
+    /// token through the repository before comparing: a first write can mint
+    /// the contact identity while this card still holds its pre-mint
+    /// navigation token.
+    private func mailSectionContactID(
+        changedBy notification: Notification,
+        contactIDsKey: String
+    ) -> ContactID? {
+        guard let postingRepository = notification.object as? ContactsRepository,
+              postingRepository === repository,
+              let changed = notification.userInfo?[contactIDsKey] as? [ContactID],
+              let current = resolvedMailSectionContactID()
+        else { return nil }
+        let applies = changed.contains { changedID in
+            (repository.contact(id: changedID)?.contactID ?? changedID) == current
+        }
+        return applies ? current : nil
+    }
+
     /// Coarse synced changes name no contact, so the repository can only post
-    /// its presentation reload. Re-read this lightweight section as the
-    /// fallback required by the mail-activity notification contract.
-    private func repositoryDidReloadForMailActivity(_ notification: Notification) {
+    /// its presentation reload. Re-read both lightweight email sections as the
+    /// fallback their notification contracts require. Each section has its
+    /// own task, so a scoped change for one section cancels only its own
+    /// fallback.
+    private func repositoryDidReloadForMailSections(_ notification: Notification) {
         guard let postingRepository = notification.object as? ContactsRepository,
               postingRepository === repository
         else { return }
         coarseMailActivityReloadTask?.cancel()
-        coarseMailActivityReloadTask = Task { @MainActor in
+        coarseMailActivityReloadTask = scheduleCoarseMailSectionReload { contactID in
+            await reloadMailActivities(for: contactID)
+        }
+        coarseHighlightedEmailReloadTask?.cancel()
+        coarseHighlightedEmailReloadTask = scheduleCoarseMailSectionReload { contactID in
+            await reloadHighlightedEmails(for: contactID)
+        }
+    }
+
+    private func scheduleCoarseMailSectionReload(
+        _ reload: @escaping @MainActor (ContactID) async -> Void
+    ) -> Task<Void, Never> {
+        Task { @MainActor in
             do {
                 try await Task.sleep(nanoseconds: 150_000_000)
             } catch {
                 return
             }
-            guard let current = resolvedMailActivityContactID() else { return }
-            await reloadMailActivities(for: current)
+            guard let current = resolvedMailSectionContactID() else { return }
+            await reload(current)
         }
     }
 
-    private func resolvedMailActivityContactID() -> ContactID? {
+    private func resolvedMailSectionContactID() -> ContactID? {
         let held = loadedContactID ?? id
         return repository.contact(id: held)?.contactID ?? held
     }
@@ -559,6 +611,14 @@ struct ContactDetailView: View {
         let activities = await repository.mailActivities(for: contactID)
         guard mailActivitiesLoadID == loadID else { return }
         mailActivities = activities
+    }
+
+    private func reloadHighlightedEmails(for contactID: ContactID) async {
+        let loadID = UUID()
+        highlightedEmailsLoadID = loadID
+        let emails = await repository.highlightedEmails(for: contactID)
+        guard highlightedEmailsLoadID == loadID else { return }
+        highlightedEmails = emails
     }
 
     @ViewBuilder
@@ -610,6 +670,8 @@ struct ContactDetailView: View {
                 notesSection
 
                 recentEventsSection
+
+                highlightedEmailsSection
 
                 recentMailSection
 
@@ -1097,6 +1159,9 @@ struct ContactDetailView: View {
 
     /// Best-effort favorite mutations initiated from rows on this card.
     private static let favoriteLog = GuessWhoLog.logger("app.contact-favorites")
+
+    /// Highlighted-email write failures. Never logs a subject or an address.
+    private static let highlightedEmailLog = GuessWhoLog.logger("app.highlighted-email")
 
     /// Loads the picked photo's bytes, downscales them to a sane contact-photo
     /// size, and writes them to the CNContact itself (not a sidecar), so the new
@@ -1649,7 +1714,7 @@ struct ContactDetailView: View {
 
     @ViewBuilder
     private func mailActivityRow(_ activity: MailActivity) -> some View {
-        if let url = mailURL(for: activity) {
+        if let url = MailMessageLink.url(forNormalizedMessageID: activity.messageID) {
             Button {
                 openURL(url)
             } label: {
@@ -1669,26 +1734,110 @@ struct ContactDetailView: View {
     }
 
     private func mailActivityLabel(_ activity: MailActivity, opensMail: Bool) -> some View {
-        let subject = activity.subject.flatMap { $0.isEmpty ? nil : $0 } ?? "(No subject)"
+        mailMessageLabel(
+            subject: activity.subject,
+            sender: activity.senderAddress,
+            date: activity.receivedAt,
+            opensMail: opensMail
+        )
+    }
+
+    /// Every email the user dropped onto this profile, in the repository's
+    /// order, with no cap: the user chose to keep each one. Kept apart from
+    /// "Recent Email" (mail the Mail extension finds by itself) because the
+    /// sender can be anyone. The message link is best effort, as in Recent
+    /// Email, so a row with no link still shows and can still be removed.
+    @ViewBuilder
+    private var highlightedEmailsSection: some View {
+        if !highlightedEmails.isEmpty {
+            TitledSection("Highlighted Emails") {
+                ForEach(highlightedEmails) { email in
+                    highlightedEmailRow(email)
+                        .centeredRowContent()
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func highlightedEmailRow(_ email: HighlightedEmail) -> some View {
+        let url = MailMessageLink.url(forNormalizedMessageID: email.messageID)
+        Group {
+            if let url {
+                Button {
+                    openURL(url)
+                } label: {
+                    highlightedEmailLabel(email, opensMail: true)
+                }
+                .buttonStyle(.plain)
+            } else {
+                highlightedEmailLabel(email, opensMail: false)
+            }
+        }
+        .contextMenu {
+            if let url {
+                Button {
+                    openURL(url)
+                } label: {
+                    Label("Open in Mail", systemImage: "envelope.open")
+                }
+            }
+            Button(role: .destructive) {
+                removeHighlightedEmail(email)
+            } label: {
+                Label("Remove", systemImage: "trash")
+            }
+        }
+    }
+
+    private func highlightedEmailLabel(_ email: HighlightedEmail, opensMail: Bool) -> some View {
+        mailMessageLabel(
+            subject: email.subject,
+            sender: email.senderName ?? email.senderAddress,
+            date: email.sortDate,
+            opensMail: opensMail
+        )
+    }
+
+    /// The one row look for an email on the card: the subject (or
+    /// "(No subject)") over a caption of the sender, when known, and the date.
+    private func mailMessageLabel(
+        subject: String?,
+        sender: String?,
+        date: Date,
+        opensMail: Bool
+    ) -> some View {
+        let title = subject.flatMap { $0.isEmpty ? nil : $0 } ?? "(No subject)"
+        let formattedDate = date.formatted(date: .abbreviated, time: .shortened)
+        let caption = sender.map { "\($0) · \(formattedDate)" } ?? formattedDate
         return ActivityRowLayout(systemImage: "envelope") {
             VStack(alignment: .leading, spacing: 4) {
-                Text(subject)
+                Text(title)
                     .font(.body)
                     .foregroundStyle(opensMail ? Color.accentColor : Color.primary)
-                Text(
-                    "\(activity.senderAddress) · "
-                    + activity.receivedAt.formatted(date: .abbreviated, time: .shortened)
-                )
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                Text(caption)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
         }
     }
 
-    private func mailURL(for activity: MailActivity) -> URL? {
-        MailActivityMailLink.url(for: activity)
+    /// Removes `email` from this contact. The section updates from the
+    /// repository's change notification, like every other change to it.
+    private func removeHighlightedEmail(_ email: HighlightedEmail) {
+        let contactID = loadedContactID ?? id
+        Task {
+            do {
+                try await repository.removeHighlightedEmail(id: email.id, for: contactID)
+            } catch {
+                Self.highlightedEmailLog.error(
+                    "remove highlighted email failed: \(error.localizedDescription)"
+                )
+                service.recordError("remove highlighted email failed: \(error.localizedDescription)")
+            }
+        }
     }
 
     @ViewBuilder
@@ -2852,6 +3001,8 @@ struct ContactDetailView: View {
             memberGroupsLoadID = groupLoadID
             let mailLoadID = UUID()
             mailActivitiesLoadID = mailLoadID
+            let highlightedLoadID = UUID()
+            highlightedEmailsLoadID = highlightedLoadID
 
             async let fusedLinks = loadLinkStores(for: loaded)
             async let fetchedSources = DetailLoadSignpost.measure("contact_sources") {
@@ -2868,6 +3019,9 @@ struct ContactDetailView: View {
             }
             async let fetchedMailActivities = DetailLoadSignpost.measure("contact_mail_activity") {
                 await repository.mailActivities(for: loaded.contactID)
+            }
+            async let fetchedHighlightedEmails = DetailLoadSignpost.measure("contact_highlighted_emails") {
+                await repository.highlightedEmails(for: loaded.contactID)
             }
 
             let linkResult = await fusedLinks
@@ -2918,12 +3072,13 @@ struct ContactDetailView: View {
                 await service.refreshLinkedEvents(eventUUIDs: linkResult.eventUUIDs)
             }
 
-            let (sources, events, groups, guides, activities) = await (
+            let (sources, events, groups, guides, activities, highlighted) = await (
                 fetchedSources,
                 fetchedRecentEvents,
                 fetchedGroups,
                 fetchedAddressGuides,
-                fetchedMailActivities
+                fetchedMailActivities,
+                fetchedHighlightedEmails
             )
 
             // Targeted event-link rereads do not invalidate these contact-only
@@ -2938,6 +3093,9 @@ struct ContactDetailView: View {
                 recordSources = sources.recordSources
                 if mailActivitiesLoadID == mailLoadID {
                     mailActivities = activities
+                }
+                if highlightedEmailsLoadID == highlightedLoadID {
+                    highlightedEmails = highlighted
                 }
             }
 
@@ -2983,6 +3141,8 @@ struct ContactDetailView: View {
             recentEvents = []
             mailActivitiesLoadID = UUID()
             mailActivities = []
+            highlightedEmailsLoadID = UUID()
+            highlightedEmails = []
             memberGroups = []
             addressGuides = [:]
             storeSourceCount = 0

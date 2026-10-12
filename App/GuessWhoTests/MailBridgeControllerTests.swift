@@ -18,9 +18,38 @@ struct MailBridgeControllerTests {
             mailURL: "https://attacker.invalid/not-used"
         ))
 
-        let link = try #require(MailActivityMailLink.url(for: activity))
+        let link = try #require(MailMessageLink.url(forNormalizedMessageID: activity.messageID))
         #expect(link.scheme == "message")
         #expect(link.absoluteString == "message://%3CABC.123@example.com%3E")
+    }
+
+    @Test
+    func highlightedEmailBuildsTheSameMailLink() throws {
+        let email = try #require(HighlightedEmail(
+            messageID: "<ABC.123@Example.COM>",
+            subject: "Hello",
+            senderName: nil,
+            senderAddress: "ada@example.com",
+            sentAt: nil,
+            highlightedAt: Date(timeIntervalSince1970: 1_000)
+        ))
+
+        let link = try #require(MailMessageLink.url(forNormalizedMessageID: email.messageID))
+        #expect(link.absoluteString == "message://%3CABC.123@example.com%3E")
+    }
+
+    @Test
+    func unsafeMessageIDBuildsNoMailLink() throws {
+        let email = try #require(HighlightedEmail(
+            messageID: "<\"quoted local\"@example.com>",
+            subject: nil,
+            senderName: nil,
+            senderAddress: nil,
+            sentAt: nil,
+            highlightedAt: Date(timeIntervalSince1970: 1_000)
+        ))
+
+        #expect(MailMessageLink.url(forNormalizedMessageID: email.messageID) == nil)
     }
 
     @Test
