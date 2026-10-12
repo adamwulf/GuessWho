@@ -59,22 +59,33 @@ public final class PhoneNumberDisplayFormatter {
     ///   number written with a `+`.
     ///
     /// The parses run in this order, and the first that succeeds wins:
-    /// 1. In `region`, with the number-type check: a valid national number
-    ///    of the region, or any number written with a `+`.
-    /// 2. With no leading `+`: `+` and the string, with the type check, so a
-    ///    full number written with its country code but no `+`
+    /// 1. In `region`, with the number-type check: a number the metadata
+    ///    lists as valid, written nationally or with a `+`. A `+` number in a
+    ///    range the metadata does not list (`+1 555 010 0199`) fails here.
+    /// 2. Outside the NANP only (the region's country code is not 1), and
+    ///    when there is no leading `+`: `+` and the string, with the type
+    ///    check, so a full number written with its country code but no `+`
     ///    (`1-212-555-0123`) reads as that country's number, not as a long
     ///    national number of the region (which a parse with no type check
-    ///    gives on a DE, IN, or BR device, among others).
-    /// 3. In `region`, without the type check (`ignoreType`): a number in a
-    ///    range the metadata does not list (a fictional 555 number, a newly
-    ///    opened range) still gets a key from its country and digits.
+    ///    gives on a DE, IN, or BR device, among others). In the NANP this
+    ///    step would split one number: a national number in an area code
+    ///    the bundled metadata does not list yet (624, in service since
+    ///    2023) fails step 1, and `624-271-1234` would read as `+62…`
+    ///    (Indonesia) here while `(624) 271-1234` and `+1 624 271 1234`
+    ///    reach step 3.
+    /// 3. In `region`, without the type check (`ignoreType`), so a number in
+    ///    a range the metadata does not list (a fictional 555 number, a newly
+    ///    opened area code) gets a key from the region's country and its
+    ///    digits, when no earlier step took it.
     /// 4. Else the digits.
     ///
-    /// Limit: a full number with no `+` whose digits are ALSO a valid
+    /// Limits: a full number with no `+` whose digits are ALSO a valid
     /// national number of the region (`1-212-555-0123` on an AT device) is
     /// read as national in step 1, so it does not match the same number
-    /// written with a `+`. Display formatting keeps its own single parse.
+    /// written with a `+`. Outside the NANP, a national number with no `+`
+    /// in a range the metadata does not list can be read as another
+    /// country's number in step 2, so it may not match its other spellings.
+    /// Display formatting keeps its own single parse.
     func comparisonKey(for raw: String, region: String? = nil) -> String {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return "" }
@@ -82,8 +93,9 @@ public final class PhoneNumberDisplayFormatter {
         func parse(_ string: String, ignoreType: Bool = false) -> PhoneNumber? {
             try? utility.parse(string, withRegion: region, ignoreType: ignoreType)
         }
+        let readsWithAddedPlus = !trimmed.hasPrefix("+") && utility.countryCode(for: region) != 1
         let number = parse(trimmed)
-            ?? (trimmed.hasPrefix("+") ? nil : parse("+" + trimmed))
+            ?? (readsWithAddedPlus ? parse("+" + trimmed) : nil)
             ?? parse(trimmed, ignoreType: true)
         guard let number else { return trimmed.filter(\.isNumber) }
         let digits = utility.format(number, toType: .e164).filter(\.isNumber)

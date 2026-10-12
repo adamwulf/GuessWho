@@ -1874,8 +1874,10 @@ public final class ContactsRepository: NSObject {
     /// The merge is the LinkedIn import's, field by field:
     /// - A value the contact already has, or one repeated in `urls`, is
     ///   skipped. Emails compare by `emailDedupKey` (trimmed, lowercased),
-    ///   phone numbers by `phoneDedupKey` (the E.164 digits in the device's
-    ///   region, else the digits), and websites by the scheme-insensitive
+    ///   phone numbers by `phoneDedupKey` (the E.164 digits, without the `+`,
+    ///   of the first of several parses that succeeds, else the digits; see
+    ///   `PhoneNumberDisplayFormatter.comparisonKey(for:region:)`), and
+    ///   websites by the scheme-insensitive
     ///   `urlDedupKey` (scheme, a leading `www.`, a trailing slash, and case
     ///   do not count). The first spelling wins, and input order is kept.
     /// - New rows get the default label (empty -> adapter passes nil).
@@ -2076,13 +2078,16 @@ public final class ContactsRepository: NSObject {
     /// Phone dedup key: `PhoneNumberDisplayFormatter.comparisonKey(for:)` in
     /// the device's region — the E.164 digits without the `+` (plus any
     /// extension's digits) when the number parses, else its digits. It tries
-    /// a type-checked parse in the region, then a type-checked parse with a
-    /// `+` added, then a parse with no type check, then the digits. So a
-    /// dropped `+1 555 010 0123` matches a stored `(555) 010-0123` on a US
-    /// device, and a full number written with its country code but no `+`
-    /// matches the same number written with one. Limit: such a number whose
+    /// a type-checked parse in the region; then, outside the NANP only, a
+    /// type-checked parse with a `+` added; then a parse with no type check;
+    /// then the digits. So a dropped `+1 555 010 0123` matches a stored
+    /// `(555) 010-0123` on a US device, and outside the NANP a full number
+    /// written with its country code but no `+` matches the same number
+    /// written with one. Limits (see `comparisonKey`): such a number whose
     /// digits are also a valid national number of the region (on an AT
-    /// device, for example) reads as national and does not match.
+    /// device) reads as national; and outside the NANP a no-`+` national
+    /// number in a range the metadata does not list can read as another
+    /// country's number.
     private static func phoneDedupKey(_ s: String) -> String {
         PhoneNumberDisplayFormatter.shared.comparisonKey(for: s)
     }

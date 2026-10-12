@@ -645,14 +645,28 @@ struct PhoneNumberComparisonKeyTests {
     }
 
     /// A valid national number keeps its national reading: the type-checked
-    /// parse in the region comes before the `+`-added one.
+    /// parse in the region comes before the `+`-added one. `+3212711234` is
+    /// a valid Belgian number, so the 321 case fails if that order flips.
     @Test(arguments: [
         ("020 7946 0958", "GB", "442079460958"),
         ("(212) 555-0123", "US", "12125550123"),
+        ("321-271-1234", "US", "13212711234"),
         ("030 123456", "DE", "4930123456"),
     ])
     func aValidNationalNumberReadsInTheRegion(raw: String, region: String, key: String) {
         #expect(formatter.comparisonKey(for: raw, region: region) == key)
+    }
+
+    /// In the NANP a number in an area code the bundled metadata does not
+    /// list yet (624, in service since 2023) keeps one key in every
+    /// spelling: the `+`-added parse, which would read `624-271-1234` as
+    /// `+62…` (Indonesia), does not run there. Still one key after a
+    /// metadata update, when all four pass the type-checked parse.
+    @Test func aNANPNumberInAnUnlistedAreaCodeKeepsOneKey() {
+        let keys = Set(["(624) 271-1234", "624-271-1234", "6242711234", "+1 624 271 1234"].map {
+            formatter.comparisonKey(for: $0, region: "US")
+        })
+        #expect(keys == ["16242711234"])
     }
 
     /// Every spelling of one extension gives one key; two extensions of one

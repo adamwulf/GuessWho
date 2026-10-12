@@ -424,24 +424,39 @@ The merge is the LinkedIn import's for each field\[^importValues]:
   every spelling of one extension (`x7`, `ext. 7`, `,7`, `,,7`) is the same.
   The first of these parses that succeeds gives the key:
     1. In the device's region, with PhoneNumberKit's number-type check: a
-       valid national number, or any number written with a `+`.
-    2. When there is no leading `+`: `+` and the string, with the type
-       check. So a full number written with its country code but no `+`
-       (`1-212-555-0123`) reads as that country's number. Without this
+       number the metadata lists as valid, written nationally or with a
+       `+`. A `+` number in a range the metadata does not list
+       (`+1 555 010 0199`) fails here.
+    2. Only outside the NANP (the device region's country code is not 1),
+       and only when there is no leading `+`: `+` and the string, with the
+       type check. So a full number written with its country code but no
+       `+` (`1-212-555-0123`) reads as that country's number. Without this
        step, a parse with no type check reads it as a long national number
        on a DE, IN, or BR device, among others, and it would not match
-       `+1 212 555 0123`.
+       `+1 212 555 0123`. In the NANP this step would split one number: a
+       national number in an area code the bundled metadata does not list
+       yet (624, in service since 2023) fails step 1, so `624-271-1234`
+       would read here as `+62…` (Indonesia) while `(624) 271-1234` and
+       `+1 624 271 1234` reach step 3. The reviewer measured 49 of 347
+       unlisted area codes that split this way in the US (the same in CA).
     3. In the device's region, without the type check, so a number in a
-       range the metadata does not list (a fictional 555 number) still
-       compares by its country and digits.
+       range the metadata does not list (a fictional 555 number, a newly
+       opened area code) gets a key from the region's country and its
+       digits, when no earlier step took it.
     4. Else the digits only. Because a parsed key has no `+`, a full number
        that no step parses (`1-555-010-0199` on a GB device) still matches
        the same number written with a `+`.
 
-  The limit: a full number with no `+` whose digits are ALSO a valid
-  national number of the device's region (`1-212-555-0123` on an AT
-  device) reads as national in step 1, so it does not match the same
-  number written with a `+`. The LinkedIn import uses the same key.
+  The limits:
+    - A full number with no `+` whose digits are ALSO a valid national
+      number of the device's region (`1-212-555-0123` on an AT device)
+      reads as national in step 1, so it does not match the same number
+      written with a `+`.
+    - Outside the NANP, a national number with no `+` in a range the
+      metadata does not list can be read as another country's number in
+      step 2, so it may not match its other spellings.
+
+  The LinkedIn import uses the same key.
 - **Default label.** A new row has an empty label, so Contacts gives it its
   default label.
 - **One save, and only on a change.** Nothing new: no Contacts save and no
