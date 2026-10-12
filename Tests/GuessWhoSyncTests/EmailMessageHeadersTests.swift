@@ -370,6 +370,32 @@ struct EmailMessageHeadersTests {
         #expect(encoded.address == "jane@example.com")
     }
 
+    @Test func addressBeforeACommaEndsTheEntry() {
+        let list = from("jane@example.com, bob@example.com")
+        #expect(list.name == nil)
+        #expect(list.address == "jane@example.com")
+
+        let legacy = from("jane@example.com (Jane Example), bob@example.com (Bob)")
+        #expect(legacy.name == "Jane Example")
+        #expect(legacy.address == "jane@example.com")
+    }
+
+    @Test(arguments: [" ,", "a,"])
+    func longCommaRunParsesInLinearTime(unit: String) {
+        // Each repeat is 2 bytes; the whole header stays inside the scan bound.
+        let value = String(repeating: unit, count: (EmailMessageHeaders.maximumHeaderBytes - 64) / 2)
+        let start = ContinuousClock.now
+
+        let headers = EmailMessageHeaders.parse(message(["From: \(value)"]))
+
+        let elapsed = ContinuousClock.now - start
+        #expect(headers.fromName == nil)
+        #expect(headers.fromAddress == nil)
+        // Linear parsing takes well under a second even in a debug build; a
+        // rescan of the entry at each comma took tens of seconds in release.
+        #expect(elapsed < .seconds(5), "took \(elapsed)")
+    }
+
     @Test func phraseWithoutAnAddressIsNotAnAddress() {
         let mailbox = from("Jane Example")
         #expect(mailbox.name == nil)

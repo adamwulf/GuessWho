@@ -406,6 +406,24 @@ extension EmailMessageHeaders {
     /// doesn't end the entry.
     static func firstMailbox(in value: String) -> (name: String?, address: String?) {
         var entry: [AddressToken] = []
+        // Tracked as tokens are appended, so a comma costs O(1) rather than a
+        // rescan of the entry: whether it has a `<` or an `@` yet, and whether
+        // it has anything but whitespace and comments.
+        var entryHasAddress = false
+        var entryHasContent = false
+
+        func startEntry() {
+            entry.removeAll()
+            entryHasAddress = false
+            entryHasContent = false
+        }
+
+        func append(_ token: AddressToken) {
+            entry.append(token)
+            if isCharacter(token, "<") || isCharacter(token, "@") { entryHasAddress = true }
+            if !isBlank(token) { entryHasContent = true }
+        }
+
         var inAngle = false
         for token in addressTokens(value) {
             if case .character(let character) = token {
@@ -416,28 +434,24 @@ extension EmailMessageHeaders {
                     inAngle = false
                 case ":" where !inAngle:
                     // Everything so far was a group's display name.
-                    entry.removeAll()
+                    startEntry()
                     continue
-                case "," where !inAngle && !hasAddress(entry):
-                    if !entry.allSatisfy(isBlank) { entry.append(token) }
+                case "," where !inAngle && !entryHasAddress:
+                    if entryHasContent { append(token) }
                     continue
                 case ",", ";":
                     guard !inAngle else { break }
                     let mailbox = mailbox(from: entry)
                     if mailbox.name != nil || mailbox.address != nil { return mailbox }
-                    entry.removeAll()
+                    startEntry()
                     continue
                 default:
                     break
                 }
             }
-            entry.append(token)
+            append(token)
         }
         return mailbox(from: entry)
-    }
-
-    private static func hasAddress(_ tokens: [AddressToken]) -> Bool {
-        tokens.contains { isCharacter($0, "<") || isCharacter($0, "@") }
     }
 
     /// Whitespace or a comment.
