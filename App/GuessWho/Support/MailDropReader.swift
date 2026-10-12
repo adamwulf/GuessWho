@@ -101,8 +101,9 @@ enum MailDropReader {
         await withCheckedContinuation { continuation in
             _ = provider.loadFileRepresentation(forTypeIdentifier: typeIdentifier) { @Sendable url, error in
                 // The file is deleted when this handler returns, so it is read
-                // and parsed here, off the main actor. Mapping it means only
-                // the scanned header prefix is paged in.
+                // and parsed here, off the main actor. The parser scans slices
+                // of the mapped data without copying, so only the pages that
+                // hold the header block are read from disk.
                 guard let url else {
                     log.debug("mail drop file unavailable", ["type": typeIdentifier, "error": errorSummary(error)])
                     continuation.resume(returning: nil)

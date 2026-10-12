@@ -134,13 +134,17 @@ extension EmailMessageHeaders {
     /// empty line, within the first `maximumHeaderBytes` bytes. Each line is
     /// decoded on its own, as UTF-8 (RFC 6532) or else ISO Latin 1, so one
     /// stray byte can't garble its neighbors.
+    ///
+    /// Works on slices of `data` without copying it, so the bytes after the
+    /// header block are never touched; for memory-mapped data they are never
+    /// read from disk.
     private static func headerLines(in data: Data) -> [String] {
-        let bytes = [UInt8](data.prefix(maximumHeaderBytes))
+        let bytes = data.prefix(maximumHeaderBytes)
         var lines: [String] = []
-        var start = 0
-        while start < bytes.count {
+        var start = bytes.startIndex
+        while start < bytes.endIndex {
             let lineFeedIndex = bytes[start...].firstIndex(of: lineFeed)
-            var end = lineFeedIndex ?? bytes.count
+            var end = lineFeedIndex ?? bytes.endIndex
             if end > start, bytes[end - 1] == carriageReturn { end -= 1 }
             if end == start { break }
             lines.append(decodeLine(bytes[start..<end]))
@@ -150,8 +154,8 @@ extension EmailMessageHeaders {
         return lines
     }
 
-    private static func decodeLine(_ bytes: ArraySlice<UInt8>) -> String {
-        if let utf8 = String(bytes: bytes, encoding: .utf8) { return utf8 }
+    private static func decodeLine(_ bytes: Data) -> String {
+        if let utf8 = String(data: bytes, encoding: .utf8) { return utf8 }
         // ISO Latin 1 maps every byte to the Unicode scalar of the same value.
         var scalars = String.UnicodeScalarView()
         scalars.append(contentsOf: bytes.map { Unicode.Scalar($0) })

@@ -216,6 +216,17 @@ struct EmailMessageHeadersTests {
         #expect(headers.subject == nil)
     }
 
+    @Test func sliceOfLargerDataParses() {
+        // A slice keeps its parent's indices; the scan must not assume zero.
+        let whole = Data("ignored prefix\r\n".utf8) + message(["Subject: From a slice", "Message-ID: <slice@example.com>"])
+        let slice = whole[whole.index(whole.startIndex, offsetBy: 16)...]
+
+        let headers = EmailMessageHeaders.parse(slice)
+
+        #expect(headers.subject == "From a slice")
+        #expect(headers.messageID == "<slice@example.com>")
+    }
+
     @Test func rawUTF8HeaderBytesDecode() {
         // RFC 6532 allows UTF-8 directly in header values.
         #expect(subject("Café 日本") == "Café 日本")
