@@ -217,12 +217,15 @@ drop highlight\[^drop].
   counts when it has Mail's message type (`com.apple.mail.email`) or
   `public.email-message` — a Finder `.eml` has these too. A provider with
   only a URL counts when it is neither `public.file-url` nor `public.image`:
-  Catalyst may expose only Mail's `message:` URL, but a Finder file (whose
+  Catalyst may expose only Mail's `message:` URL, and a web link adds a
+  website (see "Dropping a web address"), but a Finder file (whose
   `public.file-url` conforms to `public.url`) or a dragged image would
-  otherwise make the whole card accept a drop that adds nothing. Any other web
-  link is still accepted; the reader finds no Message-ID in it, so it adds
-  nothing. The reader turns each dragged message into `EmailMessageHeaders`.
-  Any message is kept, from any sender.
+  otherwise make the whole card accept a drop that adds nothing. Only the
+  type is known before the drop, not the scheme, so a URL of any other
+  scheme (`mailto:`, `ftp:`, …) is accepted too; the reader finds neither a
+  Message-ID nor a web address in it, so it adds nothing\[^read]. The reader
+  turns each dragged message into `EmailMessageHeaders`. Any message is kept,
+  from any sender.
 - **No drop while the user edits the contact.** The section is hidden during
   the edit, so the target is disabled: it removes its own interaction and adds
   the kept ones back, because the inline editor pins edit mode and uses
@@ -232,7 +235,7 @@ drop highlight\[^drop].
 - **Data requests start inside `performDrop`**, because UIKit allows them only
   there: `dropInteraction(_:performDrop:)` takes the providers of the
   session's items, calls `MailDropReader.startLoading(_:)` synchronously, and
-  hands the result to `highlightDroppedEmails(_:)`, where a task awaits
+  hands the result to `addDroppedItems(_:)`, where a task awaits
   `MailDropReader.read(_:)`. `sessionDidUpdate` proposes `.copy`.
 - **The log for a hand test** (channel `app.mail-drop`, at info, so the
   default log floor keeps it):
@@ -246,17 +249,19 @@ drop highlight\[^drop].
       `canHandle`. This line shows what Catalyst exposes for a Mail drag.
     - On a drop, `mail drop provider` for each provider, then
       `highlighted email drop` (channel `app.highlighted-email`) with the
-      message and usable counts.
+      `messages`, `usable`, and `webAddresses` counts.
 
-  None of these lines holds a subject, an address, or a file name.
+  None of these lines holds a subject, an address, a file name, or a URL.
 - **Mapping:** `HighlightedEmail.init?(headers:highlightedAt:)` builds each
   email, with `highlightedAt` set to the time of the drop\[^mapping]. A message
-  with no usable Message-ID is skipped; a drop with none adds nothing.
+  with no usable Message-ID is skipped; a drop with none adds no highlighted
+  email.
 - **Writes are serial.** The task awaits `highlightEmail(_:for:)` for each
-  email in turn, as the caller precondition above requires, and a second drop
-  on the same card waits for the first drop's writes before it starts its own.
-  A failed write is logged (never the subject or an address) and the loop
-  goes on to the next message.
+  email in turn, as the caller precondition above requires, then adds the
+  drop's web addresses (see "Dropping a web address"). A second drop on the
+  same card waits for the first drop's writes before it starts its own. A
+  failed write is logged (never the subject or an address) and the loop goes
+  on to the next message.
 - **The card scrolls to the drop.** When a drop's writes finish, the view
   keeps the ids it wrote; when the section shows one of them, the card
   forgets the ids and scrolls (animated, row centered) to the first of them
@@ -283,13 +288,38 @@ drop highlight\[^drop].
 
 ### Dropping a web address
 
-> **Not wired into the app yet.** Only the package method below exists. The
-> card's drop target still adds nothing for a web link (see "What it accepts"
-> above). The app part of this section is still to write.
-
 A dropped web link that is not a Mail message becomes a website row on the
 contact: a `urlAddresses` value on its Contacts record, not a highlighted
-email. `ContactsRepository.addWebAddresses(_:for:)` takes `[URL]` and a
+email. It uses the same drop target as an email (see "Dropping an email").
+Which types a link dragged from another app, such as Safari, exposes on
+Catalyst is not measured; the `mail drop session` log line shows them.
+
+On the card:
+
+- **Which providers are web addresses.** `MailDropReader.read(_:)` returns
+  the drop's messages and web addresses, each in provider order\[^read]. A
+  provider whose loads yield a Message-ID (the `.eml`, else a `message:`
+  URL) is a message. Any other provider whose URL is `http` or `https`, in
+  any case, is a web address. Any other provider adds nothing.
+- **One call per drop, after the emails.** In the same task chain as the
+  emails (`highlightDropTask`), after the drop's email writes, the card
+  passes ALL of the drop's web addresses to ONE `addWebAddresses(_:for:)`
+  call\[^webDrop], as the caller precondition below requires. The call is for
+  the contact the drop landed on: the id is taken in `performDrop`, like the
+  emails' id.
+- **The card re-loads.** When the call added at least one row, the card runs
+  `loadContact(preferFresh: true)`. It must: the website rows render from
+  the card's `contact` state, and nothing sets that state when the
+  repository posts `.contactsRepositoryDidReload` — the card's observer
+  re-reads only the two email sections\[^coarse]. A LinkedIn import and an
+  inline edit save re-load the same way. A drop with nothing new does not
+  re-load. The card does not scroll to the new row; the scroll after a drop
+  is for emails only.
+- **Errors.** A failed call (a gone contact, a failed save) is logged as
+  `add web addresses failed` (channel `app.highlighted-email`) and recorded
+  with `service.recordError`. The card puts no URL in either.
+
+`ContactsRepository.addWebAddresses(_:for:)` takes `[URL]` and a
 `ContactID` and returns how many rows it added\[^addWeb]. It uses the merge
 rules of the LinkedIn import's websites field\[^importWebsites]:
 
@@ -314,7 +344,7 @@ rules of the LinkedIn import's websites field\[^importWebsites]:
   each call before it starts the next write to the same contact — this
   method, `highlightEmail(_:for:)`, or any other card or sidecar write. One
   drop passes all of its URLs in ONE call, and a second drop on the same card
-  waits for the first, the way the card chains its email drops\[^drop]. The
+  waits for the first, the way the card chains its drops\[^webDrop]. The
   method reads the card and then saves the WHOLE card back: a save writes
   every `urlAddresses` row from the saved value\[^save]. So two calls that
   overlap can both read the same rows, and the later save wins. **A website
@@ -385,10 +415,12 @@ later wins over it.
 \[^watcher]: [ContactsRepository.postContactCellsDidChange(forContactKeys:)](../Sources/GuessWhoSync/ContactsRepository.swift:ContactsRepository.postContactCellsDidChange)
 \[^mint]: [GuessWhoSync.handleCaseA mints Contact.deterministicGuessWhoID](../Sources/GuessWhoSync/GuessWhoSync.swift:GuessWhoSync.handleCaseA)
 \[^save]: [CNContactStoreAdapter.save → apply(\_:to:) sets urlAddresses from the saved value](../Sources/GuessWhoSync/CNContactStoreAdapter.swift:CNContactStoreAdapter.apply)
-\[^drop]: [ListMailDropTarget / MailDropInteractionDelegate / ContactDetailView.highlightDroppedEmails(\_:)](../App/GuessWho/Support/ListMailDropTarget.swift:ListMailDropTarget)
+\[^drop]: [ListMailDropTarget / MailDropInteractionDelegate / ContactDetailView.addDroppedItems(\_:)](../App/GuessWho/Support/ListMailDropTarget.swift:ListMailDropTarget)
 \[^install]: [ListDropInstallerView.ownListCollectionView() / update(isEnabled:)](../App/GuessWho/Support/ListMailDropTarget.swift:ListDropInstallerView.ownListCollectionView)
 \[^bridge]: [ListMailDropTargetTests.aViewAboveTheListKeepsADropInteractionThatIsNotOurs](../App/GuessWhoTests/ListMailDropTargetTests.swift:ListMailDropTargetTests.aViewAboveTheListKeepsADropInteractionThatIsNotOurs)
 \[^accept]: [MailDropReader.canAccept(\_:) / isMailMessage(\_:)](../App/GuessWho/Support/MailDropReader.swift:MailDropReader.canAccept)
+\[^read]: [MailDropReader.read(\_:) / PendingItem.item()](../App/GuessWho/Support/MailDropReader.swift:MailDropReader.read)
+\[^webDrop]: [ContactDetailView.addDroppedItems(\_:) / addDroppedWebAddresses(\_:for:)](../App/GuessWho/ContactDetailView.swift:ContactDetailView.addDroppedWebAddresses)
 \[^scroll]: [ContactDetailView.highlightScrollTarget / ScrollToHighlightedEmailModifier](../App/GuessWho/ContactDetailView.swift:ScrollToHighlightedEmailModifier)
 \[^mapping]: [HighlightedEmail.init?(headers:highlightedAt:)](../Sources/GuessWhoSync/HighlightedEmail.swift:HighlightedEmail.init)
 \[^addWeb]: [ContactsRepository.addWebAddresses(\_:for:)](../Sources/GuessWhoSync/ContactsRepository.swift:ContactsRepository.addWebAddresses)
