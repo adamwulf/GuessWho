@@ -1874,8 +1874,8 @@ public final class ContactsRepository: NSObject {
     /// The merge is the LinkedIn import's, field by field:
     /// - A value the contact already has, or one repeated in `urls`, is
     ///   skipped. Emails compare by `emailDedupKey` (trimmed, lowercased),
-    ///   phone numbers by `phoneDedupKey` (E.164 in the device's region,
-    ///   else the digits), and websites by the scheme-insensitive
+    ///   phone numbers by `phoneDedupKey` (the E.164 digits in the device's
+    ///   region, else the digits), and websites by the scheme-insensitive
     ///   `urlDedupKey` (scheme, a leading `www.`, a trailing slash, and case
     ///   do not count). The first spelling wins, and input order is kept.
     /// - New rows get the default label (empty -> adapter passes nil).
@@ -2073,14 +2073,14 @@ public final class ContactsRepository: NSObject {
         return t
     }
 
-    /// Phone dedup key: the number in E.164 (plus any extension) as
-    /// `PhoneNumberDisplayFormatter.comparisonKey(for:)` parses it, reading a
-    /// number with no country code in the device's region, so a dropped
-    /// `+1 555 010 0123` matches a stored `(555) 010-0123` on a US device.
-    /// A number that does not parse falls back to its digits only. The two
-    /// kinds of key never collide: only an E.164 key starts with `+`.
+    /// Phone dedup key: `PhoneNumberDisplayFormatter.comparisonKey(for:)` in
+    /// the device's region — the E.164 digits without the `+` (plus any
+    /// extension's digits) when the number parses, else its digits. So a
+    /// dropped `+1 555 010 0123` matches a stored `(555) 010-0123` on a US
+    /// device, and a full number that does not parse here still matches the
+    /// same number written with a `+`.
     private static func phoneDedupKey(_ s: String) -> String {
-        PhoneNumberDisplayFormatter.shared.comparisonKey(for: s) ?? s.filter(\.isNumber)
+        PhoneNumberDisplayFormatter.shared.comparisonKey(for: s)
     }
 
     /// Case-insensitive email dedup key: trimmed and lowercased.

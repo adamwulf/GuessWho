@@ -414,16 +414,21 @@ The merge is the LinkedIn import's for each field\[^importValues]:
   scheme, no leading `www.`, and no trailing slash, so
   `https://www.example.com/` matches a stored `example.com`\[^dedup]. The
   first spelling in the input wins, and input order is kept.
-- **Phone numbers compare as E.164.** A `tel:` link is usually E.164
+- **Phone numbers compare as E.164 digits.** A `tel:` link is usually E.164
   (`+15550100123`), while a stored number often has no country code. So
   `phoneDedupKey` parses each number with PhoneNumberKit, through the
   shared `PhoneNumberDisplayFormatter`, reading a number with no country
-  code in the device's region, and compares the E.164 form plus any
-  extension\[^phoneKey]. On a US device a dropped `+1 555 010 0123` matches
-  a stored `(555) 010-0123`. The number type is not checked, so a number in
-  a range the metadata does not list (a fictional 555 number) still
-  compares by its country and digits. A number that does not parse falls
-  back to its digits only. The LinkedIn import uses the same key.
+  code in the device's region, and compares the E.164 digits WITHOUT the
+  `+`, plus `;ext=` and the digits of any extension\[^phoneKey]. On a US
+  device a dropped `+1 555 010 0123` matches a stored `(555) 010-0123`, and
+  every spelling of one extension (`x7`, `ext. 7`, `,7`, `,,7`) is the same.
+  The number type is not checked, so a number in a range the metadata does
+  not list (a fictional 555 number) still compares by its country and
+  digits. A number that does not parse compares by its digits only;
+  because the parsed key has no `+`, a full number that does not parse in
+  this region (`1-555-010-0199` on a GB device, `44 20 7946 0958` on a US
+  device) still matches the same number written with a `+`. The LinkedIn
+  import uses the same key.
 - **Default label.** A new row has an empty label, so Contacts gives it its
   default label.
 - **One save, and only on a change.** Nothing new: no Contacts save and no
@@ -524,7 +529,7 @@ later wins over it.
 \[^addValues]: [ContactsRepository.addContactValues(from:for:) / AddedContactValues](../Sources/GuessWhoSync/ContactsRepository.swift:ContactsRepository.addContactValues)
 \[^importValues]: [ContactsRepository.applyLinkedIn — the `.emails`, `.phones`, and `.websites` branches](../Sources/GuessWhoSync/ContactsRepository.swift:ContactsRepository.applyLinkedIn)
 \[^dedup]: [ContactsRepository.emailDedupKey / urlDedupKey / newValues(\_:notIn:key:)](../Sources/GuessWhoSync/ContactsRepository.swift:ContactsRepository.urlDedupKey)
-\[^phoneKey]: [ContactsRepository.phoneDedupKey → PhoneNumberDisplayFormatter.comparisonKey(for:region:)](../Sources/GuessWhoSync/PhoneNumberFormatting.swift:PhoneNumberDisplayFormatter.comparisonKey)
+\[^phoneKey]: [ContactsRepository.phoneDedupKey → PhoneNumberDisplayFormatter.comparisonKey(for:region:), which also holds the digits fallback](../Sources/GuessWhoSync/PhoneNumberFormatting.swift:PhoneNumberDisplayFormatter.comparisonKey)
 \[^valuePosts]: [ContactsRepository.saveContact → refreshContact(localID:) → postDidReload; stampTimestamps posts its own reload](../Sources/GuessWhoSync/ContactsRepository.swift:ContactsRepository.stampTimestamps)
 \[^section]: [ContactDetailView.highlightedEmailsSection](../App/GuessWho/ContactDetailView.swift:ContactDetailView.highlightedEmailsSection)
 \[^row]: [ContactDetailView.highlightedEmailLabel / mailMessageLabel](../App/GuessWho/ContactDetailView.swift:ContactDetailView.mailMessageLabel)

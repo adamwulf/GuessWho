@@ -478,7 +478,7 @@ struct ContactsRepositoryContactValueTests {
                 "message:%3C1234@example.com%3E",
                 "tel:+1-555-010-0199;ext=3",
                 "http://www.example.com/about/",
-                "tel:+1%20(555)%20010-0199",
+                "tel:15550100199",
                 "ftp://example.com/file.txt"
             ),
             for: f.id
@@ -606,32 +606,59 @@ struct PhoneNumberComparisonKeyTests {
     private let formatter = PhoneNumberDisplayFormatter.shared
 
     @Test func nationalAndE164SpellingsShareAKey() {
-        let e164 = formatter.comparisonKey(for: "+1 555 010 0123", region: "US")
-        #expect(e164 == "+15550100123")
-        #expect(formatter.comparisonKey(for: "(555) 010-0123", region: "US") == e164)
-        #expect(formatter.comparisonKey(for: "555.010.0123", region: "US") == e164)
-        #expect(formatter.comparisonKey(for: "1 555 010 0123", region: "US") == e164)
+        let key = formatter.comparisonKey(for: "+1 555 010 0123", region: "US")
+        #expect(key == "15550100123")
+        #expect(formatter.comparisonKey(for: "(555) 010-0123", region: "US") == key)
+        #expect(formatter.comparisonKey(for: "555.010.0123", region: "US") == key)
+        #expect(formatter.comparisonKey(for: "1 555 010 0123", region: "US") == key)
     }
 
     /// A number with a country code reads the same in any region; one
     /// without is read in the region.
     @Test func theRegionReadsANumberWithNoCountryCode() {
-        #expect(formatter.comparisonKey(for: "+44 20 7946 0958", region: "US") == "+442079460958")
-        #expect(formatter.comparisonKey(for: "020 7946 0958", region: "GB") == "+442079460958")
-        #expect(formatter.comparisonKey(for: "020 7946 0958", region: "US") != "+442079460958")
+        #expect(formatter.comparisonKey(for: "+44 20 7946 0958", region: "US") == "442079460958")
+        #expect(formatter.comparisonKey(for: "020 7946 0958", region: "GB") == "442079460958")
+        #expect(formatter.comparisonKey(for: "020 7946 0958", region: "US") != "442079460958")
     }
 
-    /// Two extensions of one line are two numbers.
+    /// A full number written with its country code but no `+` may not parse
+    /// in a foreign region; its digits fallback still equals the parsed key
+    /// of the same number written with a `+`.
+    @Test(arguments: [
+        ("1-555-010-0199", "+1 555 010 0199", "GB"),
+        ("44 20 7946 0958", "+44 20 7946 0958", "US"),
+    ])
+    func aFullNumberWithNoPlusMatchesTheSameNumberWithOne(noPlus: String, withPlus: String, region: String) {
+        #expect(
+            formatter.comparisonKey(for: noPlus, region: region)
+                == formatter.comparisonKey(for: withPlus, region: region)
+        )
+    }
+
+    /// Every spelling of one extension gives one key; two extensions of one
+    /// line are two numbers.
+    @Test(arguments: [
+        "(555) 010-0123 ext. 7",
+        "(555) 010-0123 x7",
+        "(555) 010-0123,7",
+        "(555) 010-0123,,7",
+        "(555) 010-0123 ;ext=7",
+    ])
+    func everySpellingOfAnExtensionSharesAKey(_ raw: String) {
+        #expect(formatter.comparisonKey(for: raw, region: "US") == "15550100123;ext=7")
+    }
+
     @Test func anExtensionIsPartOfTheKey() {
         let main = formatter.comparisonKey(for: "(555) 010-0123", region: "US")
         let ext7 = formatter.comparisonKey(for: "(555) 010-0123 ext. 7", region: "US")
-        #expect(ext7 == "+15550100123;ext=7")
         #expect(ext7 != main)
         #expect(formatter.comparisonKey(for: "(555) 010-0123 ext. 8", region: "US") != ext7)
     }
 
-    @Test(arguments: ["12-34", "", "   ", "not a number"])
-    func aStringThatDoesNotParseHasNoKey(_ raw: String) {
-        #expect(formatter.comparisonKey(for: raw, region: "US") == nil)
+    /// A string that does not parse compares by its digits; one with no digit
+    /// has an empty key, which the merge skips.
+    @Test(arguments: [("12-34", "1234"), ("", ""), ("   ", ""), ("not a number", "")])
+    func aStringThatDoesNotParseFallsBackToItsDigits(raw: String, key: String) {
+        #expect(formatter.comparisonKey(for: raw, region: "US") == key)
     }
 }

@@ -42,18 +42,27 @@ public final class PhoneNumberDisplayFormatter {
         }
     }
 
-    /// A key that is equal for two strings that write the same phone number,
-    /// or nil when `raw` does not parse as one: the number in E.164
-    /// (`+15550100123`), plus `;ext=<extension>` when it has one, so two
-    /// extensions of one line stay apart. A number with no country code is
-    /// read in `region` (the device's region when nil), so `(555) 010-0123`
-    /// and `+1 555 010 0123` share a key on a US device.
+    /// A key that is equal for two strings that write the same phone number:
+    /// the phone dedup key the drop of a `tel:` link and the LinkedIn import
+    /// share (`ContactsRepository.phoneDedupKey`).
+    ///
+    /// - A number that parses gives its E.164 digits WITHOUT the `+`
+    ///   (`15550100123`), plus `;ext=<digits>` when its extension has a
+    ///   digit, so two extensions of one line stay apart and every spelling
+    ///   of one extension (`x7`, `ext. 7`, `,7`, `,,7`) is the same. A
+    ///   number with no country code is read in `region` (the device's
+    ///   region when nil), so `(555) 010-0123` and `+1 555 010 0123` share a
+    ///   key on a US device.
+    /// - A number that does not parse gives its digits only. Because the
+    ///   parsed key has no `+`, a full number that does not parse in this
+    ///   region (`1-555-010-0199` on a GB device) still matches the same
+    ///   number written with a `+`.
     ///
     /// The number type is not checked (`ignoreType`): a number in a range the
     /// metadata does not list (a fictional 555 number, a newly opened range)
     /// still gets a key from its country and digits. Display formatting
     /// keeps the type check.
-    func comparisonKey(for raw: String, region: String? = nil) -> String? {
+    func comparisonKey(for raw: String, region: String? = nil) -> String {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty,
               let number = try? utility.parse(
@@ -61,10 +70,10 @@ public final class PhoneNumberDisplayFormatter {
                   withRegion: region ?? PhoneNumberUtility.defaultRegionCode(),
                   ignoreType: true
               )
-        else { return nil }
-        let e164 = utility.format(number, toType: .e164)
-        guard let numberExtension = number.numberExtension, !numberExtension.isEmpty else { return e164 }
-        return e164 + ";ext=" + numberExtension
+        else { return trimmed.filter(\.isNumber) }
+        let digits = utility.format(number, toType: .e164).filter(\.isNumber)
+        let extensionDigits = (number.numberExtension ?? "").filter(\.isNumber)
+        return extensionDigits.isEmpty ? digits : digits + ";ext=" + extensionDigits
     }
 
     /// The region `comparisonKey(for:)` reads a number with no country code
