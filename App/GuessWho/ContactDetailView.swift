@@ -26,20 +26,46 @@ enum MailMessageLink {
 /// an image or file drag that has no Mail type (`MailDropReader.canAccept`),
 /// so only the photo drop can take an image.
 struct HighlightEmailDropDelegate: DropDelegate {
+    /// False while the user edits the contact. The section is hidden then, so
+    /// the card refuses the drop.
+    let isEnabled: Bool
     /// Called inside `performDrop` with the loads already started.
     let onDrop: @MainActor (MailDropReader.PendingDrop) -> Void
 
     func validateDrop(info: DropInfo) -> Bool {
-        MailDropReader.canAccept(info.itemProviders(for: MailDropReader.acceptedTypes))
+        isEnabled && MailDropReader.canAccept(info.itemProviders(for: MailDropReader.acceptedTypes))
     }
 
     func performDrop(info: DropInfo) -> Bool {
+        guard isEnabled else { return false }
         let providers = info.itemProviders(for: MailDropReader.acceptedTypes)
         guard MailDropReader.canAccept(providers) else { return false }
         // UIKit allows a drop's data to be requested only within
         // performDrop, so every load starts here, synchronously.
         onDrop(MailDropReader.startLoading(providers))
         return true
+    }
+}
+
+/// Scrolls the modified `List` to the row whose id is `target` each time
+/// `target` changes to a value, then calls `onScroll`. A modifier, so the
+/// contact card's `List` expression does not move into a `ScrollViewReader`
+/// closure.
+struct ScrollToHighlightedEmailModifier: ViewModifier {
+    let target: UUID?
+    let onScroll: () -> Void
+
+    func body(content: Content) -> some View {
+        ScrollViewReader { proxy in
+            content
+                .onChange(of: target) { _, target in
+                    guard let target else { return }
+                    withAnimation {
+                        proxy.scrollTo(target, anchor: .center)
+                    }
+                    onScroll()
+                }
+        }
     }
 }
 
@@ -221,6 +247,9 @@ struct ContactDetailView: View {
     // precondition for highlightEmail). Never cancelled: a drop is a user
     // write and must land even if the card goes away.
     @State private var highlightDropTask: Task<Void, Never>?
+    // The emails the newest drop wrote. The card scrolls to the first of their
+    // rows when the section shows it, then clears this.
+    @State private var highlightScrollIDs: Set<UUID> = []
     // Imported-guide matches keyed by the individual contact street line they
     // describe. Each summary renders directly below its own address rather than
     // combining counts across a multi-address contact. Loaded async via
@@ -338,6 +367,12 @@ struct ContactDetailView: View {
 
     private var isEditingContact: Bool {
         editModel != nil
+    }
+
+    /// The first row in the section that the newest drop wrote, or nil.
+    private var highlightScrollTarget: UUID? {
+        guard !highlightScrollIDs.isEmpty else { return nil }
+        return highlightedEmails.first { highlightScrollIDs.contains($0.id) }?.id
     }
 
     private var noteItems: [ContactNote] {
@@ -737,8 +772,16 @@ struct ContactDetailView: View {
         // card, so the whole card is the target with no drop zone of its own.
         .onDrop(
             of: MailDropReader.acceptedTypes,
-            delegate: HighlightEmailDropDelegate(onDrop: highlightDroppedEmails)
+            delegate: HighlightEmailDropDelegate(
+                isEnabled: !isEditingContact,
+                onDrop: highlightDroppedEmails
+            )
         )
+        // After a drop, show the user where it went.
+        .modifier(ScrollToHighlightedEmailModifier(
+            target: highlightScrollTarget,
+            onScroll: { highlightScrollIDs = [] }
+        ))
         // Inject the owned editMode binding so EditButton drives this view's own
         // .editMode state, not an ambient one we can't tear down. Reset to
         // .inactive on every contact-edit exit path.
@@ -1882,7 +1925,8 @@ struct ContactDetailView: View {
     /// Keeps every message of a drop as a highlighted email on this contact.
     /// Called inside `performDrop`, so the drop time is taken here. Messages
     /// with no usable Message-ID are skipped. The section updates from the
-    /// repository's change notifications.
+    /// repository's change notifications, and the card then scrolls to the
+    /// first row of this drop.
     private func highlightDroppedEmails(_ drop: MailDropReader.PendingDrop) {
         let contactID = loadedContactID ?? id
         let droppedAt = Date()
@@ -1898,9 +1942,11 @@ struct ContactDetailView: View {
             // One write at a time: a first write can mint the contact's
             // identity, and a write that starts before it finishes would
             // reconcile again (docs/highlighted-emails.md).
+            var writtenIDs: Set<UUID> = []
             for email in emails {
                 do {
                     try await repository.highlightEmail(email, for: contactID)
+                    writtenIDs.insert(email.id)
                 } catch {
                     // Keep going so one failed message does not drop the rest.
                     Self.highlightedEmailLog.error(
@@ -1908,6 +1954,12 @@ struct ContactDetailView: View {
                     )
                     service.recordError("highlight email failed: \(error.localizedDescription)")
                 }
+            }
+            // The rows can show before or after this point, because each
+            // write's re-read runs on its own. `highlightScrollTarget` covers
+            // both.
+            if !writtenIDs.isEmpty {
+                highlightScrollIDs = writtenIDs
             }
         }
     }

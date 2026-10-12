@@ -189,6 +189,9 @@ There is no drop zone and no drop highlight\[^drop].
   link is still accepted; the reader finds no Message-ID in it, so it adds
   nothing. The reader turns each dragged message into `EmailMessageHeaders`.
   Any message is kept, from any sender.
+- **No drop while the user edits the contact.** The section is hidden during
+  the edit, so the delegate's `isEnabled` is false and both `validateDrop`
+  and `performDrop` refuse.
 - **Data requests start inside `performDrop`**, because UIKit allows them only
   there: the delegate calls `MailDropReader.startLoading(_:)` synchronously,
   then a task awaits `MailDropReader.read(_:)`.
@@ -200,6 +203,13 @@ There is no drop zone and no drop highlight\[^drop].
   on the same card waits for the first drop's writes before it starts its own.
   A failed write is logged (never the subject or an address) and the loop
   goes on to the next message.
+- **The card scrolls to the drop.** When a drop's writes finish, the view
+  keeps the ids it wrote; when the section shows one of them, the card
+  scrolls (animated, row centered) to the first of them in section order,
+  then forgets the ids\[^scroll]. The section re-reads run apart from the
+  writes, so the rows can show before or after the writes finish; both cases
+  scroll. A newer drop replaces the ids of an older one that has not
+  scrolled yet.
 - **The monogram's photo drop still works.** It is a nested drop destination
   for `.image` inside the header row, and the two targets never want the same
   drag. A Mail message has no image type, so the photo drop does not take it.
@@ -265,6 +275,7 @@ later wins over it.
 \[^save]: [CNContactStoreAdapter.save → apply(\_:to:) sets urlAddresses from the saved value](../Sources/GuessWhoSync/CNContactStoreAdapter.swift:CNContactStoreAdapter.apply)
 \[^drop]: [HighlightEmailDropDelegate / ContactDetailView.highlightDroppedEmails(\_:)](../App/GuessWho/ContactDetailView.swift:HighlightEmailDropDelegate)
 \[^accept]: [MailDropReader.canAccept(\_:) / isMailMessage(\_:)](../App/GuessWho/Support/MailDropReader.swift:MailDropReader.canAccept)
+\[^scroll]: [ContactDetailView.highlightScrollTarget / ScrollToHighlightedEmailModifier](../App/GuessWho/ContactDetailView.swift:ScrollToHighlightedEmailModifier)
 \[^mapping]: [HighlightedEmail.init?(headers:highlightedAt:)](../Sources/GuessWhoSync/HighlightedEmail.swift:HighlightedEmail.init)
 \[^section]: [ContactDetailView.highlightedEmailsSection](../App/GuessWho/ContactDetailView.swift:ContactDetailView.highlightedEmailsSection)
 \[^row]: [ContactDetailView.highlightedEmailLabel / mailMessageLabel](../App/GuessWho/ContactDetailView.swift:ContactDetailView.mailMessageLabel)
