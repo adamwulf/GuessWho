@@ -105,12 +105,17 @@ public struct MailActivity: Hashable, Sendable, Identifiable {
         return value
     }
 
-    /// SHA-256 over a namespaced Message-ID; first 16 bytes formatted as an
-    /// RFC 4122 UUID (same recipe as `Event.stableID(forEventKitID:)`). The
-    /// namespace keeps a Message-ID from ever hashing to the same UUID as an
-    /// EventKit id with the same spelling.
     private static func activityID(forNormalizedMessageID messageID: String) -> UUID {
-        let digest = SHA256.hash(data: Data(("mail-activity\n" + messageID).utf8))
+        messageUUID(namespace: "mail-activity", normalizedMessageID: messageID)
+    }
+
+    /// SHA-256 over `namespace + "\n" + messageID`; first 16 bytes formatted
+    /// as an RFC 4122 UUID (same recipe as `Event.stableID(forEventKitID:)`).
+    /// The namespace keeps a Message-ID from ever hashing to the same UUID as
+    /// an EventKit id with the same spelling, or as the same Message-ID in
+    /// another cell family (`HighlightedEmail` uses its own namespace).
+    static func messageUUID(namespace: String, normalizedMessageID messageID: String) -> UUID {
+        let digest = SHA256.hash(data: Data((namespace + "\n" + messageID).utf8))
         var bytes = Array(digest.prefix(16))
         bytes[6] = (bytes[6] & 0x0F) | 0x50
         bytes[8] = (bytes[8] & 0x3F) | 0x80
@@ -124,7 +129,7 @@ public struct MailActivity: Hashable, Sendable, Identifiable {
 
     /// Rounds `date` through the sidecar's ISO8601 spelling so the in-memory
     /// value equals what a later read decodes.
-    private static func storedPrecision(_ date: Date) -> Date {
+    static func storedPrecision(_ date: Date) -> Date {
         SidecarISO8601.date(from: SidecarISO8601.string(from: date)) ?? date
     }
 }

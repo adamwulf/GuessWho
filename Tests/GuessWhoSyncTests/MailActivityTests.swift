@@ -83,6 +83,11 @@ struct MailActivityTests {
         #expect(bracketed.id == bare.id)
         #expect(bracketed.id == folded.id)
         #expect(MailActivity.activityID(forMessageID: "<abc.123@example.com>") == bracketed.id)
+        // The id is part of the synced format: SHA-256 over
+        // "mail-activity\n" + the normalized Message-ID. A change to the
+        // shared hash would fork every stored activity.
+        #expect(MailActivity.activityID(forMessageID: "<abc.123@example.com>")
+            == UUID(uuidString: "6CBF6DC3-B544-5F7E-B3BD-50DD2315125C"))
         #expect(bracketed.senderAddress == "ada@example.com")
 
         // The local part keeps its case, so a different local part is a

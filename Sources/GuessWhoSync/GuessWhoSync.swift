@@ -526,9 +526,13 @@ public final class GuessWhoSync: @unchecked Sendable {
         var result: [SidecarField] = []
         result.reserveCapacity(envelope.fields.count)
         for (rawID, cell) in envelope.fields {
-            // Mail activity cells have their own decode path
-            // (`mailActivities(at:)`); one never surfaces as a field.
-            guard !MailActivity.isCellKey(rawID), let id = UUID(uuidString: rawID) else { continue }
+            // Mail activity and highlighted-email cells have their own decode
+            // paths (`mailActivities(at:)`, `highlightedEmails(at:)`); one
+            // never surfaces as a field.
+            guard !MailActivity.isCellKey(rawID),
+                  !HighlightedEmail.isCellKey(rawID),
+                  let id = UUID(uuidString: rawID)
+            else { continue }
             if let decoded = SidecarField.decode(id: id, from: cell) {
                 result.append(decoded)
             }

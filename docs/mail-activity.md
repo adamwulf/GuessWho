@@ -12,6 +12,11 @@ general cell rules this format relies on are in
 [`sidecar-compatibility.md`](sidecar-compatibility.md); identity rules are in
 [`contact-identity.md`](contact-identity.md).
 
+Emails the user drops onto a contact are NOT mail activity: they are a separate
+`highlightedEmail:` cell family with their own rules (any sender, no
+`lastInteracted` move, no retention, tombstone removal). See
+[`highlighted-emails.md`](highlighted-emails.md).
+
 ## Synced format
 
 Each activity is **one cell** on the contact's sidecar envelope (kind
