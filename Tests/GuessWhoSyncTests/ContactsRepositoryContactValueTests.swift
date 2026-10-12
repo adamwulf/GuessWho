@@ -272,6 +272,72 @@ struct ContactsRepositoryContactValueTests {
         #expect(try f.emails() == ["ada@example.com"])
     }
 
+    /// A list encoded whole, as `encodeURIComponent` writes it: the decode
+    /// comes before the split, so the encoded comma still splits the list.
+    @Test func mailtoListEncodedWholeGivesEachAddress() async throws {
+        let f = try await setup(Contact(localID: "T", givenName: "Ada"))
+
+        let added = try await f.repo.addContactValues(
+            from: urls("mailto:ada%40example.com%2Cbob%40example.org"), for: f.id
+        )
+
+        #expect(added == AddedContactValues(emailAddresses: 2))
+        #expect(try f.emails() == ["ada@example.com", "bob@example.org"])
+    }
+
+    /// Outlook writes a `;` list.
+    @Test func mailtoSemicolonListGivesEachAddress() async throws {
+        let f = try await setup(Contact(localID: "T", givenName: "Ada"))
+
+        let added = try await f.repo.addContactValues(
+            from: urls("mailto:ada@example.com;bob@example.org;%20cy@example.net"), for: f.id
+        )
+
+        #expect(added == AddedContactValues(emailAddresses: 3))
+        #expect(try f.emails() == ["ada@example.com", "bob@example.org", "cy@example.net"])
+    }
+
+    /// A display-name entry gives the address inside its brackets, so it
+    /// dedups against the stored bare address.
+    @Test func mailtoDisplayNameGivesTheBareAddress() async throws {
+        let f = try await setup(Contact(
+            localID: "T", givenName: "Ada",
+            emailAddresses: [LabeledValue(label: "home", value: "Jane@Example.com")]
+        ))
+
+        let added = try await f.repo.addContactValues(
+            from: urls(
+                "mailto:Jane%20Doe%20%3Cjane@example.com%3E",
+                "mailto:Bob%20Roe%20%3Cbob@example.org%3E,%22Doe,%20Jane%22%20%3Cjane@example.com%3E"
+            ),
+            for: f.id
+        )
+
+        // The quoted "Doe, Jane" splits at its comma; the bracketed half still
+        // gives jane@example.com, which the contact has.
+        #expect(added == AddedContactValues(emailAddresses: 1))
+        #expect(try f.emails() == ["Jane@Example.com", "bob@example.org"])
+    }
+
+    /// Only a bare address is kept: one `@` with text on both sides, and no
+    /// whitespace, bracket, or quote.
+    @Test(arguments: [
+        "mailto:@example.com",
+        "mailto:ada@",
+        "mailto:ada@b@example.com",
+        "mailto:ada%20lovelace@example.com",
+        "mailto:%22ada%22@example.com",
+        "mailto:Ada%20%3Cada@example.com",
+    ])
+    func mailtoSkipsAnEntryThatIsNotABareAddress(_ string: String) async throws {
+        let f = try await setup(Contact(localID: "T", givenName: "Ada"))
+
+        let added = try await f.repo.addContactValues(from: urls(string), for: f.id)
+
+        #expect(added.total == 0)
+        #expect(try await f.contactsWrites().isEmpty)
+    }
+
     /// An empty entry, one with no `@`, and a bare `mailto:` give no address.
     @Test func mailtoSkipsEmptyAndInvalidEntries() async throws {
         let f = try await setup(Contact(localID: "T", givenName: "Ada"))
@@ -310,7 +376,19 @@ struct ContactsRepositoryContactValueTests {
         #expect(try f.phones() == ["+1-555-010-0199"])
     }
 
-    /// Phone numbers compare by their digits only.
+    /// In the `//` form the number is the URL's host.
+    @Test func telSlashSlashFormAddsTheNumber() async throws {
+        let f = try await setup(Contact(localID: "T", givenName: "Ada"))
+
+        let added = try await f.repo.addContactValues(
+            from: urls("tel://5550100123", "tel://+1-555-010-0177/", "tel://;ext=1"), for: f.id
+        )
+
+        #expect(added == AddedContactValues(phoneNumbers: 2))
+        #expect(try f.phones() == ["5550100123", "+1-555-010-0177"])
+    }
+
+    /// Another spelling of a number the contact has adds nothing.
     @Test func telSkipsANumberTheContactHasWithOtherSeparators() async throws {
         let f = try await setup(Contact(
             localID: "T", givenName: "Ada",
@@ -326,6 +404,38 @@ struct ContactsRepositoryContactValueTests {
         #expect(try await f.contactsWrites().isEmpty)
     }
 
+    /// A tel: link is usually E.164; the stored number often has no country
+    /// code. Read in the device's region they are the same number, so this
+    /// runs only where the device's region is the US.
+    @Test(.enabled(if: PhoneNumberDisplayFormatter.deviceRegion == "US"))
+    func telSkipsAnE164SpellingOfAStoredNationalNumber() async throws {
+        let f = try await setup(Contact(
+            localID: "T", givenName: "Ada",
+            phoneNumbers: [LabeledValue(label: "mobile", value: "(555) 010-0123")]
+        ))
+
+        let added = try await f.repo.addContactValues(
+            from: urls("tel:+1%20555%20010%200123", "tel:+15550100123"), for: f.id
+        )
+
+        #expect(added.total == 0)
+        #expect(try f.phones() == ["(555) 010-0123"])
+        #expect(try await f.contactsWrites().isEmpty)
+    }
+
+    /// A number PhoneNumberKit does not parse still compares by its digits.
+    @Test func telSkipsAnUnparsedNumberWithTheSameDigits() async throws {
+        let f = try await setup(Contact(
+            localID: "T", givenName: "Ada",
+            phoneNumbers: [LabeledValue(label: "other", value: "12-34")]
+        ))
+
+        let added = try await f.repo.addContactValues(from: urls("tel:1234", "tel:1-2-3-4"), for: f.id)
+
+        #expect(added.total == 0)
+        #expect(try f.phones() == ["12-34"])
+    }
+
     @Test func telSkipsANumberWithNoDigits() async throws {
         let f = try await setup(Contact(localID: "T", givenName: "Ada"))
 
@@ -336,6 +446,22 @@ struct ContactsRepositoryContactValueTests {
         #expect(added.total == 0)
         #expect(try f.phones().isEmpty)
         #expect(try await f.contactsWrites().isEmpty)
+    }
+
+    // MARK: - Scheme case
+
+    /// The scheme counts in any case, for every kind.
+    @Test func schemesCountInAnyCase() async throws {
+        let f = try await setup(Contact(localID: "T", givenName: "Ada"))
+
+        let added = try await f.repo.addContactValues(
+            from: urls("MAILTO:ada@example.com", "Tel:555-010-0123", "TEL:555-010-0177", "HTTPS://example.com"),
+            for: f.id
+        )
+
+        #expect(added == AddedContactValues(emailAddresses: 1, phoneNumbers: 2, urlAddresses: 1))
+        #expect(try f.emails() == ["ada@example.com"])
+        #expect(try f.phones() == ["555-010-0123", "555-010-0177"])
     }
 
     // MARK: - One drop, one save
@@ -352,7 +478,7 @@ struct ContactsRepositoryContactValueTests {
                 "message:%3C1234@example.com%3E",
                 "tel:+1-555-010-0199;ext=3",
                 "http://www.example.com/about/",
-                "tel:15550100199",
+                "tel:+1%20(555)%20010-0199",
                 "ftp://example.com/file.txt"
             ),
             for: f.id
@@ -467,5 +593,45 @@ struct ContactsRepositoryContactValueTests {
         )
 
         #expect(added == AddedContactValues())
+    }
+}
+
+/// `PhoneNumberDisplayFormatter.comparisonKey(for:region:)`: the phone dedup
+/// key the drop and the LinkedIn import share. The region is fixed here, so
+/// the result does not depend on the device's region. On the main actor,
+/// like every caller of the shared formatter, so tests never parse at once.
+@Suite("PhoneNumberDisplayFormatter.comparisonKey")
+@MainActor
+struct PhoneNumberComparisonKeyTests {
+    private let formatter = PhoneNumberDisplayFormatter.shared
+
+    @Test func nationalAndE164SpellingsShareAKey() {
+        let e164 = formatter.comparisonKey(for: "+1 555 010 0123", region: "US")
+        #expect(e164 == "+15550100123")
+        #expect(formatter.comparisonKey(for: "(555) 010-0123", region: "US") == e164)
+        #expect(formatter.comparisonKey(for: "555.010.0123", region: "US") == e164)
+        #expect(formatter.comparisonKey(for: "1 555 010 0123", region: "US") == e164)
+    }
+
+    /// A number with a country code reads the same in any region; one
+    /// without is read in the region.
+    @Test func theRegionReadsANumberWithNoCountryCode() {
+        #expect(formatter.comparisonKey(for: "+44 20 7946 0958", region: "US") == "+442079460958")
+        #expect(formatter.comparisonKey(for: "020 7946 0958", region: "GB") == "+442079460958")
+        #expect(formatter.comparisonKey(for: "020 7946 0958", region: "US") != "+442079460958")
+    }
+
+    /// Two extensions of one line are two numbers.
+    @Test func anExtensionIsPartOfTheKey() {
+        let main = formatter.comparisonKey(for: "(555) 010-0123", region: "US")
+        let ext7 = formatter.comparisonKey(for: "(555) 010-0123 ext. 7", region: "US")
+        #expect(ext7 == "+15550100123;ext=7")
+        #expect(ext7 != main)
+        #expect(formatter.comparisonKey(for: "(555) 010-0123 ext. 8", region: "US") != ext7)
+    }
+
+    @Test(arguments: ["12-34", "", "   ", "not a number"])
+    func aStringThatDoesNotParseHasNoKey(_ raw: String) {
+        #expect(formatter.comparisonKey(for: raw, region: "US") == nil)
     }
 }

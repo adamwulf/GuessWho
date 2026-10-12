@@ -41,4 +41,33 @@ public final class PhoneNumberDisplayFormatter {
             return trimmed
         }
     }
+
+    /// A key that is equal for two strings that write the same phone number,
+    /// or nil when `raw` does not parse as one: the number in E.164
+    /// (`+15550100123`), plus `;ext=<extension>` when it has one, so two
+    /// extensions of one line stay apart. A number with no country code is
+    /// read in `region` (the device's region when nil), so `(555) 010-0123`
+    /// and `+1 555 010 0123` share a key on a US device.
+    ///
+    /// The number type is not checked (`ignoreType`): a number in a range the
+    /// metadata does not list (a fictional 555 number, a newly opened range)
+    /// still gets a key from its country and digits. Display formatting
+    /// keeps the type check.
+    func comparisonKey(for raw: String, region: String? = nil) -> String? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              let number = try? utility.parse(
+                  trimmed,
+                  withRegion: region ?? PhoneNumberUtility.defaultRegionCode(),
+                  ignoreType: true
+              )
+        else { return nil }
+        let e164 = utility.format(number, toType: .e164)
+        guard let numberExtension = number.numberExtension, !numberExtension.isEmpty else { return e164 }
+        return e164 + ";ext=" + numberExtension
+    }
+
+    /// The region `comparisonKey(for:)` reads a number with no country code
+    /// in, when the caller names none.
+    static var deviceRegion: String { PhoneNumberUtility.defaultRegionCode() }
 }

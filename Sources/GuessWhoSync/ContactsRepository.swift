@@ -1857,14 +1857,16 @@ public final class ContactsRepository: NSObject {
     ///
     /// Each URL goes by its scheme, in any case:
     /// - `http` / `https`: its `absoluteString` is a website (`urlAddresses`).
-    /// - `mailto`: each address is an email (`emailAddresses`). The addresses
-    ///   are the part before any `?`, split at commas, each one
-    ///   percent-decoded; the query (`subject=`, `cc=`, …) is ignored. An
-    ///   entry that is empty, has no `@`, or does not percent-decode is
-    ///   skipped.
+    /// - `mailto`: each address is an email (`emailAddresses`). The part
+    ///   before any `?` is percent-decoded, then split at `,` and `;`; the
+    ///   query (`subject=`, `cc=`, …) is ignored. An entry in display-name
+    ///   form (`Jane Doe <jane@x.com>`) gives the address inside its last
+    ///   `<…>`. An entry is kept only when it is then a bare address (see
+    ///   `bareEmailAddress(in:)`).
     /// - `tel`: the number before any `;` parameter (`;ext=`, …),
     ///   percent-decoded, is a phone number (`phoneNumbers`), kept as written
-    ///   so Contacts formats it. A number with no digits is skipped.
+    ///   so Contacts formats it. `tel:5550100` and `tel://5550100` are the
+    ///   same number. A number with no digits is skipped.
     /// - Any other scheme (`message:`, `file:`, `ftp:`, …) is ignored, not an
     ///   error. An input with no value returns zero without reading the
     ///   contact.
@@ -1872,10 +1874,10 @@ public final class ContactsRepository: NSObject {
     /// The merge is the LinkedIn import's, field by field:
     /// - A value the contact already has, or one repeated in `urls`, is
     ///   skipped. Emails compare by `emailDedupKey` (trimmed, lowercased),
-    ///   phone numbers by `phoneDedupKey` (the digits), and websites by the
-    ///   scheme-insensitive `urlDedupKey` (scheme, a leading `www.`, a
-    ///   trailing slash, and case do not count). The first spelling wins, and
-    ///   input order is kept.
+    ///   phone numbers by `phoneDedupKey` (E.164 in the device's region,
+    ///   else the digits), and websites by the scheme-insensitive
+    ///   `urlDedupKey` (scheme, a leading `www.`, a trailing slash, and case
+    ///   do not count). The first spelling wins, and input order is kept.
     /// - New rows get the default label (empty -> adapter passes nil).
     /// - Nothing new: no save and no Last Modified stamp. Something new: ONE
     ///   save for all three fields, then stamp Last Modified best-effort so
@@ -1979,30 +1981,64 @@ public final class ContactsRepository: NSObject {
         return values
     }
 
-    /// The addresses of a `mailto:` URL: the part before any `?`, split at
-    /// commas, each entry percent-decoded and trimmed. The split comes before
-    /// the decode, so an encoded comma (`%2C`) stays inside its address. An
-    /// entry that is empty, has no `@`, or does not percent-decode is left
-    /// out.
+    /// The part of `url` after `<scheme>:` and before any `?` or `#`, still
+    /// percent-encoded, with a leading `//` dropped, so `tel://5550100` gives
+    /// the same part as `tel:5550100` (in the `//` form the value is the
+    /// URL's host, and its path is empty).
+    private static func schemeSpecificPart(of url: URL) -> Substring {
+        let string = url.absoluteString
+        guard let colon = string.firstIndex(of: ":") else { return "" }
+        var part = string[string.index(after: colon)...]
+        if part.hasPrefix("//") { part = part.dropFirst(2) }
+        if let end = part.firstIndex(where: { $0 == "?" || $0 == "#" }) { part = part[..<end] }
+        return part
+    }
+
+    /// The addresses of a `mailto:` URL, in order. The part before any `?` is
+    /// percent-decoded FIRST and then split at `,` and `;`, so a list encoded
+    /// whole (`a%40x.com%2Cb%40y.com`, as `encodeURIComponent` writes it) and
+    /// an Outlook-style `;` list each give one address per entry. Each entry
+    /// goes through `bareEmailAddress(in:)`; one that gives no address is
+    /// left out, and so is the whole list when it does not percent-decode.
     private static func mailtoAddresses(_ url: URL) -> [String] {
-        guard let path = URLComponents(url: url, resolvingAgainstBaseURL: false)?.percentEncodedPath
-        else { return [] }
-        return path.split(separator: ",").compactMap { entry in
-            guard let address = String(entry).removingPercentEncoding?.trimmed,
-                  address.contains("@")
-            else { return nil }
-            return address
+        guard let decoded = schemeSpecificPart(of: url).removingPercentEncoding else { return [] }
+        return decoded
+            .split(whereSeparator: { $0 == "," || $0 == ";" })
+            .compactMap(bareEmailAddress(in:))
+    }
+
+    /// The address one entry of a `mailto:` list names: the part inside the
+    /// entry's last `<…>` when it has one (`Jane Doe <jane@x.com>`), else
+    /// the whole entry, trimmed. Nil unless that is a bare address: exactly
+    /// one `@` with text on both sides, and no whitespace, `<`, `>`, `,`,
+    /// `;`, or `"`. A quoted name with a comma (`"Doe, Jane" <jane@x.com>`)
+    /// is split in two by the list split; the half with the brackets still
+    /// gives the address, and the other half gives none.
+    private static func bareEmailAddress(in entry: Substring) -> String? {
+        var candidate = entry
+        if let open = entry.lastIndex(of: "<") {
+            let inside = entry[entry.index(after: open)...]
+            guard let close = inside.firstIndex(of: ">") else { return nil }
+            candidate = inside[..<close]
         }
+        let address = String(candidate).trimmed
+        let parts = address.split(separator: "@", omittingEmptySubsequences: false)
+        guard parts.count == 2, !parts[0].isEmpty, !parts[1].isEmpty,
+              !address.contains(where: { $0.isWhitespace || "<>,;\"".contains($0) })
+        else { return nil }
+        return address
     }
 
     /// The number of a `tel:` URL: the part before any `;` parameter,
-    /// percent-decoded and trimmed, as written. Nil when it does not
-    /// percent-decode or has no digit.
+    /// percent-decoded and trimmed (of a trailing `/` too, which the `//`
+    /// form can carry), as written. Nil when it does not percent-decode or
+    /// has no digit.
     private static func telNumber(_ url: URL) -> String? {
-        guard let path = URLComponents(url: url, resolvingAgainstBaseURL: false)?.percentEncodedPath,
-              let number = path.split(separator: ";", omittingEmptySubsequences: false).first
-                .flatMap({ String($0).removingPercentEncoding?.trimmed }),
-              !phoneDedupKey(number).isEmpty
+        let beforeParameters = schemeSpecificPart(of: url)
+            .split(separator: ";", omittingEmptySubsequences: false).first ?? ""
+        guard let number = String(beforeParameters).removingPercentEncoding?
+                .trimmingCharacters(in: CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: "/"))),
+              number.contains(where: \.isNumber)
         else { return nil }
         return number
     }
@@ -2037,8 +2073,14 @@ public final class ContactsRepository: NSObject {
         return t
     }
 
+    /// Phone dedup key: the number in E.164 (plus any extension) as
+    /// `PhoneNumberDisplayFormatter.comparisonKey(for:)` parses it, reading a
+    /// number with no country code in the device's region, so a dropped
+    /// `+1 555 010 0123` matches a stored `(555) 010-0123` on a US device.
+    /// A number that does not parse falls back to its digits only. The two
+    /// kinds of key never collide: only an E.164 key starts with `+`.
     private static func phoneDedupKey(_ s: String) -> String {
-        s.filter(\.isNumber)
+        PhoneNumberDisplayFormatter.shared.comparisonKey(for: s) ?? s.filter(\.isNumber)
     }
 
     /// Case-insensitive email dedup key: trimmed and lowercased.

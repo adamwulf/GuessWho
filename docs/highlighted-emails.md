@@ -381,15 +381,22 @@ field (`emailAddresses`, `phoneNumbers`, `urlAddresses`, and their
 `total`)\[^addValues]. Each URL goes by its scheme, in any case:
 
 - **`http` / `https`:** the URL's `absoluteString` is a website.
-- **`mailto`:** the part before any `?`, split at commas, each entry
-  percent-decoded and trimmed, is one email address per entry. The split
-  comes before the decode, so an encoded comma (`%2C`) stays in its
-  address. The query (`subject=`, `cc=`, `body=`, …) is ignored, even one
-  that names an address. An entry that is empty, has no `@`, or does not
-  percent-decode is skipped.
+- **`mailto`:** the part before any `?` is percent-decoded first, then split
+  at `,` and `;`, so a list encoded whole (`a%40x.com%2Cb%40y.com`, as
+  `encodeURIComponent` writes it) and an Outlook-style `;` list each give
+  one address per entry. An entry in display-name form
+  (`Jane Doe <jane@x.com>`) gives the part inside its last `<…>`. The
+  trimmed result is kept only when it is a bare address: exactly one `@`
+  with text on both sides, and no whitespace, `<`, `>`, `,`, `;`, or `"`. A
+  quoted name with a comma (`"Doe, Jane" <jane@x.com>`) splits in two; the
+  half with the brackets still gives the address, and the other half gives
+  none. The query (`subject=`, `cc=`, `body=`, …) is ignored, even one that
+  names an address. A list that does not percent-decode gives nothing.
 - **`tel`:** the part before any `;` parameter (`;ext=`, `;phone-context=`,
   …), percent-decoded and trimmed, is a phone number, kept as written:
-  Contacts formats it. A number with no digit is skipped.
+  Contacts formats it. In the `tel://5550100` form the number is the URL's
+  host; it reads the same as `tel:5550100`. A number with no digit is
+  skipped.
 - **Any other scheme** (`message:`, `file:`, `ftp:`, `sms:`, …) is ignored,
   not an error. An input with no value returns zero and does not read the
   contact.
@@ -398,12 +405,20 @@ The merge is the LinkedIn import's for each field\[^importValues]:
 
 - **No duplicates.** A value the contact already has, or one repeated in the
   input, is skipped. Emails compare by `emailDedupKey` (trimmed and
-  lowercased), phone numbers by `phoneDedupKey` (the digits only, so
-  `tel:555.010.0199` matches a stored `(555) 010-0199`), and websites by
-  `urlDedupKey`: lowercased, with no scheme, no leading `www.`, and no
-  trailing slash, so `https://www.example.com/` matches a stored
-  `example.com`\[^dedup]. The first spelling in the input wins, and input
-  order is kept.
+  lowercased). Websites compare by `urlDedupKey`: lowercased, with no
+  scheme, no leading `www.`, and no trailing slash, so
+  `https://www.example.com/` matches a stored `example.com`\[^dedup]. The
+  first spelling in the input wins, and input order is kept.
+- **Phone numbers compare as E.164.** A `tel:` link is usually E.164
+  (`+15550100123`), while a stored number often has no country code. So
+  `phoneDedupKey` parses each number with PhoneNumberKit, through the
+  shared `PhoneNumberDisplayFormatter`, reading a number with no country
+  code in the device's region, and compares the E.164 form plus any
+  extension\[^phoneKey]. On a US device a dropped `+1 555 010 0123` matches
+  a stored `(555) 010-0123`. The number type is not checked, so a number in
+  a range the metadata does not list (a fictional 555 number) still
+  compares by its country and digits. A number that does not parse falls
+  back to its digits only. The LinkedIn import uses the same key.
 - **Default label.** A new row has an empty label, so Contacts gives it its
   default label.
 - **One save, and only on a change.** Nothing new: no Contacts save and no
@@ -503,7 +518,8 @@ later wins over it.
 \[^valueDrop]: [ContactDetailView.addDroppedItems(\_:) / addDroppedContactValues(\_:for:)](../App/GuessWho/ContactDetailView.swift:ContactDetailView.addDroppedContactValues)
 \[^addValues]: [ContactsRepository.addContactValues(from:for:) / AddedContactValues](../Sources/GuessWhoSync/ContactsRepository.swift:ContactsRepository.addContactValues)
 \[^importValues]: [ContactsRepository.applyLinkedIn — the `.emails`, `.phones`, and `.websites` branches](../Sources/GuessWhoSync/ContactsRepository.swift:ContactsRepository.applyLinkedIn)
-\[^dedup]: [ContactsRepository.emailDedupKey / phoneDedupKey / urlDedupKey / newValues(\_:notIn:key:)](../Sources/GuessWhoSync/ContactsRepository.swift:ContactsRepository.urlDedupKey)
+\[^dedup]: [ContactsRepository.emailDedupKey / urlDedupKey / newValues(\_:notIn:key:)](../Sources/GuessWhoSync/ContactsRepository.swift:ContactsRepository.urlDedupKey)
+\[^phoneKey]: [ContactsRepository.phoneDedupKey → PhoneNumberDisplayFormatter.comparisonKey(for:region:)](../Sources/GuessWhoSync/PhoneNumberFormatting.swift:PhoneNumberDisplayFormatter.comparisonKey)
 \[^valuePosts]: [ContactsRepository.saveContact → refreshContact(localID:) → postDidReload; stampTimestamps posts its own reload](../Sources/GuessWhoSync/ContactsRepository.swift:ContactsRepository.stampTimestamps)
 \[^section]: [ContactDetailView.highlightedEmailsSection](../App/GuessWho/ContactDetailView.swift:ContactDetailView.highlightedEmailsSection)
 \[^row]: [ContactDetailView.highlightedEmailLabel / mailMessageLabel](../App/GuessWho/ContactDetailView.swift:ContactDetailView.mailMessageLabel)
