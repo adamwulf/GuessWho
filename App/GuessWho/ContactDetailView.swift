@@ -1971,8 +1971,8 @@ struct ContactDetailView: View {
             return
         }
         guard added > 0 else { return }
-        // The website rows render from `contact`, which only `loadContact`
-        // sets: the repository's reload post re-reads only the email sections
+        // The website rows render from `contact`, and nothing sets it on the
+        // repository's reload post: that re-reads only the email sections
         // (`repositoryDidReloadForMailSections`). Same re-read as a LinkedIn
         // import or an inline edit save.
         await loadContact(preferFresh: true)
