@@ -48,7 +48,7 @@ struct HighlightEmailDropDelegate: DropDelegate {
 }
 
 /// Scrolls the modified `List` to the row whose id is `target` each time
-/// `target` changes to a value, then calls `onScroll`. A modifier, so the
+/// `target` changes to a value, and calls `onScroll`. A modifier, so the
 /// contact card's `List` expression does not move into a `ScrollViewReader`
 /// closure.
 struct ScrollToHighlightedEmailModifier: ViewModifier {
@@ -60,10 +60,16 @@ struct ScrollToHighlightedEmailModifier: ViewModifier {
             content
                 .onChange(of: target) { _, target in
                     guard let target else { return }
-                    withAnimation {
-                        proxy.scrollTo(target, anchor: .center)
-                    }
                     onScroll()
+                    // A drop usually sets `target` in the same update that
+                    // inserts its row, and SwiftUI does not document that the
+                    // List has that row when `onChange` runs. So scroll on a
+                    // later main-actor turn.
+                    Task { @MainActor in
+                        withAnimation {
+                            proxy.scrollTo(target, anchor: .center)
+                        }
+                    }
                 }
         }
     }

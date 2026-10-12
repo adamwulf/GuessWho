@@ -205,11 +205,12 @@ There is no drop zone and no drop highlight\[^drop].
   goes on to the next message.
 - **The card scrolls to the drop.** When a drop's writes finish, the view
   keeps the ids it wrote; when the section shows one of them, the card
-  scrolls (animated, row centered) to the first of them in section order,
-  then forgets the ids\[^scroll]. The section re-reads run apart from the
+  forgets the ids and scrolls (animated, row centered) to the first of them
+  in section order\[^scroll]. The section re-reads run apart from the
   writes, so the rows can show before or after the writes finish; both cases
-  scroll. A newer drop replaces the ids of an older one that has not
-  scrolled yet.
+  scroll. In a normal drop the row and the scroll target arrive in the same
+  update, so the scroll runs on a later main-actor turn. A newer drop
+  replaces the ids of an older one that has not scrolled yet.
 - **The monogram's photo drop still works.** It is a nested drop destination
   for `.image` inside the header row, and the two targets never want the same
   drag. A Mail message has no image type, so the photo drop does not take it.
