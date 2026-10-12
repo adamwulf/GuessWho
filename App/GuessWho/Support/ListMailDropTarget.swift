@@ -2,8 +2,9 @@ import SwiftUI
 import UIKit
 import GuessWhoLogging
 
-/// The contact card's whole-profile drop target for Mail messages and web
-/// links: a UIKit `UIDropInteraction` on the backing `UICollectionView` of the
+/// The contact card's whole-profile drop target for Mail messages and web,
+/// `mailto:`, and `tel:` links: a UIKit `UIDropInteraction` on the backing
+/// `UICollectionView` of the
 /// `List` this view is attached to, with `.background { ListMailDropTarget(...) }`.
 /// Invisible, and it takes no touches.
 ///

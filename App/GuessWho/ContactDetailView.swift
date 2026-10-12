@@ -218,10 +218,10 @@ struct ContactDetailView: View {
     @State private var highlightedEmails: [HighlightedEmail] = []
     @State private var highlightedEmailsLoadID = UUID()
     @State private var coarseHighlightedEmailReloadTask: Task<Void, Never>?
-    // The newest drop's writes: its highlighted emails, then its web
-    // addresses. Each drop waits for the one before it, so writes for this
+    // The newest drop's writes: its highlighted emails, then its contact
+    // values. Each drop waits for the one before it, so writes for this
     // contact never overlap (the repository's caller precondition for
-    // highlightEmail and addWebAddresses). Never cancelled: a drop is a user
+    // highlightEmail and addContactValues). Never cancelled: a drop is a user
     // write and must land even if the card goes away.
     @State private var highlightDropTask: Task<Void, Never>?
     // The emails the newest drop wrote. When the section shows one of their
@@ -1908,12 +1908,12 @@ struct ContactDetailView: View {
     }
 
     /// Adds a drop to this contact: every message becomes a highlighted
-    /// email, and every web link becomes a website row. Called inside
-    /// `performDrop`, so the drop time is taken here. Messages with no usable
-    /// Message-ID are skipped. The email section updates from the
-    /// repository's change notifications, and the card then scrolls to the
-    /// first email row of this drop. New website rows show after the card
-    /// re-loads; the card does not scroll to them.
+    /// email, and every web, `mailto:`, or `tel:` link becomes a website,
+    /// email, or phone row. Called inside `performDrop`, so the drop time is
+    /// taken here. Messages with no usable Message-ID are skipped. The email
+    /// section updates from the repository's change notifications, and the
+    /// card then scrolls to the first email row of this drop. New rows from
+    /// links show after the card re-loads; the card does not scroll to them.
     private func addDroppedItems(_ drop: MailDropReader.PendingDrop) {
         let contactID = loadedContactID ?? id
         let droppedAt = Date()
@@ -1925,7 +1925,7 @@ struct ContactDetailView: View {
             Self.highlightedEmailLog.info("highlighted email drop", [
                 "messages": items.messages.count,
                 "usable": emails.count,
-                "webAddresses": items.webAddresses.count,
+                "contactValues": items.contactValues.count,
             ])
             await previousDrop?.value
             // One write at a time: a first write can mint the contact's
@@ -1950,31 +1950,32 @@ struct ContactDetailView: View {
             if !writtenIDs.isEmpty {
                 highlightScrollIDs = writtenIDs
             }
-            await addDroppedWebAddresses(items.webAddresses, for: contactID)
+            await addDroppedContactValues(items.contactValues, for: contactID)
         }
     }
 
-    /// Adds every web address of one drop as a website row, in ONE call: the
-    /// call saves the whole card, so a second call that overlapped it could
-    /// lose this one's rows. The caller runs this inside the drop chain, after
-    /// the drop's email writes.
-    private func addDroppedWebAddresses(_ webAddresses: [URL], for contactID: ContactID) async {
-        guard !webAddresses.isEmpty else { return }
-        let added: Int
+    /// Adds every web, `mailto:`, and `tel:` URL of one drop to the card's
+    /// website, email, and phone rows, in ONE call: the call saves the whole
+    /// card, so a second call that overlapped it could lose this one's rows.
+    /// The caller runs this inside the drop chain, after the drop's email
+    /// writes.
+    private func addDroppedContactValues(_ urls: [URL], for contactID: ContactID) async {
+        guard !urls.isEmpty else { return }
+        let added: AddedContactValues
         do {
-            added = try await repository.addWebAddresses(webAddresses, for: contactID)
+            added = try await repository.addContactValues(from: urls, for: contactID)
         } catch {
             Self.highlightedEmailLog.error(
-                "add web addresses failed: \(error.localizedDescription)"
+                "add contact values failed: \(error.localizedDescription)"
             )
-            service.recordError("add web addresses failed: \(error.localizedDescription)")
+            service.recordError("add contact values failed: \(error.localizedDescription)")
             return
         }
-        guard added > 0 else { return }
-        // The website rows render from `contact`, and nothing sets it on the
-        // repository's reload post: that re-reads only the email sections
-        // (`repositoryDidReloadForMailSections`). Same re-read as a LinkedIn
-        // import or an inline edit save.
+        guard added.total > 0 else { return }
+        // The website, email, and phone rows render from `contact`, and
+        // nothing sets it on the repository's reload post: that re-reads only
+        // the email sections (`repositoryDidReloadForMailSections`). Same
+        // re-read as a LinkedIn import or an inline edit save.
         await loadContact(preferFresh: true)
     }
 

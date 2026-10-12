@@ -4,8 +4,9 @@ import GuessWhoLogging
 import GuessWhoSync
 
 /// Turns the item providers of a drop onto the contact card into email header
-/// metadata for Apple Mail messages and into web addresses for web links. No
-/// UI and no storage: callers decide what to keep.
+/// metadata for Apple Mail messages, and into URLs that carry a value for the
+/// contact's card (a website, an email address, or a phone number). No UI and
+/// no storage: callers decide what to keep.
 ///
 /// Measured on macOS 27 (AppKit side), Mail puts one pasteboard item per
 /// dragged message, carrying a file promise of the message as an `.eml`
@@ -51,8 +52,10 @@ enum MailDropReader {
         /// One per provider whose loads yield a Message-ID: the `.eml`, else
         /// a `message:` URL.
         var messages: [EmailMessageHeaders] = []
-        /// One per other provider whose URL is `http` or `https`.
-        var webAddresses: [URL] = []
+        /// One per other provider whose URL is `http`, `https`, `mailto`, or
+        /// `tel`: `ContactsRepository.addContactValues(from:for:)` turns it
+        /// into a website, email, or phone row.
+        var contactValues: [URL] = []
     }
 
     /// True when at least one provider looks like a Mail message or a link:
@@ -61,9 +64,10 @@ enum MailDropReader {
     /// image.
     ///
     /// A bare URL counts because Catalyst may expose only Mail's `message:`
-    /// URL, and because a web link adds a website to the contact. Only the
-    /// type is known before the drop, not the scheme, so `read` drops a URL
-    /// of any other scheme. A file URL or an image does not count:
+    /// URL, and because a web, `mailto:`, or `tel:` link adds a value to the
+    /// contact. Only the type is known before the drop, not the scheme, so
+    /// `read` drops a URL of any other scheme. A file URL or an image does
+    /// not count:
     /// `public.file-url` conforms to `public.url`, so without this a Finder
     /// file or a dragged web image would make the whole card accept a drop
     /// that adds nothing.
@@ -104,18 +108,18 @@ enum MailDropReader {
     }
 
     /// Waits for the loads `startLoading(_:)` began. A provider whose loads
-    /// yield a Message-ID is a message; else a provider whose URL is `http`
-    /// or `https` is a web address; else it is skipped.
+    /// yield a Message-ID is a message; else a provider whose URL is `http`,
+    /// `https`, `mailto`, or `tel` is a contact value; else it is skipped.
     nonisolated static func read(_ drop: PendingDrop) async -> DroppedItems {
         var items = DroppedItems()
         for (index, pending) in drop.items.enumerated() {
             switch await pending.item() {
             case .message(let headers):
                 items.messages.append(headers)
-            case .webAddress(let url):
-                items.webAddresses.append(url)
+            case .contactValue(let url):
+                items.contactValues.append(url)
             case nil:
-                log.debug("mail drop provider has no Message-ID or web address", ["index": index])
+                log.debug("mail drop provider has no Message-ID or contact value", ["index": index])
             }
         }
         return items
@@ -197,13 +201,13 @@ enum MailDropReader {
 /// What one provider of a drop is.
 private enum DroppedItem {
     case message(EmailMessageHeaders)
-    case webAddress(URL)
+    case contactValue(URL)
 }
 
 /// One provider's pending loads. For a message, the `.eml` is the source of
 /// truth; the `message:` URL fills in a missing Message-ID, and the plain
 /// text or the suggested file name fills in a missing subject. A provider
-/// with no Message-ID is a web address when its URL is one.
+/// with no Message-ID is a contact value when its URL is one.
 private struct PendingItem: Sendable {
     let file: PendingValue<EmailMessageHeaders>?
     let url: PendingValue<URL>?
@@ -223,17 +227,19 @@ private struct PendingItem: Sendable {
             }
             return .message(headers)
         }
-        if let loadedURL, Self.isWebAddress(loadedURL) {
-            return .webAddress(loadedURL)
+        if let loadedURL, Self.isContactValue(loadedURL) {
+            return .contactValue(loadedURL)
         }
         return nil
     }
 
-    /// An `http` or `https` scheme, in any case: the same rule as
-    /// `ContactsRepository.addWebAddresses(_:for:)`.
-    private static func isWebAddress(_ url: URL) -> Bool {
+    /// An `http`, `https`, `mailto`, or `tel` scheme, in any case: the
+    /// schemes `ContactsRepository.addContactValues(from:for:)` reads. That
+    /// method still skips a URL that holds no usable value, such as a
+    /// `mailto:` with no address.
+    private static func isContactValue(_ url: URL) -> Bool {
         guard let scheme = url.scheme?.lowercased() else { return false }
-        return scheme == "http" || scheme == "https"
+        return ["http", "https", "mailto", "tel"].contains(scheme)
     }
 
     /// Mail's plain text for the drag is the exact subject, so it comes

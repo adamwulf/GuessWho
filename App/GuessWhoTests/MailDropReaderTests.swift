@@ -60,12 +60,12 @@ struct MailDropReaderTests {
         #expect(!MailDropReader.canAccept([webImage]))
     }
 
-    @Test
-    func plainWebLinkIsAccepted() throws {
-        // A web link adds a website to the contact. Before the drop only the
-        // URL's type is known, not its scheme, so a URL of another scheme is
-        // accepted too and the reader drops it.
-        let url = try #require(URL(string: "https://example.com/article"))
+    @Test(arguments: ["https://example.com/article", "mailto:someone@example.com", "tel:+1-555-010-0199"])
+    func plainLinkIsAccepted(_ string: String) throws {
+        // A web, mailto:, or tel: link adds a value to the contact. Before
+        // the drop only the URL's type is known, not its scheme, so a URL of
+        // another scheme is accepted too and the reader drops it.
+        let url = try #require(URL(string: string))
         #expect(MailDropReader.canAccept([urlProvider(url)]))
     }
 
@@ -81,8 +81,8 @@ struct MailDropReaderTests {
 
 /// What a drop becomes, through the same two steps a drop takes:
 /// `startLoading` (as inside `performDrop`), then `read`. A provider whose
-/// loads yield a Message-ID is a message; else an `http` or `https` URL is a
-/// web address; else the provider adds nothing.
+/// loads yield a Message-ID is a message; else an `http`, `https`, `mailto`,
+/// or `tel` URL is a contact value; else the provider adds nothing.
 ///
 /// Each provider is an in-process `NSItemProvider` made from an `NSURL`, the
 /// shape of a URL-only drag item. It does not show which types Catalyst
@@ -101,26 +101,25 @@ struct MailDropReaderReadTests {
     func mailMessageURLIsAMessage() async throws {
         let items = try await read(["message:%3Cabc.123@example.com%3E"])
         #expect(items.messages.map(\.messageID) == ["<abc.123@example.com>"])
-        #expect(items.webAddresses.isEmpty)
+        #expect(items.contactValues.isEmpty)
     }
 
-    @Test
-    func httpsLinkIsAWebAddress() async throws {
-        let items = try await read(["https://example.com/article"])
+    @Test(arguments: [
+        "https://example.com/article",
+        "http://example.com/",
+        "mailto:someone@example.com?subject=Hi",
+        "tel:+1-555-010-0199;ext=2",
+    ])
+    func linkIsAContactValue(_ string: String) async throws {
+        let items = try await read([string])
         #expect(items.messages.isEmpty)
-        #expect(items.webAddresses.map(\.absoluteString) == ["https://example.com/article"])
-    }
-
-    @Test
-    func httpLinkIsAWebAddress() async throws {
-        let items = try await read(["http://example.com/"])
-        #expect(items.messages.isEmpty)
-        #expect(items.webAddresses.map(\.absoluteString) == ["http://example.com/"])
+        // Passed on whole: the repository reads the address or number.
+        #expect(items.contactValues.map(\.absoluteString) == [string])
     }
 
     @Test
     func otherSchemesAreNeither() async throws {
-        let items = try await read(["mailto:someone@example.com", "ftp://example.com/file.txt"])
+        let items = try await read(["ftp://example.com/file.txt", "sms:+15550100199", "facetime:someone@example.com"])
         #expect(items == MailDropReader.DroppedItems())
     }
 
@@ -132,12 +131,15 @@ struct MailDropReaderReadTests {
             "mailto:someone@example.com",
             "http://example.org/second",
             "ftp://example.com/file.txt",
+            "tel:5550100199",
             "message:%3Ctwo@example.com%3E",
         ])
         #expect(items.messages.map(\.messageID) == ["<one@example.com>", "<two@example.com>"])
-        #expect(items.webAddresses.map(\.absoluteString) == [
+        #expect(items.contactValues.map(\.absoluteString) == [
             "https://example.com/first",
+            "mailto:someone@example.com",
             "http://example.org/second",
+            "tel:5550100199",
         ])
     }
 }
