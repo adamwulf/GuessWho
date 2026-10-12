@@ -55,6 +55,17 @@ public struct EmailMessageHeaders: Sendable, Equatable {
         return headers
     }
 
+    /// The Message-ID in an Apple Mail `message:` URL (`message:%3C<id>%3E`,
+    /// or the `message://` spelling), percent-decoded and cleaned up exactly
+    /// like a parsed `Message-ID` header, so both paths give the same value
+    /// for one message. Nil for any other scheme or an empty id.
+    public static func messageID(fromMessageURL url: URL) -> String? {
+        guard let scheme = url.scheme, scheme.lowercased() == "message" else { return nil }
+        var encoded = url.absoluteString.dropFirst(scheme.count + 1)
+        if encoded.hasPrefix("//") { encoded = encoded.dropFirst(2) }
+        return encoded.removingPercentEncoding.flatMap(messageIDToken)
+    }
+
     private static func nonEmpty(_ text: String?) -> String? {
         guard let trimmed = text?.trimmingCharacters(in: .whitespacesAndNewlines),
               !trimmed.isEmpty

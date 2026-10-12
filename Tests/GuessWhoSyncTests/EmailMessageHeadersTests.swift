@@ -246,6 +246,39 @@ struct EmailMessageHeadersTests {
         #expect(headers.messageID == "<latin1@example.com>")
     }
 
+    // MARK: - message: URLs
+
+    private func urlMessageID(_ string: String) throws -> String? {
+        EmailMessageHeaders.messageID(fromMessageURL: try #require(URL(string: string)))
+    }
+
+    @Test func messageURLGivesTheMessageID() throws {
+        #expect(try urlMessageID("message:%3Cid@x%3E") == "<id@x>")
+        #expect(try urlMessageID("message://%3Cid@x%3E") == "<id@x>")
+        #expect(try urlMessageID("MESSAGE:%3Cid@x%3E") == "<id@x>")
+        #expect(try urlMessageID("message:%3CCALcTHdVwnoMk%2BxQ2%3Dv8Jt@mail.gmail.com%3E")
+            == "<CALcTHdVwnoMk+xQ2=v8Jt@mail.gmail.com>")
+    }
+
+    @Test func otherURLsGiveNoMessageID() throws {
+        #expect(try urlMessageID("https://example.com") == nil)
+        #expect(try urlMessageID("message:") == nil)
+        #expect(try urlMessageID("message://") == nil)
+        #expect(try urlMessageID("message:%3C%3E") == nil)
+    }
+
+    @Test func urlAndEmlGiveOneIdentityForOneMessage() throws {
+        let fromEml = try #require(EmailMessageHeaders.parse(message([
+            "Message-ID: <CALcTHdVwnoMkEXAMPLE+xQ2=v8Jt@Mail.Gmail.com> (via gateway)",
+        ])).messageID)
+        let fromURL = try #require(try urlMessageID("message:%3CCALcTHdVwnoMkEXAMPLE%2BxQ2%3Dv8Jt@Mail.Gmail.com%3E"))
+
+        #expect(fromEml == fromURL)
+        let normalized = try #require(MailActivity.normalizedMessageID(fromEml))
+        #expect(MailActivity.normalizedMessageID(fromURL) == normalized)
+        #expect(MailActivity.activityID(forMessageID: fromEml) == MailActivity.activityID(forMessageID: fromURL))
+    }
+
     // MARK: - RFC 2047 subjects
 
     @Test func foldedPlainSubject() {

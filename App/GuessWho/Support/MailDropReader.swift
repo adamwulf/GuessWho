@@ -132,20 +132,7 @@ enum MailDropReader {
                 continuation.resume(returning: url)
             }
         }
-        return url.flatMap(messageID(fromMessageURL:))
-    }
-
-    /// The Message-ID in a Mail `message:` URL (`message:%3C<id>%3E`, or the
-    /// `message://` spelling), percent-decoded. Nil for any other scheme.
-    nonisolated static func messageID(fromMessageURL url: URL) -> String? {
-        guard let scheme = url.scheme, scheme.lowercased() == "message" else { return nil }
-        var encoded = url.absoluteString.dropFirst(scheme.count + 1)
-        if encoded.hasPrefix("//") { encoded = encoded.dropFirst(2) }
-        guard let decoded = encoded.removingPercentEncoding?
-            .trimmingCharacters(in: .whitespacesAndNewlines),
-            !decoded.isEmpty
-        else { return nil }
-        return decoded
+        return url.flatMap(EmailMessageHeaders.messageID(fromMessageURL:))
     }
 
     // MARK: - Subject fallback
