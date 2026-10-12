@@ -4,8 +4,9 @@ import Foundation
 /// RFC 5322 message (an `.eml` file). Only the header block is read; the body
 /// is never looked at.
 public struct EmailMessageHeaders: Sendable, Equatable {
-    /// The `Message-ID` header value, unfolded and trimmed, as found (angle
-    /// brackets kept). Nil when the header is absent or empty.
+    /// The `Message-ID` header's first `<…>` token, brackets kept, with any
+    /// comment around it dropped (a value with no brackets is kept whole).
+    /// Nil when the header is absent, empty, or malformed.
     public var messageID: String?
     /// The `Subject`, RFC 2047-decoded, with each run of spaces and tabs
     /// collapsed to one space. Nil when absent or empty.
@@ -37,13 +38,13 @@ public struct EmailMessageHeaders: Sendable, Equatable {
     ///
     /// Reads at most the first `maximumHeaderBytes` bytes, and stops at the
     /// first empty line. Never throws or traps. A header that is missing, or
-    /// whose value doesn't parse (a `From` mailbox with no valid addr-spec, an
-    /// unreadable `Date`), leaves its property nil, so garbage input returns
-    /// all-nil headers.
+    /// whose value doesn't parse (a malformed `Message-ID`, a `From` mailbox
+    /// with no valid addr-spec, an unreadable `Date`), leaves its property
+    /// nil, so garbage input returns all-nil headers.
     public static func parse(_ data: Data) -> EmailMessageHeaders {
         let fields = headerFields(in: data)
         var headers = EmailMessageHeaders()
-        headers.messageID = nonEmpty(fields["message-id"])
+        headers.messageID = fields["message-id"].flatMap(messageIDToken)
         headers.subject = nonEmpty(fields["subject"].map { decodeEncodedWords(collapsingFoldingWhitespace($0)) })
         if let from = fields["from"] {
             let mailbox = firstMailbox(in: from)
@@ -58,6 +59,22 @@ public struct EmailMessageHeaders: Sendable, Equatable {
         guard let trimmed = text?.trimmingCharacters(in: .whitespacesAndNewlines),
               !trimmed.isEmpty
         else { return nil }
+        return trimmed
+    }
+
+    /// The first `<…>` token of a Message-ID value, the same token the Mail
+    /// journal keys on, so comments around it don't change the identity. A
+    /// value without angle brackets is kept whole. Nil when empty, when the
+    /// `<` is never closed, or when a bracketless value has whitespace in it.
+    private static func messageIDToken(_ value: String) -> String? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let open = trimmed.firstIndex(of: "<") {
+            guard let close = trimmed[open...].firstIndex(of: ">"),
+                  trimmed.index(after: open) < close
+            else { return nil }
+            return String(trimmed[open...close])
+        }
+        guard !trimmed.isEmpty, !trimmed.contains(where: \.isWhitespace) else { return nil }
         return trimmed
     }
 

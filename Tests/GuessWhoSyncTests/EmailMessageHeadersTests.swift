@@ -179,6 +179,20 @@ struct EmailMessageHeadersTests {
         #expect(headers.messageID == "<folded@example.com>")
     }
 
+    @Test func messageIDKeepsOnlyTheFirstAngleToken() {
+        func messageID(_ value: String) -> String? {
+            EmailMessageHeaders.parse(message(["Message-ID: \(value)"])).messageID
+        }
+
+        #expect(messageID("<id@example.com> (sent by a gateway)") == "<id@example.com>")
+        #expect(messageID("(comment) <id@example.com>") == "<id@example.com>")
+        #expect(messageID("<id@example.com> <other@example.com>") == "<id@example.com>")
+        #expect(messageID("bare-id@example.com") == "bare-id@example.com")
+        #expect(messageID("<unclosed@example.com") == nil)
+        #expect(messageID("<>") == nil)
+        #expect(messageID("two words") == nil)
+    }
+
     @Test func emptyValuesAreNil() {
         let headers = EmailMessageHeaders.parse(message(["Subject:   ", "Message-ID:", "From: ", "Date: "]))
 
