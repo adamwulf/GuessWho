@@ -30,20 +30,12 @@ enum MailDropReader {
     nonisolated private static let log = GuessWhoLog.logger("app.mail-drop")
 
     /// Mail's type for a dragged message. Mail.app exports it (conforming to
-    /// `public.email-message`), so `UTType(_:)` returns Mail's declaration
-    /// wherever Mail is installed and nil elsewhere (iOS). Not
-    /// `UTType(importedAs:)`: that is for a type this app declares under
+    /// `public.email-message`), so it is not declared on iOS. Kept as an
+    /// identifier string, which provider lookups take: not
+    /// `UTType(importedAs:)`, which is for a type this app declares under
     /// `UTImportedTypeDeclarations` in its own Info.plist, and the system
-    /// logs a fault when that declaration is missing. Provider lookups use
-    /// this identifier string, which matches either way.
+    /// logs a fault when that declaration is missing.
     nonisolated private static let mailMessageTypeIdentifier = "com.apple.mail.email"
-
-    /// Types a whole-profile drop target registers for.
-    nonisolated static let acceptedTypes: [UTType] = [
-        UTType(mailMessageTypeIdentifier),
-        UTType.emailMessage,
-        UTType.url,
-    ].compactMap { $0 }
 
     /// The loads one drop started, one entry per provider in provider order.
     /// Holds only the pending results, never the providers, so it can cross
@@ -78,9 +70,8 @@ enum MailDropReader {
     /// Starts every load for every provider (the `.eml`, the URL, and the
     /// plain text) and returns at once, so all providers load in parallel.
     ///
-    /// Call this from `performDrop` (`UIDropInteractionDelegate`'s
-    /// `dropInteraction(_:performDrop:)` or SwiftUI's
-    /// `DropDelegate.performDrop(info:)`): UIKit allows a drop's data to be
+    /// Call this from `UIDropInteractionDelegate`'s
+    /// `dropInteraction(_:performDrop:)`: UIKit allows a drop's data to be
     /// requested only within that method. Then await `read(_:)`.
     static func startLoading(_ providers: [NSItemProvider]) -> PendingDrop {
         PendingDrop(messages: providers.enumerated().map { index, provider in

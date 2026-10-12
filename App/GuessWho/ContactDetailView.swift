@@ -17,36 +17,6 @@ enum MailMessageLink {
     }
 }
 
-/// The whole-profile drop target for email: a drop of Mail messages anywhere
-/// on the contact card keeps them as highlighted emails. No visible drop zone.
-///
-/// The monogram's photo drop (`.image`) sits inside the header row, nested
-/// in this target, and the two never want the same drag. A Mail message has
-/// no image type, so the photo drop does not take it. This target refuses
-/// an image or file drag that has no Mail type (`MailDropReader.canAccept`),
-/// so only the photo drop can take an image.
-struct HighlightEmailDropDelegate: DropDelegate {
-    /// False while the user edits the contact. The section is hidden then, so
-    /// the card refuses the drop.
-    let isEnabled: Bool
-    /// Called inside `performDrop` with the loads already started.
-    let onDrop: @MainActor (MailDropReader.PendingDrop) -> Void
-
-    func validateDrop(info: DropInfo) -> Bool {
-        isEnabled && MailDropReader.canAccept(info.itemProviders(for: MailDropReader.acceptedTypes))
-    }
-
-    func performDrop(info: DropInfo) -> Bool {
-        guard isEnabled else { return false }
-        let providers = info.itemProviders(for: MailDropReader.acceptedTypes)
-        guard MailDropReader.canAccept(providers) else { return false }
-        // UIKit allows a drop's data to be requested only within
-        // performDrop, so every load starts here, synchronously.
-        onDrop(MailDropReader.startLoading(providers))
-        return true
-    }
-}
-
 /// Scrolls the modified `List` to the row whose id is `target` each time
 /// `target` changes to a value, and calls `onScroll`. A modifier, so the
 /// contact card's `List` expression does not move into a `ScrollViewReader`
@@ -774,15 +744,20 @@ struct ContactDetailView: View {
         // not `body`, and shared by both platform branches.
         .autocompleteMenuHost()
         // A Mail message dropped anywhere on the profile becomes a
-        // highlighted email. On the List, the outermost container of the
+        // highlighted email. The List is the outermost container of the
         // card, so the whole card is the target with no drop zone of its own.
-        .onDrop(
-            of: MailDropReader.acceptedTypes,
-            delegate: HighlightEmailDropDelegate(
+        // A UIKit drop interaction on the List's collection view, not
+        // `.onDrop`: the collection view's built-in drop interaction refuses
+        // drops from other apps before SwiftUI sees them (FB24490454, see
+        // ListMailDropTarget). Off while the user edits the contact: the
+        // section is hidden then, and the collection view gets its own drop
+        // interactions back, which the editor's `.onMove` reorder may use.
+        .background {
+            ListMailDropTarget(
                 isEnabled: !isEditingContact,
                 onDrop: highlightDroppedEmails
             )
-        )
+        }
         // After a drop, show the user where it went.
         .modifier(ScrollToHighlightedEmailModifier(
             target: highlightScrollTarget,
