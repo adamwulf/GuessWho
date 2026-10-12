@@ -172,6 +172,34 @@ Writes throw `SidecarUnavailableError` when the sidecar engine is unavailable.
 
 ## App
 
+### Dropping an email
+
+The whole contact card is the drop target: one drop handler sits on the card's
+outermost container, the `List`, so a drop anywhere on the profile works.
+There is no drop zone and no drop highlight\[^drop].
+
+- **What it accepts:** whatever `MailDropReader.canAccept(_:)` accepts — a
+  provider with Mail's message type (`com.apple.mail.email`),
+  `public.email-message`, or a URL. The reader turns each dragged message into
+  `EmailMessageHeaders`; a URL that is not Mail's `message:` URL gives no
+  Message-ID, so it adds nothing. Any message is kept, from any sender.
+- **Data requests start inside `performDrop`**, because UIKit allows them only
+  there: the delegate calls `MailDropReader.startLoading(_:)` synchronously,
+  then a task awaits `MailDropReader.read(_:)`.
+- **Mapping:** `HighlightedEmail.init?(headers:highlightedAt:)` builds each
+  email, with `highlightedAt` set to the time of the drop\[^mapping]. A message
+  with no usable Message-ID is skipped; a drop with none adds nothing.
+- **Writes are serial.** The task awaits `highlightEmail(_:for:)` for each
+  email in turn, as the caller precondition above requires, and a second drop
+  on the same card waits for the first drop's writes before it starts its own.
+  A failed write is logged (never the subject or an address) and the loop
+  goes on to the next message.
+- **The monogram's photo drop still works.** It is a nested drop destination
+  for `.image` inside the header row. SwiftUI activates a destination only
+  when the drag holds one of its supported types, so a Mail message never
+  activates the photo drop; an image dropped on the monogram goes to the
+  nested photo drop.
+
 ### The section
 
 The contact card shows a **Highlighted Emails** section directly above Recent
@@ -229,6 +257,8 @@ later wins over it.
 \[^watcher]: [ContactsRepository.postContactCellsDidChange(forContactKeys:)](../Sources/GuessWhoSync/ContactsRepository.swift:ContactsRepository.postContactCellsDidChange)
 \[^mint]: [GuessWhoSync.handleCaseA mints Contact.deterministicGuessWhoID](../Sources/GuessWhoSync/GuessWhoSync.swift:GuessWhoSync.handleCaseA)
 \[^save]: [CNContactStoreAdapter.save → apply(\_:to:) sets urlAddresses from the saved value](../Sources/GuessWhoSync/CNContactStoreAdapter.swift:CNContactStoreAdapter.apply)
+\[^drop]: [HighlightEmailDropDelegate / ContactDetailView.highlightDroppedEmails(\_:)](../App/GuessWho/ContactDetailView.swift:HighlightEmailDropDelegate)
+\[^mapping]: [HighlightedEmail.init?(headers:highlightedAt:)](../Sources/GuessWhoSync/HighlightedEmail.swift:HighlightedEmail.init)
 \[^section]: [ContactDetailView.highlightedEmailsSection](../App/GuessWho/ContactDetailView.swift:ContactDetailView.highlightedEmailsSection)
 \[^row]: [ContactDetailView.highlightedEmailLabel / mailMessageLabel](../App/GuessWho/ContactDetailView.swift:ContactDetailView.mailMessageLabel)
 \[^removeUI]: [ContactDetailView.highlightedEmailRow / removeHighlightedEmail(\_:)](../App/GuessWho/ContactDetailView.swift:ContactDetailView.highlightedEmailRow)

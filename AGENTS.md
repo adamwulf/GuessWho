@@ -118,8 +118,9 @@ touching that subsystem:
   `lastInteracted` never moves), the user curates them (no retention), and the
   user can remove one (tombstone; a re-drop revives it). Covers the
   Message-ID-derived id, the overlay/revive write rules, the repository
-  surface, and its change notification. Read before touching highlighted
-  emails or any code that walks every cell of a contact envelope.
+  surface, its change notification, and the contact card's whole-profile
+  drop target and section. Read before touching highlighted emails or any
+  code that walks every cell of a contact envelope.
 - [`docs/autocomplete.md`](docs/autocomplete.md) — text-field autocomplete:
   how a field opts in (`.autocomplete(text:candidates:)` +
   `.autocompleteMenuHost()`), the shared filter, the candidate lists, and
