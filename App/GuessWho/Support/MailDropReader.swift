@@ -3,22 +3,24 @@ import UniformTypeIdentifiers
 import GuessWhoLogging
 import GuessWhoSync
 
-/// Turns the item providers of a drop from Apple Mail into email header
-/// metadata. No UI and no storage: callers decide what to keep.
+/// Turns the item providers of a drop onto the contact card into email header
+/// metadata for Apple Mail messages and into web addresses for web links. No
+/// UI and no storage: callers decide what to keep.
 ///
 /// Measured on macOS 27 (AppKit side), Mail puts one pasteboard item per
 /// dragged message, carrying a file promise of the message as an `.eml`
 /// (`com.apple.mail.email`) and a `message:%3C<Message-ID>%3E` URL. What a
 /// Catalyst drop receives after the AppKit → `NSItemProvider` bridge is not
 /// measured yet, so the reader copes with either the file or only the URL,
-/// and logs each provider's registered types (never subjects or addresses).
+/// and logs each provider's registered types (never subjects, addresses, or
+/// URLs).
 ///
 /// Reading is two steps, because UIKit lets a drop's data be requested only
 /// within `performDrop`, which is synchronous:
 ///
 /// ```swift
 /// let drop = MailDropReader.startLoading(providers)  // inside performDrop
-/// Task { let messages = await MailDropReader.read(drop) }
+/// Task { let items = await MailDropReader.read(drop) }
 /// ```
 ///
 /// Main-actor isolated because `NSItemProvider` is not `Sendable` and drop
@@ -41,18 +43,30 @@ enum MailDropReader {
     /// Holds only the pending results, never the providers, so it can cross
     /// to any isolation.
     struct PendingDrop: Sendable {
-        fileprivate let messages: [PendingMessage]
+        fileprivate let items: [PendingItem]
     }
 
-    /// True when at least one provider looks like a Mail message: it carries
-    /// Mail's message type or `public.email-message` (a Finder `.eml` does
-    /// too), or it carries a URL and is neither a file nor an image.
+    /// What one drop holds. Each list keeps provider order.
+    struct DroppedItems: Sendable, Equatable {
+        /// One per provider whose loads yield a Message-ID: the `.eml`, else
+        /// a `message:` URL.
+        var messages: [EmailMessageHeaders] = []
+        /// One per other provider whose URL is `http` or `https`.
+        var webAddresses: [URL] = []
+    }
+
+    /// True when at least one provider looks like a Mail message or a link:
+    /// it carries Mail's message type or `public.email-message` (a Finder
+    /// `.eml` does too), or it carries a URL and is neither a file nor an
+    /// image.
     ///
     /// A bare URL counts because Catalyst may expose only Mail's `message:`
-    /// URL; `read` drops URLs of any other scheme. A file URL or an image
-    /// does not count: `public.file-url` conforms to `public.url`, so
-    /// without this a Finder file or a dragged web image would make the
-    /// whole card accept a drop that adds nothing.
+    /// URL, and because a web link adds a website to the contact. Only the
+    /// type is known before the drop, not the scheme, so `read` drops a URL
+    /// of any other scheme. A file URL or an image does not count:
+    /// `public.file-url` conforms to `public.url`, so without this a Finder
+    /// file or a dragged web image would make the whole card accept a drop
+    /// that adds nothing.
     static func canAccept(_ providers: [NSItemProvider]) -> Bool {
         providers.contains(where: isMailMessage)
     }
@@ -74,13 +88,13 @@ enum MailDropReader {
     /// `dropInteraction(_:performDrop:)`: UIKit allows a drop's data to be
     /// requested only within that method. Then await `read(_:)`.
     static func startLoading(_ providers: [NSItemProvider]) -> PendingDrop {
-        PendingDrop(messages: providers.enumerated().map { index, provider in
+        PendingDrop(items: providers.enumerated().map { index, provider in
             // At info so the hand test sees it: the default log floor is info.
             log.info("mail drop provider", [
                 "index": index,
                 "types": provider.registeredTypeIdentifiers.joined(separator: " "),
             ])
-            return PendingMessage(
+            return PendingItem(
                 file: loadFileHeaders(from: provider),
                 url: loadURL(from: provider),
                 plainText: loadPlainText(from: provider),
@@ -89,19 +103,22 @@ enum MailDropReader {
         })
     }
 
-    /// Waits for the loads `startLoading(_:)` began. One
-    /// `EmailMessageHeaders` per provider that yields a Message-ID, in
-    /// provider order. Providers that yield none are skipped.
-    nonisolated static func read(_ drop: PendingDrop) async -> [EmailMessageHeaders] {
-        var messages: [EmailMessageHeaders] = []
-        for (index, pending) in drop.messages.enumerated() {
-            if let headers = await pending.headers() {
-                messages.append(headers)
-            } else {
-                log.debug("mail drop provider has no Message-ID", ["index": index])
+    /// Waits for the loads `startLoading(_:)` began. A provider whose loads
+    /// yield a Message-ID is a message; else a provider whose URL is `http`
+    /// or `https` is a web address; else it is skipped.
+    nonisolated static func read(_ drop: PendingDrop) async -> DroppedItems {
+        var items = DroppedItems()
+        for (index, pending) in drop.items.enumerated() {
+            switch await pending.item() {
+            case .message(let headers):
+                items.messages.append(headers)
+            case .webAddress(let url):
+                items.webAddresses.append(url)
+            case nil:
+                log.debug("mail drop provider has no Message-ID or web address", ["index": index])
             }
         }
-        return messages
+        return items
     }
 
     // MARK: - Loads
@@ -177,25 +194,46 @@ enum MailDropReader {
     }
 }
 
-/// One provider's pending loads. The `.eml` is the source of truth; the
-/// `message:` URL fills in a missing Message-ID, and the plain text or the
-/// suggested file name fills in a missing subject.
-private struct PendingMessage: Sendable {
+/// What one provider of a drop is.
+private enum DroppedItem {
+    case message(EmailMessageHeaders)
+    case webAddress(URL)
+}
+
+/// One provider's pending loads. For a message, the `.eml` is the source of
+/// truth; the `message:` URL fills in a missing Message-ID, and the plain
+/// text or the suggested file name fills in a missing subject. A provider
+/// with no Message-ID is a web address when its URL is one.
+private struct PendingItem: Sendable {
     let file: PendingValue<EmailMessageHeaders>?
     let url: PendingValue<URL>?
     let plainText: PendingValue<String>?
     let suggestedSubject: String?
 
-    func headers() async -> EmailMessageHeaders? {
+    func item() async -> DroppedItem? {
         var headers = await file?.value ?? EmailMessageHeaders()
+        var loadedURL: URL?
         if headers.messageID == nil, let url = await url?.value {
             headers.messageID = EmailMessageHeaders.messageID(fromMessageURL: url)
+            loadedURL = url
         }
-        guard headers.messageID != nil else { return nil }
-        if headers.subject == nil {
-            headers.subject = await fallbackSubject()
+        if headers.messageID != nil {
+            if headers.subject == nil {
+                headers.subject = await fallbackSubject()
+            }
+            return .message(headers)
         }
-        return headers
+        if let loadedURL, Self.isWebAddress(loadedURL) {
+            return .webAddress(loadedURL)
+        }
+        return nil
+    }
+
+    /// An `http` or `https` scheme, in any case: the same rule as
+    /// `ContactsRepository.addWebAddresses(_:for:)`.
+    private static func isWebAddress(_ url: URL) -> Bool {
+        guard let scheme = url.scheme?.lowercased() else { return false }
+        return scheme == "http" || scheme == "https"
     }
 
     /// Mail's plain text for the drag is the exact subject, so it comes
