@@ -17,6 +17,32 @@ enum MailMessageLink {
     }
 }
 
+/// The whole-profile drop target for email: a drop of Mail messages anywhere
+/// on the contact card keeps them as highlighted emails. No visible drop zone.
+///
+/// The monogram's photo drop (`.image`) sits inside the header row, nested
+/// in this target. SwiftUI activates a drop destination only when the drag
+/// holds one of its supported types, so a Mail message never activates the
+/// photo drop and falls through to this one; an image dropped on the
+/// monogram goes to the nested photo drop.
+struct HighlightEmailDropDelegate: DropDelegate {
+    /// Called inside `performDrop` with the loads already started.
+    let onDrop: @MainActor (MailDropReader.PendingDrop) -> Void
+
+    func validateDrop(info: DropInfo) -> Bool {
+        MailDropReader.canAccept(info.itemProviders(for: MailDropReader.acceptedTypes))
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        let providers = info.itemProviders(for: MailDropReader.acceptedTypes)
+        guard MailDropReader.canAccept(providers) else { return false }
+        // UIKit allows a drop's data to be requested only within
+        // performDrop, so every load starts here, synchronously.
+        onDrop(MailDropReader.startLoading(providers))
+        return true
+    }
+}
+
 /// Once-per-view scheduler for the presentation-only viewed stamp. An
 /// unstructured utility-priority task deliberately outlives SwiftUI's
 /// appearance task: navigating away must not cancel the real stamp/mint, while
@@ -190,6 +216,11 @@ struct ContactDetailView: View {
     @State private var highlightedEmails: [HighlightedEmail] = []
     @State private var highlightedEmailsLoadID = UUID()
     @State private var coarseHighlightedEmailReloadTask: Task<Void, Never>?
+    // The newest email drop's writes. Each drop waits for the one before it,
+    // so writes for this contact never overlap (the repository's caller
+    // precondition for highlightEmail). Never cancelled: a drop is a user
+    // write and must land even if the card goes away.
+    @State private var highlightDropTask: Task<Void, Never>?
     // Imported-guide matches keyed by the individual contact street line they
     // describe. Each summary renders directly below its own address rather than
     // combining counts across a multi-address contact. Loaded async via
@@ -701,6 +732,13 @@ struct ContactDetailView: View {
         // type-checker reasoning as the shortcut above: attached to `list`,
         // not `body`, and shared by both platform branches.
         .autocompleteMenuHost()
+        // A Mail message dropped anywhere on the profile becomes a
+        // highlighted email. On the List, the outermost container of the
+        // card, so the whole card is the target with no drop zone of its own.
+        .onDrop(
+            of: MailDropReader.acceptedTypes,
+            delegate: HighlightEmailDropDelegate(onDrop: highlightDroppedEmails)
+        )
         // Inject the owned editMode binding so EditButton drives this view's own
         // .editMode state, not an ambient one we can't tear down. Reset to
         // .inactive on every contact-edit exit path.
@@ -1160,7 +1198,8 @@ struct ContactDetailView: View {
     /// Best-effort favorite mutations initiated from rows on this card.
     private static let favoriteLog = GuessWhoLog.logger("app.contact-favorites")
 
-    /// Highlighted-email write failures. Never logs a subject or an address.
+    /// Highlighted-email drops and write failures. Never logs a subject or an
+    /// address.
     private static let highlightedEmailLog = GuessWhoLog.logger("app.highlighted-email")
 
     /// Loads the picked photo's bytes, downscales them to a sane contact-photo
@@ -1836,6 +1875,39 @@ struct ContactDetailView: View {
                     "remove highlighted email failed: \(error.localizedDescription)"
                 )
                 service.recordError("remove highlighted email failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Keeps every message of a drop as a highlighted email on this contact.
+    /// Called inside `performDrop`, so the drop time is taken here. Messages
+    /// with no usable Message-ID are skipped. The section updates from the
+    /// repository's change notifications.
+    private func highlightDroppedEmails(_ drop: MailDropReader.PendingDrop) {
+        let contactID = loadedContactID ?? id
+        let droppedAt = Date()
+        let previousDrop = highlightDropTask
+        highlightDropTask = Task {
+            let headers = await MailDropReader.read(drop)
+            let emails = headers.compactMap { HighlightedEmail(headers: $0, highlightedAt: droppedAt) }
+            Self.highlightedEmailLog.info("highlighted email drop", [
+                "messages": headers.count,
+                "usable": emails.count,
+            ])
+            await previousDrop?.value
+            // One write at a time: a first write can mint the contact's
+            // identity, and a write that starts before it finishes would
+            // reconcile again (docs/highlighted-emails.md).
+            for email in emails {
+                do {
+                    try await repository.highlightEmail(email, for: contactID)
+                } catch {
+                    // Keep going so one failed message does not drop the rest.
+                    Self.highlightedEmailLog.error(
+                        "highlight email failed: \(error.localizedDescription)"
+                    )
+                    service.recordError("highlight email failed: \(error.localizedDescription)")
+                }
             }
         }
     }
