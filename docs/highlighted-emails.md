@@ -422,13 +422,26 @@ The merge is the LinkedIn import's for each field\[^importValues]:
   `+`, plus `;ext=` and the digits of any extension\[^phoneKey]. On a US
   device a dropped `+1 555 010 0123` matches a stored `(555) 010-0123`, and
   every spelling of one extension (`x7`, `ext. 7`, `,7`, `,,7`) is the same.
-  The number type is not checked, so a number in a range the metadata does
-  not list (a fictional 555 number) still compares by its country and
-  digits. A number that does not parse compares by its digits only;
-  because the parsed key has no `+`, a full number that does not parse in
-  this region (`1-555-010-0199` on a GB device, `44 20 7946 0958` on a US
-  device) still matches the same number written with a `+`. The LinkedIn
-  import uses the same key.
+  The first of these parses that succeeds gives the key:
+    1. In the device's region, with PhoneNumberKit's number-type check: a
+       valid national number, or any number written with a `+`.
+    2. When there is no leading `+`: `+` and the string, with the type
+       check. So a full number written with its country code but no `+`
+       (`1-212-555-0123`) reads as that country's number. Without this
+       step, a parse with no type check reads it as a long national number
+       on a DE, IN, or BR device, among others, and it would not match
+       `+1 212 555 0123`.
+    3. In the device's region, without the type check, so a number in a
+       range the metadata does not list (a fictional 555 number) still
+       compares by its country and digits.
+    4. Else the digits only. Because a parsed key has no `+`, a full number
+       that no step parses (`1-555-010-0199` on a GB device) still matches
+       the same number written with a `+`.
+
+  The limit: a full number with no `+` whose digits are ALSO a valid
+  national number of the device's region (`1-212-555-0123` on an AT
+  device) reads as national in step 1, so it does not match the same
+  number written with a `+`. The LinkedIn import uses the same key.
 - **Default label.** A new row has an empty label, so Contacts gives it its
   default label.
 - **One save, and only on a change.** Nothing new: no Contacts save and no

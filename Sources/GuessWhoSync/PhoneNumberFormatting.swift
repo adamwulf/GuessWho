@@ -58,19 +58,34 @@ public final class PhoneNumberDisplayFormatter {
     ///   region (`1-555-010-0199` on a GB device) still matches the same
     ///   number written with a `+`.
     ///
-    /// The number type is not checked (`ignoreType`): a number in a range the
-    /// metadata does not list (a fictional 555 number, a newly opened range)
-    /// still gets a key from its country and digits. Display formatting
-    /// keeps the type check.
+    /// The parses run in this order, and the first that succeeds wins:
+    /// 1. In `region`, with the number-type check: a valid national number
+    ///    of the region, or any number written with a `+`.
+    /// 2. With no leading `+`: `+` and the string, with the type check, so a
+    ///    full number written with its country code but no `+`
+    ///    (`1-212-555-0123`) reads as that country's number, not as a long
+    ///    national number of the region (which a parse with no type check
+    ///    gives on a DE, IN, or BR device, among others).
+    /// 3. In `region`, without the type check (`ignoreType`): a number in a
+    ///    range the metadata does not list (a fictional 555 number, a newly
+    ///    opened range) still gets a key from its country and digits.
+    /// 4. Else the digits.
+    ///
+    /// Limit: a full number with no `+` whose digits are ALSO a valid
+    /// national number of the region (`1-212-555-0123` on an AT device) is
+    /// read as national in step 1, so it does not match the same number
+    /// written with a `+`. Display formatting keeps its own single parse.
     func comparisonKey(for raw: String, region: String? = nil) -> String {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty,
-              let number = try? utility.parse(
-                  trimmed,
-                  withRegion: region ?? PhoneNumberUtility.defaultRegionCode(),
-                  ignoreType: true
-              )
-        else { return trimmed.filter(\.isNumber) }
+        guard !trimmed.isEmpty else { return "" }
+        let region = region ?? PhoneNumberUtility.defaultRegionCode()
+        func parse(_ string: String, ignoreType: Bool = false) -> PhoneNumber? {
+            try? utility.parse(string, withRegion: region, ignoreType: ignoreType)
+        }
+        let number = parse(trimmed)
+            ?? (trimmed.hasPrefix("+") ? nil : parse("+" + trimmed))
+            ?? parse(trimmed, ignoreType: true)
+        guard let number else { return trimmed.filter(\.isNumber) }
         let digits = utility.format(number, toType: .e164).filter(\.isNumber)
         let extensionDigits = (number.numberExtension ?? "").filter(\.isNumber)
         return extensionDigits.isEmpty ? digits : digits + ";ext=" + extensionDigits

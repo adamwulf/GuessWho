@@ -2075,10 +2075,14 @@ public final class ContactsRepository: NSObject {
 
     /// Phone dedup key: `PhoneNumberDisplayFormatter.comparisonKey(for:)` in
     /// the device's region — the E.164 digits without the `+` (plus any
-    /// extension's digits) when the number parses, else its digits. So a
+    /// extension's digits) when the number parses, else its digits. It tries
+    /// a type-checked parse in the region, then a type-checked parse with a
+    /// `+` added, then a parse with no type check, then the digits. So a
     /// dropped `+1 555 010 0123` matches a stored `(555) 010-0123` on a US
-    /// device, and a full number that does not parse here still matches the
-    /// same number written with a `+`.
+    /// device, and a full number written with its country code but no `+`
+    /// matches the same number written with one. Limit: such a number whose
+    /// digits are also a valid national number of the region (on an AT
+    /// device, for example) reads as national and does not match.
     private static func phoneDedupKey(_ s: String) -> String {
         PhoneNumberDisplayFormatter.shared.comparisonKey(for: s)
     }
