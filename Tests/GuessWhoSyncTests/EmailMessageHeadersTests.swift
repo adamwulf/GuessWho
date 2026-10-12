@@ -232,6 +232,12 @@ struct EmailMessageHeadersTests {
         #expect(headers.subject == "A very long subject line that the sending client decided to fold onto a second line")
     }
 
+    @Test func tabFoldedSubjectReadsAsOneSpace() {
+        let headers = EmailMessageHeaders.parse(message(["Subject: This subject was", "\tfolded  with\t a tab"]))
+
+        #expect(headers.subject == "This subject was folded with a tab")
+    }
+
     @Test func foldedEncodedSubjectDropsWhitespaceBetweenWords() {
         // Outlook folds long encoded subjects with CRLF + TAB between words.
         let headers = EmailMessageHeaders.parse(message([

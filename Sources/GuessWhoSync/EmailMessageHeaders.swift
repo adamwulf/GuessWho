@@ -7,7 +7,8 @@ public struct EmailMessageHeaders: Sendable, Equatable {
     /// The `Message-ID` header value, unfolded and trimmed, as found (angle
     /// brackets kept). Nil when the header is absent or empty.
     public var messageID: String?
-    /// The `Subject`, RFC 2047-decoded and trimmed. Nil when absent or empty.
+    /// The `Subject`, RFC 2047-decoded, with each run of spaces and tabs
+    /// collapsed to one space. Nil when absent or empty.
     public var subject: String?
     /// The decoded display name of the first `From` mailbox. For the legacy
     /// `addr (Full Name)` spelling, the comment is the name.
@@ -40,7 +41,7 @@ public struct EmailMessageHeaders: Sendable, Equatable {
         let fields = headerFields(in: data)
         var headers = EmailMessageHeaders()
         headers.messageID = nonEmpty(fields["message-id"])
-        headers.subject = nonEmpty(fields["subject"].map(decodeEncodedWords))
+        headers.subject = nonEmpty(fields["subject"].map { decodeEncodedWords(collapsingFoldingWhitespace($0)) })
         if let from = fields["from"] {
             let mailbox = firstMailbox(in: from)
             headers.fromName = mailbox.name
@@ -55,6 +56,12 @@ public struct EmailMessageHeaders: Sendable, Equatable {
               !trimmed.isEmpty
         else { return nil }
         return trimmed
+    }
+
+    /// Each run of spaces and tabs as one space, trimmed at both ends.
+    /// Unfolding keeps the folding whitespace, which is often a tab.
+    private static func collapsingFoldingWhitespace(_ text: String) -> String {
+        text.split(whereSeparator: { $0 == " " || $0 == "\t" }).joined(separator: " ")
     }
 }
 
@@ -419,8 +426,7 @@ extension EmailMessageHeaders {
 
     /// Whitespace collapsed, encoded-words decoded, nil when empty.
     private static func displayText(_ text: String) -> String? {
-        let collapsed = text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
-        return nonEmpty(decodeEncodedWords(collapsed))
+        nonEmpty(decodeEncodedWords(collapsingFoldingWhitespace(text)))
     }
 
     /// The addr-spec spelled by `tokens`: comments and folding whitespace
