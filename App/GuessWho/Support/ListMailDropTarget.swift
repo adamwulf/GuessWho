@@ -39,12 +39,8 @@ struct ListMailDropTarget: UIViewRepresentable {
     }
 
     func updateUIView(_ installer: ListDropInstallerView, context: Context) {
-        context.coordinator.isEnabled = isEnabled
         context.coordinator.onDrop = onDrop
-        installer.isEnabled = isEnabled
-        // On every update: SwiftUI can add a new drop interaction of its own
-        // to the collection view, for example when edit mode changes.
-        installer.applyState()
+        installer.update(isEnabled: isEnabled)
     }
 
     static func dismantleUIView(_ installer: ListDropInstallerView, coordinator: MailDropInteractionDelegate) {
@@ -53,8 +49,8 @@ struct ListMailDropTarget: UIViewRepresentable {
 }
 
 /// Finds the `UICollectionView` of the `List` it is the background of, and
-/// owns which drop interactions that collection view holds. Uses public UIKit
-/// API only.
+/// owns which drop interactions that collection view holds: it is the one
+/// owner of the enabled state. Uses public UIKit API only.
 final class ListDropInstallerView: UIView {
     nonisolated private static let log = GuessWhoLog.logger("app.mail-drop")
 
@@ -62,8 +58,7 @@ final class ListDropInstallerView: UIView {
     /// so this view keeps the delegate too.
     let dropInteraction: UIDropInteraction
     private let delegate: any UIDropInteractionDelegate
-    /// Set by `ListMailDropTarget`; `applyState()` acts on it.
-    var isEnabled = true
+    private var isEnabled = true
     /// The list's collection view, once found.
     private(set) weak var collectionView: UICollectionView?
     /// The collection view's other drop interactions, removed while this
@@ -72,8 +67,9 @@ final class ListDropInstallerView: UIView {
     private var isSearching = false
 
     /// How often, and how far apart, the search runs before it gives up: the
-    /// list's collection view can appear a moment after its background.
-    private static let searchAttempts = 6
+    /// list's collection view can join the view tree after this view joins
+    /// the window.
+    private static let searchAttempts = 20
     private static let searchInterval: Duration = .milliseconds(100)
 
     init(delegate: any UIDropInteractionDelegate) {
@@ -90,7 +86,28 @@ final class ListDropInstallerView: UIView {
 
     override func didMoveToWindow() {
         super.didMoveToWindow()
-        guard window != nil, collectionView == nil, !isSearching else { return }
+        if collectionView == nil {
+            startSearch()
+        }
+    }
+
+    /// Called on every SwiftUI update.
+    func update(isEnabled: Bool) {
+        self.isEnabled = isEnabled
+        if let collectionView, window != nil, collectionView.window !== window {
+            // The collection view this target holds is no longer in this
+            // view's window: give it back its own interactions, then find
+            // the list's collection view again.
+            release()
+            startSearch()
+        }
+        // Every update, in case UIKit or SwiftUI adds a drop interaction to
+        // the collection view after this target's.
+        applyState()
+    }
+
+    private func startSearch() {
+        guard window != nil, !isSearching else { return }
         isSearching = true
         search(attempt: 1)
     }
@@ -100,8 +117,9 @@ final class ListDropInstallerView: UIView {
             isSearching = false
             return
         }
-        if let found = nearestCollectionView() {
+        if let found = ownListCollectionView() {
             isSearching = false
+            keptInteractions.removeAll()
             collectionView = found
             Self.log.info("list drop target installed", ["attempt": attempt])
             applyState()
@@ -118,23 +136,35 @@ final class ListDropInstallerView: UIView {
         }
     }
 
-    /// The collection view that overlaps this view, searched from the nearest
-    /// ancestor out. This view is a sibling of the list, not inside it, so
-    /// each ancestor's descendants are searched, breadth first. On Catalyst
-    /// the window also holds the sidebar and the contact list; nearest first
-    /// and the overlap check keep their collection views out.
-    private func nearestCollectionView() -> UICollectionView? {
-        var ancestor = superview
-        while let root = ancestor {
-            var queue = root.subviews[...]
-            while let view = queue.popFirst() {
-                if let collectionView = view as? UICollectionView,
-                   collectionView.convert(collectionView.bounds, to: self).intersects(bounds) {
-                    return collectionView
-                }
-                queue.append(contentsOf: view.subviews)
+    /// The first collection view, breadth first, in the view of the nearest
+    /// view controller above this view (the card's own hosting controller)
+    /// whose frame overlaps this view. This view is a sibling of the list,
+    /// not inside it. The search never looks above that controller's view:
+    /// a collection view behind the card, or the card below during a
+    /// navigation push, can overlap this view too.
+    private func ownListCollectionView() -> UICollectionView? {
+        guard let root = owningControllerView() else { return nil }
+        var queue = root.subviews[...]
+        while let view = queue.popFirst() {
+            if let collectionView = view as? UICollectionView,
+               collectionView.convert(collectionView.bounds, to: self).intersects(bounds) {
+                return collectionView
             }
-            ancestor = root.superview
+            queue.append(contentsOf: view.subviews)
+        }
+        return nil
+    }
+
+    /// Walks the responder chain, not the superviews: a hosting view's next
+    /// responder is not always its view controller, so the chain is followed
+    /// until it reaches one.
+    private func owningControllerView() -> UIView? {
+        var responder = next
+        while let current = responder {
+            if let controller = current as? UIViewController {
+                return controller.viewIfLoaded
+            }
+            responder = current.next
         }
         return nil
     }
@@ -142,7 +172,7 @@ final class ListDropInstallerView: UIView {
     /// Enabled: this target's interaction is the collection view's only drop
     /// interaction; any other one is removed and kept. Disabled: this
     /// target's interaction is removed and the kept ones are added back.
-    func applyState() {
+    private func applyState() {
         guard let collectionView else { return }
         if isEnabled {
             for case let other as UIDropInteraction in collectionView.interactions where other !== dropInteraction {
@@ -153,32 +183,44 @@ final class ListDropInstallerView: UIView {
                 collectionView.addInteraction(dropInteraction)
             }
         } else {
-            if dropInteraction.view === collectionView {
-                collectionView.removeInteraction(dropInteraction)
-            }
-            for kept in keptInteractions {
-                collectionView.addInteraction(kept)
-            }
-            keptInteractions.removeAll()
+            restoreKeptInteractions(on: collectionView)
         }
     }
 
-    /// Leaves the collection view as it was before this target: SwiftUI is
-    /// removing the list's background, and a `UIDropInteraction` whose
-    /// delegate is gone must not stay on the list.
+    private func restoreKeptInteractions(on collectionView: UICollectionView) {
+        if dropInteraction.view === collectionView {
+            collectionView.removeInteraction(dropInteraction)
+        }
+        for kept in keptInteractions {
+            collectionView.addInteraction(kept)
+        }
+        keptInteractions.removeAll()
+    }
+
+    /// Leaves the collection view as it was before this target and forgets it.
+    private func release() {
+        if let collectionView {
+            restoreKeptInteractions(on: collectionView)
+        }
+        keptInteractions.removeAll()
+        collectionView = nil
+    }
+
+    /// SwiftUI is removing the list's background, and a `UIDropInteraction`
+    /// whose delegate is gone must not stay on the list.
     func uninstall() {
         isEnabled = false
-        applyState()
-        collectionView = nil
+        release()
     }
 }
 
-/// Decides and performs a Mail drop for `ListMailDropTarget`.
+/// Decides and performs a Mail drop for `ListMailDropTarget`. UIKit asks it
+/// only while the installer has this target's interaction on the list, so it
+/// has no enabled state of its own.
 @MainActor
 final class MailDropInteractionDelegate: NSObject, UIDropInteractionDelegate {
     nonisolated private static let log = GuessWhoLog.logger("app.mail-drop")
 
-    var isEnabled = true
     var onDrop: @MainActor (MailDropReader.PendingDrop) -> Void = { _ in }
     /// The last session `canHandle` logged. UIKit can ask more than once per
     /// session; each session logs once.
@@ -186,7 +228,7 @@ final class MailDropInteractionDelegate: NSObject, UIDropInteractionDelegate {
 
     func dropInteraction(_ interaction: UIDropInteraction, canHandle session: any UIDropSession) -> Bool {
         let providers = session.items.map(\.itemProvider)
-        let canHandle = isEnabled && MailDropReader.canAccept(providers)
+        let canHandle = MailDropReader.canAccept(providers)
         if loggedSession !== session {
             loggedSession = session
             // At info so the hand test shows what a Mail drag carries on
@@ -197,7 +239,6 @@ final class MailDropInteractionDelegate: NSObject, UIDropInteractionDelegate {
                 "types": providers.enumerated()
                     .map { "\($0.offset): \($0.element.registeredTypeIdentifiers.joined(separator: " "))" }
                     .joined(separator: " | "),
-                "enabled": isEnabled,
                 "canHandle": canHandle,
             ])
         }
@@ -205,12 +246,12 @@ final class MailDropInteractionDelegate: NSObject, UIDropInteractionDelegate {
     }
 
     func dropInteraction(_ interaction: UIDropInteraction, sessionDidUpdate session: any UIDropSession) -> UIDropProposal {
-        UIDropProposal(operation: isEnabled ? .copy : .cancel)
+        UIDropProposal(operation: .copy)
     }
 
     func dropInteraction(_ interaction: UIDropInteraction, performDrop session: any UIDropSession) {
         let providers = session.items.map(\.itemProvider)
-        guard isEnabled, MailDropReader.canAccept(providers) else { return }
+        guard MailDropReader.canAccept(providers) else { return }
         // UIKit allows a drop's data to be requested only within
         // performDrop, so every load starts here, synchronously.
         onDrop(MailDropReader.startLoading(providers))
