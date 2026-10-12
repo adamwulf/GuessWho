@@ -11,11 +11,12 @@ import GuessWhoLogging
 /// `List` on iOS and Mac Catalyst is a `UICollectionView`, and the collection
 /// view has a built-in `UIDropInteraction`. That interaction claims every drop
 /// session from another app over the list and then refuses it, so SwiftUI's
-/// drop handlers never see the session. A second interaction next to it is
-/// not enough: the built-in one still wins over the cells. So while the target
-/// is enabled, the installer removes the collection view's other drop
-/// interactions and keeps them; while it is disabled, it removes its own and
-/// puts the kept ones back. Workaround source:
+/// drop handlers never see the session. The author of the workaround this
+/// follows found that a second interaction next to it is not enough: the
+/// built-in one still wins over the cells. So while the target is enabled,
+/// the installer removes the collection view's other drop interactions and
+/// keeps them; while it is disabled, it removes its own and puts the kept
+/// ones back. Workaround source:
 /// https://developer.apple.com/forums/content/attachment/75bcafd5-b927-465a-9648-b8fc856f556f
 ///
 /// A session that `MailDropReader.canAccept(_:)` refuses (an image or a file

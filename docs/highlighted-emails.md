@@ -174,12 +174,40 @@ Writes throw `SidecarUnavailableError` when the sidecar engine is unavailable.
 
 ### Dropping an email
 
-The whole contact card is the drop target: one drop handler sits on the card's
-outermost container, the `List`, so a drop anywhere on the profile works.
-There is no drop zone and no drop highlight\[^drop].
+The whole contact card is the drop target: one UIKit `UIDropInteraction` sits
+on the backing `UICollectionView` of the card's outermost container, the
+`List`, so a drop anywhere on the profile works. There is no drop zone and no
+drop highlight\[^drop].
 
-- **What it accepts:** whatever `MailDropReader.canAccept(_:)` accepts, the
-  one check for both `validateDrop` and `performDrop`\[^accept]. A provider
+- **Why not SwiftUI's `.onDrop`:** SwiftUI bug FB24490454. A SwiftUI `List`
+  on iOS and Mac Catalyst is a `UICollectionView`, and the collection view
+  has a built-in `UIDropInteraction`. That interaction claims every drop
+  session from another app over the list and then refuses it, so a SwiftUI
+  `.onDrop` on the `List` never sees a Mail drag. The author of the
+  workaround this follows found that a second interaction next to the
+  built-in one is not enough, because the built-in one still wins over the
+  cells:
+  <https://developer.apple.com/forums/content/attachment/75bcafd5-b927-465a-9648-b8fc856f556f>.
+- **How it is installed:** `ListMailDropTarget` is an invisible,
+  non-interactive `.background` on the `List`\[^install]. It finds the list's
+  collection view: it walks up its own superviews and, for each ancestor
+  (nearest first), searches that ancestor's descendants, breadth first, for a
+  `UICollectionView` whose frame overlaps its own. On Catalyst the window also
+  holds the sidebar and the contact list; nearest first and the overlap check
+  keep their collection views out. The list can appear a moment after its
+  background, so the search runs up to six times, 100 ms apart. While the
+  target is enabled, it removes the collection view's other drop interactions,
+  keeps them, and adds its own. Every SwiftUI update checks again, so a drop
+  interaction that SwiftUI adds later (for example, when edit mode changes)
+  is removed and kept the same way. When SwiftUI removes the background, the
+  target removes its own interaction and adds the kept ones back. Only public
+  UIKit API is used. The workaround's author notes that removing the built-in
+  interaction also turns off the `List`'s own drop handling (`.onMove`,
+  `.onInsert`, drops onto rows); the card uses `.onMove` only in the editor,
+  where the kept interactions are back.
+- **What it accepts:** the delegate's `canHandle` returns
+  `isEnabled && MailDropReader.canAccept(_:)` for the providers of the
+  session's items, and `performDrop` checks the same again\[^accept]. A provider
   counts when it has Mail's message type (`com.apple.mail.email`) or
   `public.email-message` — a Finder `.eml` has these too. A provider with
   only a URL counts when it is neither `public.file-url` nor `public.image`:
@@ -190,11 +218,32 @@ There is no drop zone and no drop highlight\[^drop].
   nothing. The reader turns each dragged message into `EmailMessageHeaders`.
   Any message is kept, from any sender.
 - **No drop while the user edits the contact.** The section is hidden during
-  the edit, so the delegate's `isEnabled` is false and both `validateDrop`
-  and `performDrop` refuse.
+  the edit, so the target is disabled: it removes its own interaction and adds
+  the kept ones back, because the inline editor pins edit mode and uses
+  `.onMove` drag-handle reorder, which may need them. The delegate refuses
+  too: with `isEnabled` false, `canHandle` returns false, `sessionDidUpdate`
+  proposes `.cancel`, and `performDrop` does nothing.
 - **Data requests start inside `performDrop`**, because UIKit allows them only
-  there: the delegate calls `MailDropReader.startLoading(_:)` synchronously,
-  then a task awaits `MailDropReader.read(_:)`.
+  there: `dropInteraction(_:performDrop:)` takes the providers of the
+  session's items, calls `MailDropReader.startLoading(_:)` synchronously, and
+  hands the result to `highlightDroppedEmails(_:)`, where a task awaits
+  `MailDropReader.read(_:)`. While enabled, `sessionDidUpdate` proposes
+  `.copy`.
+- **The log for a hand test** (channel `app.mail-drop`, at info, so the
+  default log floor keeps it):
+    - `list drop target installed` (with the search `attempt`) once the
+      target finds the list, or `list drop target not found` after the last
+      attempt. Without an `installed` line, the card has no Mail drop
+      interaction.
+    - `mail drop session`, once per drag session that UIKit asks the target
+      about, also when the answer is no: `items` (the item count), `types` (each
+      provider's `registeredTypeIdentifiers`, as `0: a b | 1: c`), `enabled`,
+      and `canHandle`. This line shows what Catalyst exposes for a Mail drag.
+    - On a drop, `mail drop provider` for each provider, then
+      `highlighted email drop` (channel `app.highlighted-email`) with the
+      message and usable counts.
+
+  None of these lines holds a subject, an address, or a file name.
 - **Mapping:** `HighlightedEmail.init?(headers:highlightedAt:)` builds each
   email, with `highlightedAt` set to the time of the drop\[^mapping]. A message
   with no usable Message-ID is skipped; a drop with none adds nothing.
@@ -211,11 +260,13 @@ There is no drop zone and no drop highlight\[^drop].
   scroll. In a normal drop the row and the scroll target arrive in the same
   update, so the scroll runs on a later main-actor turn. A newer drop
   replaces the ids of an older one that has not scrolled yet.
-- **The monogram's photo drop still works.** It is a nested drop destination
-  for `.image` inside the header row, and the two targets never want the same
-  drag. A Mail message has no image type, so the photo drop does not take it.
-  The email target refuses an image or file drag that has no Mail type, so
-  only the photo drop can take an image.
+- **The monogram's photo drop is not changed.** It is a SwiftUI
+  `.onDrop(of: [.image])` inside the header row. The email target refuses an
+  image or file drag that has no Mail type, so its interaction does not claim
+  that session, and UIKit can offer the session to another drop interaction.
+  In a hosted test on macOS 27, SwiftUI keeps its own drop interaction on the
+  root hosting view, above the list\[^bridge]. Whether an image dragged from
+  another app reaches the photo drop is not measured.
 
 ### Dropping a web address
 
@@ -321,7 +372,9 @@ later wins over it.
 \[^watcher]: [ContactsRepository.postContactCellsDidChange(forContactKeys:)](../Sources/GuessWhoSync/ContactsRepository.swift:ContactsRepository.postContactCellsDidChange)
 \[^mint]: [GuessWhoSync.handleCaseA mints Contact.deterministicGuessWhoID](../Sources/GuessWhoSync/GuessWhoSync.swift:GuessWhoSync.handleCaseA)
 \[^save]: [CNContactStoreAdapter.save → apply(\_:to:) sets urlAddresses from the saved value](../Sources/GuessWhoSync/CNContactStoreAdapter.swift:CNContactStoreAdapter.apply)
-\[^drop]: [HighlightEmailDropDelegate / ContactDetailView.highlightDroppedEmails(\_:)](../App/GuessWho/ContactDetailView.swift:HighlightEmailDropDelegate)
+\[^drop]: [ListMailDropTarget / MailDropInteractionDelegate / ContactDetailView.highlightDroppedEmails(\_:)](../App/GuessWho/Support/ListMailDropTarget.swift:ListMailDropTarget)
+\[^install]: [ListDropInstallerView.nearestCollectionView() / applyState()](../App/GuessWho/Support/ListMailDropTarget.swift:ListDropInstallerView.applyState)
+\[^bridge]: [ListMailDropTargetTests.aViewAboveTheListKeepsADropInteractionThatIsNotOurs](../App/GuessWhoTests/ListMailDropTargetTests.swift:ListMailDropTargetTests.aViewAboveTheListKeepsADropInteractionThatIsNotOurs)
 \[^accept]: [MailDropReader.canAccept(\_:) / isMailMessage(\_:)](../App/GuessWho/Support/MailDropReader.swift:MailDropReader.canAccept)
 \[^scroll]: [ContactDetailView.highlightScrollTarget / ScrollToHighlightedEmailModifier](../App/GuessWho/ContactDetailView.swift:ScrollToHighlightedEmailModifier)
 \[^mapping]: [HighlightedEmail.init?(headers:highlightedAt:)](../Sources/GuessWhoSync/HighlightedEmail.swift:HighlightedEmail.init)
