@@ -64,6 +64,23 @@ public struct HighlightedEmail: Hashable, Sendable, Identifiable {
         )
     }
 
+    /// Builds the highlighted email for a dropped message's `headers`,
+    /// highlighted at `highlightedAt`: the From display name and address
+    /// become the sender, and the Date header becomes `sentAt`. Returns nil
+    /// when the headers have no Message-ID, or one that is empty after
+    /// normalization.
+    public init?(headers: EmailMessageHeaders, highlightedAt: Date) {
+        guard let messageID = headers.messageID else { return nil }
+        self.init(
+            messageID: messageID,
+            subject: headers.subject,
+            senderName: headers.fromName,
+            senderAddress: headers.fromAddress,
+            sentAt: headers.date,
+            highlightedAt: highlightedAt
+        )
+    }
+
     /// Memberwise init for decode; takes already-normalized values.
     init(
         id: UUID,

@@ -143,6 +143,56 @@ struct HighlightedEmailTests {
     }
 
     @Test
+    func headersMapOntoAHighlightedEmail() throws {
+        let sentAt = Date(timeIntervalSince1970: 1_790_000_000.123456)
+        let highlightedAt = Date(timeIntervalSince1970: 1_791_000_000.987654)
+        let headers = EmailMessageHeaders(
+            messageID: "<abc.123@Example.COM>",
+            subject: " Intro ",
+            fromName: "Ada Lovelace",
+            fromAddress: "ada@example.com",
+            date: sentAt
+        )
+
+        let mapped = try #require(HighlightedEmail(headers: headers, highlightedAt: highlightedAt))
+        // Identical to the field-by-field init: same normalization, trimming,
+        // and stored precision.
+        let direct = try email(
+            "<abc.123@Example.COM>",
+            subject: " Intro ",
+            senderName: "Ada Lovelace",
+            senderAddress: "ada@example.com",
+            sentAt: sentAt,
+            highlightedAt: highlightedAt
+        )
+        #expect(mapped == direct)
+        #expect(mapped.messageID == "abc.123@example.com")
+        #expect(mapped.subject == "Intro")
+        #expect(mapped.senderName == "Ada Lovelace")
+        #expect(mapped.senderAddress == "ada@example.com")
+        #expect(mapped.sentAt == SidecarISO8601.date(from: SidecarISO8601.string(from: sentAt)))
+
+        // Only the Message-ID is required.
+        let bare = try #require(HighlightedEmail(
+            headers: EmailMessageHeaders(messageID: "<bare@example.com>"),
+            highlightedAt: highlightedAt
+        ))
+        #expect(bare.subject == nil)
+        #expect(bare.senderName == nil)
+        #expect(bare.senderAddress == nil)
+        #expect(bare.sentAt == nil)
+        #expect(bare.sortDate == bare.highlightedAt)
+    }
+
+    @Test
+    func headersWithoutAUsableMessageIDMapToNil() {
+        let noID = EmailMessageHeaders(subject: "Hi", fromAddress: "ada@example.com")
+        #expect(HighlightedEmail(headers: noID, highlightedAt: Date()) == nil)
+        let emptyID = EmailMessageHeaders(messageID: "<>", subject: "Hi")
+        #expect(HighlightedEmail(headers: emptyID, highlightedAt: Date()) == nil)
+    }
+
+    @Test
     func orderIsNewerSortDateFirstWithIDTieBreak() throws {
         let undated = try email(
             "<undated@example.com>", sentAt: nil, highlightedAt: Date(timeIntervalSince1970: 1_795_000_000))
