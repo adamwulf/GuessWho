@@ -246,6 +246,18 @@ rules of the LinkedIn import's websites field\[^importWebsites]:
 - **A gone contact throws.** An id that does not resolve, or a contact with no
   Contacts record, throws `ContactStoreError.contactNotFound`, like the
   LinkedIn import. A failed save is rethrown.
+- **Caller precondition: one write at a time per contact.** A caller awaits
+  each call before it starts the next write to the same contact — this
+  method, `highlightEmail(_:for:)`, or any other card or sidecar write. One
+  drop passes all of its URLs in ONE call, and a second drop on the same card
+  waits for the first, the way the card chains its email drops\[^drop]. The
+  method reads the card and then saves the WHOLE card back: a save writes
+  every `urlAddresses` row from the saved value\[^save]. So two calls that
+  overlap can both read the same rows, and the later save wins. **A website
+  row the first call added is lost**, although both calls return 1. An
+  overlap with a write that mints the contact's identity has the reconcile
+  risk that the `highlightEmail(_:for:)` precondition names (see "Repository
+  surface").
 - **Notifications.** The save refreshes the cached record and posts
   `.contactsRepositoryDidReload` (`contactDataChanged: true`); a stamp that
   succeeds posts it again\[^webPosts]. No highlighted-email notification is

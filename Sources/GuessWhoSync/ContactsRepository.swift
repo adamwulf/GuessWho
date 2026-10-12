@@ -1849,6 +1849,19 @@ public final class ContactsRepository: NSObject {
     ///   then stamp Last Modified best-effort so the contact sorts as edited.
     ///   The stamp can MINT a GuessWho ID for a previously-unreconciled contact.
     ///
+    /// **Caller precondition:** await each call before starting the next write
+    /// to the same contact — this method, `highlightEmail(_:for:)`, or any
+    /// other card or sidecar write. Pass all the URLs of one drop in ONE call,
+    /// and chain drops the way the card chains `highlightDropTask` (each drop
+    /// awaits the one before it). This method reads the card and then saves
+    /// the WHOLE card back (the adapter's `apply(_:to:)` sets every
+    /// `urlAddresses` row from the saved value), so two calls that overlap can
+    /// both read the same rows and the later save wins: a website row the
+    /// first call added is LOST, although both calls return 1. An overlap with
+    /// a write that mints the contact's identity also has the reconcile risk
+    /// the `highlightEmail(_:for:)` precondition names
+    /// (docs/highlighted-emails.md).
+    ///
     /// Throws `ContactStoreError.contactNotFound` when the contact is gone, like
     /// `applyLinkedIn`, and rethrows a failed save.
     @discardableResult
