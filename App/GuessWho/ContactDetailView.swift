@@ -218,11 +218,13 @@ struct ContactDetailView: View {
     @State private var highlightedEmails: [HighlightedEmail] = []
     @State private var highlightedEmailsLoadID = UUID()
     @State private var coarseHighlightedEmailReloadTask: Task<Void, Never>?
-    // The newest drop's writes: its highlighted emails, then its contact
-    // values. Each drop waits for the one before it, so writes for this
-    // contact never overlap (the repository's caller precondition for
-    // highlightEmail and addContactValues). Never cancelled: a drop is a user
-    // write and must land even if the card goes away.
+    // The newest link of this contact's write chain: a drop's writes (its
+    // highlighted emails, then its contact values), or the write of one
+    // message's late .eml headers. Each link waits for the one before it, so
+    // writes for this contact never overlap (the repository's caller
+    // precondition for highlightEmail and addContactValues). Never
+    // cancelled: a drop is a user write and must land even if the card goes
+    // away.
     @State private var highlightDropTask: Task<Void, Never>?
     // The emails the newest drop wrote. When the section shows one of their
     // rows, the card clears this and scrolls to the first of them.
@@ -1914,17 +1916,26 @@ struct ContactDetailView: View {
     /// section updates from the repository's change notifications, and the
     /// card then scrolls to the first email row of this drop. New rows from
     /// links show after the card re-loads; the card does not scroll to them.
+    ///
+    /// A message read from its `message:` URL is written at once with only
+    /// its Message-ID and subject; its `.eml` arrives later (about 29 s on
+    /// Catalyst) and `addLateFileHeaders` writes the sender and sent date
+    /// then, outside this drop's task.
     private func addDroppedItems(_ drop: MailDropReader.PendingDrop) {
         let contactID = loadedContactID ?? id
         let droppedAt = Date()
         let previousDrop = highlightDropTask
         highlightDropTask = Task {
             let items = await MailDropReader.read(drop)
-            let emails = items.messages.compactMap { HighlightedEmail(headers: $0, highlightedAt: droppedAt) }
+            let emails = items.messages.compactMap { message in
+                HighlightedEmail(headers: message.headers, highlightedAt: droppedAt)
+                    .map { (email: $0, message: message) }
+            }
             // Counts only: never a subject, an address, or a URL.
             Self.highlightedEmailLog.info("highlighted email drop", [
                 "messages": items.messages.count,
                 "usable": emails.count,
+                "lateFiles": emails.filter(\.message.hasLateFile).count,
                 "contactValues": items.contactValues.count,
             ])
             await previousDrop?.value
@@ -1932,10 +1943,13 @@ struct ContactDetailView: View {
             // identity, and a write that starts before it finishes would
             // reconcile again (docs/highlighted-emails.md).
             var writtenIDs: Set<UUID> = []
-            for email in emails {
+            for (email, message) in emails {
                 do {
                     try await repository.highlightEmail(email, for: contactID)
                     writtenIDs.insert(email.id)
+                    if message.hasLateFile {
+                        addLateFileHeaders(of: message, to: email, for: contactID, droppedAt: droppedAt)
+                    }
                 } catch {
                     // Keep going so one failed message does not drop the rest.
                     Self.highlightedEmailLog.error(
@@ -1952,6 +1966,72 @@ struct ContactDetailView: View {
             }
             await addDroppedContactValues(items.contactValues, for: contactID)
         }
+    }
+
+    /// The late phase of a Mail drop: waits for the `.eml` of a message that
+    /// `addDroppedItems` already wrote from its `message:` URL, then writes
+    /// the email again with the file's full headers. The repository keeps
+    /// the stored `highlightedAt` (the drop time) and takes the sender and
+    /// the sent date, so the row fills in; it can move in the section,
+    /// which sorts by the sent date.
+    ///
+    /// The wait runs apart from the drop chain, so a later drop does not
+    /// wait for this file to show its own rows. The write joins the chain
+    /// only when the file has arrived, like a drop, so writes for this
+    /// contact still run one at a time. A file that fails, never arrives, or
+    /// holds another Message-ID changes nothing.
+    private func addLateFileHeaders(
+        of message: MailDropReader.DroppedMessage,
+        to email: HighlightedEmail,
+        for contactID: ContactID,
+        droppedAt: Date
+    ) {
+        Task {
+            guard let headers = await message.lateFileHeaders() else {
+                Self.logLateFileHeaders("no file")
+                return
+            }
+            guard let full = HighlightedEmail(headers: headers, highlightedAt: droppedAt),
+                  full.id == email.id
+            else {
+                Self.logLateFileHeaders("other message")
+                return
+            }
+            let previous = highlightDropTask
+            highlightDropTask = Task {
+                await previous?.value
+                await writeLateFileHeaders(full, for: contactID)
+            }
+        }
+    }
+
+    /// Writes the full headers of `email`, unless the user removed it while
+    /// its file loaded. A remove writes a tombstone, and `highlightEmail`
+    /// revives a tombstone (a re-drop brings a removed email back), so the
+    /// write runs only while the email is still on the contact. A remove is
+    /// not part of the drop chain: one that lands between this check and
+    /// the write is still revived; the window is one sidecar read.
+    private func writeLateFileHeaders(_ email: HighlightedEmail, for contactID: ContactID) async {
+        let current = await repository.highlightedEmails(for: contactID)
+        guard current.contains(where: { $0.id == email.id }) else {
+            Self.logLateFileHeaders("removed")
+            return
+        }
+        do {
+            try await repository.highlightEmail(email, for: contactID)
+            Self.logLateFileHeaders("written")
+        } catch {
+            Self.highlightedEmailLog.error(
+                "highlight email file headers failed: \(error.localizedDescription)"
+            )
+            service.recordError("highlight email file headers failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// One line per late file, with a fixed outcome word: never a subject,
+    /// an address, or a file name.
+    private static func logLateFileHeaders(_ result: String) {
+        highlightedEmailLog.info("highlighted email file headers", ["result": result])
     }
 
     /// Adds every web, `mailto:`, and `tel:` URL of one drop to the card's

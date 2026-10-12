@@ -10,14 +10,28 @@ import GuessWhoSync
 ///
 /// Measured on macOS 27 (AppKit side), Mail puts one pasteboard item per
 /// dragged message, carrying a file promise of the message as an `.eml`
-/// (`com.apple.mail.email`) and a `message:%3C<Message-ID>%3E` URL. What a
-/// Catalyst drop receives after the AppKit → `NSItemProvider` bridge is not
-/// measured yet, so the reader copes with either the file or only the URL,
-/// and logs each provider's registered types (never subjects, addresses, or
-/// URLs).
+/// (`com.apple.mail.email`) and a `message:%3C<Message-ID>%3E` URL. On
+/// Catalyst the provider registers both too, but in Adam's hand test the
+/// `.eml` arrived about 29 s after the drop (likely a 30 s file-promise
+/// timeout), while the row it built was right. So a message comes in two
+/// phases:
+///
+/// 1. **Fast.** When the `message:` URL gives a Message-ID, `read` returns
+///    the message at once with that Message-ID and a subject from Mail's
+///    plain text, else from the suggested file name. It does not wait for
+///    the `.eml`. A provider with no usable `message:` URL (a Finder `.eml`)
+///    waits for its file: that is the only source of its Message-ID, and a
+///    local file is fast.
+/// 2. **Late.** The `.eml` of a fast message keeps loading. The caller
+///    awaits `DroppedMessage.lateFileHeaders()` for the full headers (the
+///    sender and the sent date) when they arrive.
+///
+/// The reader logs each provider's registered types and each finished load
+/// (never subjects, addresses, or URLs).
 ///
 /// Reading is two steps, because UIKit lets a drop's data be requested only
-/// within `performDrop`, which is synchronous:
+/// within `performDrop`, which is synchronous. Every load, the late `.eml`
+/// too, starts there:
 ///
 /// ```swift
 /// let drop = MailDropReader.startLoading(providers)  // inside performDrop
@@ -48,14 +62,38 @@ enum MailDropReader {
     }
 
     /// What one drop holds. Each list keeps provider order.
-    struct DroppedItems: Sendable, Equatable {
-        /// One per provider whose loads yield a Message-ID: the `.eml`, else
-        /// a `message:` URL.
-        var messages: [EmailMessageHeaders] = []
+    struct DroppedItems: Sendable {
+        /// One per provider whose loads yield a Message-ID: a `message:` URL,
+        /// else the `.eml`.
+        var messages: [DroppedMessage] = []
         /// One per other provider whose URL is `http`, `https`, `mailto`, or
         /// `tel`: `ContactsRepository.addContactValues(from:for:)` turns it
         /// into a website, email, or phone row.
         var contactValues: [URL] = []
+    }
+
+    /// One dropped message: the headers known when `read` returns, and, for
+    /// a message read from its `message:` URL, the `.eml` still loading.
+    struct DroppedMessage: Sendable {
+        /// Always holds a Message-ID. From a `message:` URL, only the
+        /// Message-ID and a subject (Mail's plain text, else the suggested
+        /// file name); from an `.eml`, every header the file has.
+        let headers: EmailMessageHeaders
+        /// The `.eml` that `read` did not wait for. Nil when `headers` came
+        /// from the file, or the provider has no file.
+        fileprivate let lateFile: PendingValue<EmailMessageHeaders>?
+
+        /// Whether `lateFileHeaders()` waits for an `.eml`.
+        var hasLateFile: Bool { lateFile != nil }
+
+        /// Waits for the `.eml` that `read` did not wait for, and returns
+        /// its headers: the sender and the sent date that `headers` lacks.
+        /// Nil when there is no such file, or its load failed. If the load
+        /// never finishes, this never returns. Call it once, from one task:
+        /// the file's headers go to one reader only.
+        func lateFileHeaders() async -> EmailMessageHeaders? {
+            await lateFile?.value
+        }
     }
 
     /// True when at least one provider looks like a Mail message or a link:
@@ -109,15 +147,17 @@ enum MailDropReader {
         })
     }
 
-    /// Waits for the loads `startLoading(_:)` began. A provider whose loads
-    /// yield a Message-ID is a message; else a provider whose URL is `http`,
-    /// `https`, `mailto`, or `tel` is a contact value; else it is skipped.
+    /// Waits for the loads `startLoading(_:)` began, except the `.eml` of a
+    /// message whose `message:` URL gives its Message-ID. A provider whose
+    /// loads yield a Message-ID is a message; else a provider whose URL is
+    /// `http`, `https`, `mailto`, or `tel` is a contact value; else it is
+    /// skipped.
     nonisolated static func read(_ drop: PendingDrop) async -> DroppedItems {
         var items = DroppedItems()
         for (index, pending) in drop.items.enumerated() {
             switch await pending.item() {
-            case .message(let headers):
-                items.messages.append(headers)
+            case .message(let message):
+                items.messages.append(message)
             case .contactValue(let url):
                 items.contactValues.append(url)
             case nil:
@@ -224,14 +264,19 @@ enum MailDropReader {
 
 /// What one provider of a drop is.
 private enum DroppedItem {
-    case message(EmailMessageHeaders)
+    case message(MailDropReader.DroppedMessage)
     case contactValue(URL)
 }
 
-/// One provider's pending loads. For a message, the `.eml` is the source of
-/// truth; the `message:` URL fills in a missing Message-ID, and the plain
-/// text or the suggested file name fills in a missing subject. A provider
-/// with no Message-ID is a contact value when its URL is one.
+/// One provider's pending loads, started together in `performDrop`.
+///
+/// A message comes first from its `message:` URL: when that gives a
+/// Message-ID, the message does not wait for the `.eml` (on Catalyst Mail's
+/// file promise took about 29 s); the plain text or the suggested file name
+/// gives its subject, and the `.eml` goes with it as the late file. Else the
+/// `.eml` is the only source of the Message-ID (a Finder `.eml` file), so
+/// the message waits for it. A provider with no Message-ID is a contact
+/// value when its URL is one.
 private struct PendingItem: Sendable {
     let file: PendingValue<EmailMessageHeaders>?
     let url: PendingValue<URL>?
@@ -239,17 +284,19 @@ private struct PendingItem: Sendable {
     let suggestedSubject: String?
 
     func item() async -> DroppedItem? {
-        var headers = await file?.value ?? EmailMessageHeaders()
-        var loadedURL: URL?
-        if headers.messageID == nil, let url = await url?.value {
-            headers.messageID = EmailMessageHeaders.messageID(fromMessageURL: url)
-            loadedURL = url
+        let loadedURL = await url?.value
+        if let loadedURL, let messageID = EmailMessageHeaders.messageID(fromMessageURL: loadedURL) {
+            var headers = EmailMessageHeaders()
+            headers.messageID = messageID
+            headers.subject = await fallbackSubject()
+            return .message(MailDropReader.DroppedMessage(headers: headers, lateFile: file))
         }
+        var headers = await file?.value ?? EmailMessageHeaders()
         if headers.messageID != nil {
             if headers.subject == nil {
                 headers.subject = await fallbackSubject()
             }
-            return .message(headers)
+            return .message(MailDropReader.DroppedMessage(headers: headers, lateFile: nil))
         }
         if let loadedURL, Self.isContactValue(loadedURL) {
             return .contactValue(loadedURL)
