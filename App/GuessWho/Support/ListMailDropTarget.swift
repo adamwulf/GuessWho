@@ -253,6 +253,21 @@ final class MailDropInteractionDelegate: NSObject, UIDropInteractionDelegate {
     func dropInteraction(_ interaction: UIDropInteraction, performDrop session: any UIDropSession) {
         let providers = session.items.map(\.itemProvider)
         guard MailDropReader.canAccept(providers) else { return }
+        // No system progress UI, set before any load starts. UIDragSession.h:
+        // "The kind of progress and cancellation UI that UIKit will display
+        // if handling this session's drop takes a significant amount of
+        // time. The default value is UIDropSessionProgressIndicatorStyleDefault,
+        // meaning that some progress UI will be shown. If you show your own
+        // progress indicator, hide the system progress UI by setting this
+        // property to UIDropSessionProgressIndicatorStyleNone."
+        // Every load started below counts toward the session's progress, and
+        // on Catalyst Mail's .eml file promise took about 29 s. While it
+        // loaded, Adam saw the whole window stop taking input, with every
+        // thread idle (a sample showed no app frames): the system progress UI
+        // is the likely cause. The card shows the drop's result itself, as
+        // rows. A test cannot make a UIDropSession, so only the hand test
+        // shows the effect.
+        session.progressIndicatorStyle = .none
         // UIKit allows a drop's data to be requested only within
         // performDrop, so every load starts here, synchronously.
         onDrop(MailDropReader.startLoading(providers))
