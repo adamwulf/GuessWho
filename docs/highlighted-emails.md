@@ -170,6 +170,50 @@ Writes throw `SidecarUnavailableError` when the sidecar engine is unavailable.
   `.contactsRepositoryDidReload`. A view that shows highlighted emails must
   observe both notifications.
 
+## App
+
+### The section
+
+The contact card shows a **Highlighted Emails** section directly above Recent
+Email\[^section]. It lists every highlighted email in the repository order,
+with no cap, and is hidden when there are none. A row has the Recent Email
+look: the subject (or "(No subject)"), and a caption of the sender name (else
+the sender address, else nothing) and the date — `sentAt`, else
+`highlightedAt`\[^row].
+
+- **Tap** opens the message in Mail.
+- **Context menu:** "Open in Mail", and a destructive "Remove" that calls
+  `removeHighlightedEmail(id:for:)`\[^removeUI]. The row goes away when the
+  change notification re-reads the section; the view does not edit its list
+  in place.
+
+The `message://` link is **best effort**. Both email sections build it in one
+place\[^link]: the normalized Message-ID, wrapped in `<` `>`, through
+`MailMessageID.mailDeepLink(for:)`. That returns nil for an ID that is not
+safe in a URL, and Apple does not document the scheme, so Mail may not find
+the message (for example, when Mail no longer has it locally). A row
+with no link still shows, has no tap action, and still offers "Remove".
+
+### Loading and refresh
+
+The full contact load reads highlighted emails in parallel with mail
+activity\[^load]. The card then re-reads only this section:
+
+- on `.contactsRepositoryHighlightedEmailsDidChange` when any token in its
+  `contactIDs` resolves to this contact. Every token is resolved through the
+  repository before the compare, so a post for a write that minted the
+  contact's identity matches a card that still holds its pre-mint
+  token\[^scoped];
+- on `.contactsRepositoryDidReload`, after a 150 ms debounce, as the fallback
+  for coarse watcher deliveries\[^coarse]. Highlighted emails and Recent Email
+  each keep their own debounce task, so a scoped change for one section
+  cancels only its own fallback.
+
+Each re-read is newest-wins\[^reload]: a drop of N messages posts N changes,
+and the re-reads can finish out of order, so only the most recently started
+read may publish. The full load uses the same gate, so a re-read that started
+later wins over it.
+
 \[^key]: [HighlightedEmail.cellKey / cellKeyPrefix](../Sources/GuessWhoSync/HighlightedEmail.swift:HighlightedEmail.cellKey)
 \[^value]: [HighlightedEmail.cellValue(overlaying:)](../Sources/GuessWhoSync/HighlightedEmail.swift:HighlightedEmail.cellValue)
 \[^decode]: [HighlightedEmail.init?(cellKey:cell:)](../Sources/GuessWhoSync/HighlightedEmail.swift:HighlightedEmail.init)
@@ -185,3 +229,11 @@ Writes throw `SidecarUnavailableError` when the sidecar engine is unavailable.
 \[^watcher]: [ContactsRepository.postContactCellsDidChange(forContactKeys:)](../Sources/GuessWhoSync/ContactsRepository.swift:ContactsRepository.postContactCellsDidChange)
 \[^mint]: [GuessWhoSync.handleCaseA mints Contact.deterministicGuessWhoID](../Sources/GuessWhoSync/GuessWhoSync.swift:GuessWhoSync.handleCaseA)
 \[^save]: [CNContactStoreAdapter.save → apply(\_:to:) sets urlAddresses from the saved value](../Sources/GuessWhoSync/CNContactStoreAdapter.swift:CNContactStoreAdapter.apply)
+\[^section]: [ContactDetailView.highlightedEmailsSection](../App/GuessWho/ContactDetailView.swift:ContactDetailView.highlightedEmailsSection)
+\[^row]: [ContactDetailView.highlightedEmailLabel / mailMessageLabel](../App/GuessWho/ContactDetailView.swift:ContactDetailView.mailMessageLabel)
+\[^removeUI]: [ContactDetailView.highlightedEmailRow / removeHighlightedEmail(\_:)](../App/GuessWho/ContactDetailView.swift:ContactDetailView.highlightedEmailRow)
+\[^link]: [MailMessageLink.url(forNormalizedMessageID:)](../App/GuessWho/ContactDetailView.swift:MailMessageLink.url)
+\[^load]: [ContactDetailView.loadContact — async let fetchedHighlightedEmails](../App/GuessWho/ContactDetailView.swift:ContactDetailView.loadContact)
+\[^scoped]: [ContactDetailView.highlightedEmailsDidChange / mailSectionContactID(changedBy:contactIDsKey:)](../App/GuessWho/ContactDetailView.swift:ContactDetailView.mailSectionContactID)
+\[^coarse]: [ContactDetailView.repositoryDidReloadForMailSections](../App/GuessWho/ContactDetailView.swift:ContactDetailView.repositoryDidReloadForMailSections)
+\[^reload]: [ContactDetailView.reloadHighlightedEmails(for:)](../App/GuessWho/ContactDetailView.swift:ContactDetailView.reloadHighlightedEmails)
