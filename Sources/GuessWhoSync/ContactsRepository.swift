@@ -1833,6 +1833,58 @@ public final class ContactsRepository: NSObject {
         return contact(id: id) ?? edited
     }
 
+    /// Adds web addresses to the contact's Contacts record — the card's website
+    /// rows (`urlAddresses`) — and returns how many it added. The package entry
+    /// point behind dropping a web link onto a contact.
+    ///
+    /// Rules (the same merge the LinkedIn import's `.websites` field uses):
+    /// - Only `http` / `https` URLs count. Any other scheme (`mailto:`,
+    ///   `message:`, `file:`, …) is ignored, not an error. An input with no web
+    ///   address returns 0 without reading the contact.
+    /// - A URL the contact already has, or one repeated in `urls`, is skipped,
+    ///   compared by the scheme-insensitive `urlDedupKey` (scheme, a leading
+    ///   `www.`, a trailing slash, and case do not count). Input order is kept.
+    /// - New rows get the default label (empty -> adapter passes nil).
+    /// - Nothing new: no save and no Last Modified stamp. Something new: save,
+    ///   then stamp Last Modified best-effort so the contact sorts as edited.
+    ///   The stamp can MINT a GuessWho ID for a previously-unreconciled contact.
+    ///
+    /// Throws `ContactStoreError.contactNotFound` when the contact is gone, like
+    /// `applyLinkedIn`, and rethrows a failed save.
+    @discardableResult
+    public func addWebAddresses(_ urls: [URL], for id: ContactID) async throws -> Int {
+        let webAddresses = urls.filter(Self.isWebAddress).map(\.absoluteString)
+        guard !webAddresses.isEmpty else { return 0 }
+        guard var edited = try await editableContact(id: id) else {
+            throw ContactStoreError.contactNotFound(localID: id.localID)
+        }
+        let additions = Self.newValues(
+            webAddresses,
+            notIn: edited.urlAddresses.map(\.value),
+            key: Self.urlDedupKey
+        )
+        // Counts only: a URL is user data and never goes in the log.
+        Self.saveLog.notice("web address add requested", metadata: [
+            "op": "addWebAddresses", "localID": .string(edited.localID),
+            "offered": .stringConvertible(urls.count),
+            "web": .stringConvertible(webAddresses.count),
+            "new": .stringConvertible(additions.count),
+        ])
+        guard !additions.isEmpty else { return 0 }
+
+        // CNContact field — default label (empty -> adapter passes nil).
+        edited.urlAddresses += additions.map { LabeledValue(label: "", value: $0) }
+        try await saveContact(edited, for: id)
+        await stampModifiedBestEffort(id, operation: "add web addresses")
+        return additions.count
+    }
+
+    /// Whether `url` is a web address: an `http` or `https` scheme, any case.
+    private static func isWebAddress(_ url: URL) -> Bool {
+        guard let scheme = url.scheme?.lowercased() else { return false }
+        return scheme == "http" || scheme == "https"
+    }
+
     /// New members of `incoming` not already present in `existing`, compared by
     /// `key`, preserving incoming order, de-duped, trimmed, and dropping empties.
     private static func newValues(
