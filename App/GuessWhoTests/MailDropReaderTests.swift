@@ -238,9 +238,17 @@ struct MailDropReaderReadTests {
         #expect(items.contactValues.map(\.absoluteString) == [string])
     }
 
+    /// Includes a `message:` URL with no usable Message-ID: it is not a
+    /// message, and `message` is not a contact-value scheme either.
     @Test
     func otherSchemesAreNeither() async throws {
-        let items = try await read(["ftp://example.com/file.txt", "sms:+15550100199", "facetime:someone@example.com"])
+        let items = try await read([
+            "ftp://example.com/file.txt",
+            "sms:+15550100199",
+            "facetime:someone@example.com",
+            "message:",
+            "message:%3C%3E",
+        ])
         #expect(items.messages.isEmpty)
         #expect(items.contactValues.isEmpty)
     }

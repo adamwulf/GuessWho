@@ -261,12 +261,17 @@ final class MailDropInteractionDelegate: NSObject, UIDropInteractionDelegate {
         // progress indicator, hide the system progress UI by setting this
         // property to UIDropSessionProgressIndicatorStyleNone."
         // Every load started below counts toward the session's progress, and
-        // on Catalyst Mail's .eml file promise took about 29 s. While it
-        // loaded, Adam saw the whole window stop taking input, with every
-        // thread idle (a sample showed no app frames): the system progress UI
-        // is the likely cause. The card shows the drop's result itself, as
-        // rows. A test cannot make a UIDropSession, so only the hand test
-        // shows the effect.
+        // on Catalyst Mail's .eml file promise took about 29 s. In Adam's
+        // hand test UIKit's progress HUD showed during that load. AFTER the
+        // HUD went away, the window looked normal and still drew updates (a
+        // remove made in a second window showed up in it), but it took no
+        // input; a second window worked, and a sample showed every thread
+        // idle (no app frames). The system progress UI is the likely cause,
+        // so this is expected to prevent that; it is not measured. The card
+        // shows the drop's result itself, as rows. A test cannot make a
+        // UIDropSession, so only a hand test shows the effect, and it must
+        // check that the window still takes input after the row fills in,
+        // not only that no HUD shows.
         session.progressIndicatorStyle = .none
         // UIKit allows a drop's data to be requested only within
         // performDrop, so every load starts here, synchronously.

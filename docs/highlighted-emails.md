@@ -244,11 +244,16 @@ drop highlight\[^drop].
   shows "progress and cancellation UI … if handling this session's drop
   takes a significant amount of time" (`UIDragSession.h`), and every load
   started in `performDrop` counts toward that progress. In a hand test on
-  Catalyst, while Mail's `.eml` loaded (about 29 s), the whole window
-  stopped taking input, with every thread idle (a sample showed no app
-  frames). The system progress UI is the likely cause. The card shows the
-  drop's result itself: the row appears at once and fills in later. A test
-  cannot make a `UIDropSession`, so only a hand test shows the effect.
+  Catalyst, UIKit's progress HUD showed while Mail's `.eml` loaded (about
+  29 s). After the HUD went away, that window looked normal and still drew
+  updates (a remove made in a second window showed up in it), but it took
+  no input; a second window worked, and a sample showed every thread idle
+  (no app frames). The system progress UI is the likely cause, so turning
+  it off is expected to prevent this; that is not measured. The card shows
+  the drop's result itself: the row appears at once and fills in later. A
+  test cannot make a `UIDropSession`, so only a hand test shows the effect,
+  and it must check that the window still takes input after the row fills
+  in, not only that no HUD shows.
 - **Two phases for a Mail message.** On Catalyst a Mail drag's provider
   carries both the `.eml` file promise and the `message:` URL. In a hand
   test the `.eml` arrived about 29 s after the drop (likely a 30 s
