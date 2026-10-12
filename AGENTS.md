@@ -118,9 +118,14 @@ touching that subsystem:
   `lastInteracted` never moves), the user curates them (no retention), and the
   user can remove one (tombstone; a re-drop revives it). Covers the
   Message-ID-derived id, the overlay/revive write rules, the repository
-  surface, its change notification, and the contact card's whole-profile
-  drop target and section. Read before touching highlighted emails or any
-  code that walks every cell of a contact envelope.
+  surface, its change notification, the contact card's whole-profile drop
+  target (a UIKit drop interaction on the `List`'s collection view, because
+  of SwiftUI bug FB24490454) and its hand-test log, and the section. Also
+  covers a dropped web link, which the same drop target adds to the
+  contact's website rows through `addWebAddresses` (one call per drop, then
+  a card re-load). Read before touching highlighted emails, the card's drop
+  target, a drop onto a SwiftUI `List`, or any code that walks every cell of
+  a contact envelope.
 - [`docs/autocomplete.md`](docs/autocomplete.md) — text-field autocomplete:
   how a field opts in (`.autocomplete(text:candidates:)` +
   `.autocompleteMenuHost()`), the shared filter, the candidate lists, and

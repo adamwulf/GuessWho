@@ -17,36 +17,6 @@ enum MailMessageLink {
     }
 }
 
-/// The whole-profile drop target for email: a drop of Mail messages anywhere
-/// on the contact card keeps them as highlighted emails. No visible drop zone.
-///
-/// The monogram's photo drop (`.image`) sits inside the header row, nested
-/// in this target, and the two never want the same drag. A Mail message has
-/// no image type, so the photo drop does not take it. This target refuses
-/// an image or file drag that has no Mail type (`MailDropReader.canAccept`),
-/// so only the photo drop can take an image.
-struct HighlightEmailDropDelegate: DropDelegate {
-    /// False while the user edits the contact. The section is hidden then, so
-    /// the card refuses the drop.
-    let isEnabled: Bool
-    /// Called inside `performDrop` with the loads already started.
-    let onDrop: @MainActor (MailDropReader.PendingDrop) -> Void
-
-    func validateDrop(info: DropInfo) -> Bool {
-        isEnabled && MailDropReader.canAccept(info.itemProviders(for: MailDropReader.acceptedTypes))
-    }
-
-    func performDrop(info: DropInfo) -> Bool {
-        guard isEnabled else { return false }
-        let providers = info.itemProviders(for: MailDropReader.acceptedTypes)
-        guard MailDropReader.canAccept(providers) else { return false }
-        // UIKit allows a drop's data to be requested only within
-        // performDrop, so every load starts here, synchronously.
-        onDrop(MailDropReader.startLoading(providers))
-        return true
-    }
-}
-
 /// Scrolls the modified `List` to the row whose id is `target` each time
 /// `target` changes to a value, and calls `onScroll`. A modifier, so the
 /// contact card's `List` expression does not move into a `ScrollViewReader`
@@ -248,9 +218,10 @@ struct ContactDetailView: View {
     @State private var highlightedEmails: [HighlightedEmail] = []
     @State private var highlightedEmailsLoadID = UUID()
     @State private var coarseHighlightedEmailReloadTask: Task<Void, Never>?
-    // The newest email drop's writes. Each drop waits for the one before it,
-    // so writes for this contact never overlap (the repository's caller
-    // precondition for highlightEmail). Never cancelled: a drop is a user
+    // The newest drop's writes: its highlighted emails, then its web
+    // addresses. Each drop waits for the one before it, so writes for this
+    // contact never overlap (the repository's caller precondition for
+    // highlightEmail and addWebAddresses). Never cancelled: a drop is a user
     // write and must land even if the card goes away.
     @State private var highlightDropTask: Task<Void, Never>?
     // The emails the newest drop wrote. When the section shows one of their
@@ -774,16 +745,22 @@ struct ContactDetailView: View {
         // not `body`, and shared by both platform branches.
         .autocompleteMenuHost()
         // A Mail message dropped anywhere on the profile becomes a
-        // highlighted email. On the List, the outermost container of the
-        // card, so the whole card is the target with no drop zone of its own.
-        .onDrop(
-            of: MailDropReader.acceptedTypes,
-            delegate: HighlightEmailDropDelegate(
+        // highlighted email, and a web link becomes a website row. The List
+        // is the outermost container of the card, so the whole card is the
+        // target with no drop zone of its own.
+        // A UIKit drop interaction on the List's collection view, not
+        // `.onDrop`: the collection view's built-in drop interaction refuses
+        // drops from other apps before SwiftUI sees them (FB24490454, see
+        // ListMailDropTarget). Off while the user edits the contact: the
+        // section is hidden then, and the collection view gets its own drop
+        // interactions back, which the editor's `.onMove` reorder may use.
+        .background {
+            ListMailDropTarget(
                 isEnabled: !isEditingContact,
-                onDrop: highlightDroppedEmails
+                onDrop: addDroppedItems
             )
-        )
-        // After a drop, show the user where it went.
+        }
+        // After a drop of emails, show the user where they went.
         .modifier(ScrollToHighlightedEmailModifier(
             target: highlightScrollTarget,
             onScroll: { highlightScrollIDs = [] }
@@ -1247,8 +1224,8 @@ struct ContactDetailView: View {
     /// Best-effort favorite mutations initiated from rows on this card.
     private static let favoriteLog = GuessWhoLog.logger("app.contact-favorites")
 
-    /// Highlighted-email drops and write failures. Never logs a subject or an
-    /// address.
+    /// Drops onto the card (highlighted emails and web addresses) and their
+    /// write failures. Never logs a subject, an address, or a URL.
     private static let highlightedEmailLog = GuessWhoLog.logger("app.highlighted-email")
 
     /// Loads the picked photo's bytes, downscales them to a sane contact-photo
@@ -1449,9 +1426,11 @@ struct ContactDetailView: View {
         } else {
             // No photo, not editing: tapping the monogram adds a first photo
             // without opening the editor. Nothing to remove, so go straight to
-            // the picker. The monogram also accepts a dropped image directly
-            // (Catalyst drag from Finder/Photos, iPad split-view drag), so a
-            // first photo can be set without the picker at all.
+            // the picker. The monogram also has an image drop, so a first
+            // photo can be set without the picker at all. Whether an image
+            // dragged from another app (Finder, Photos, iPad split view)
+            // reaches it over the List is not measured since FB24490454; see
+            // docs/highlighted-emails.md, "Dropping an email".
             Button {
                 presentingPhotoPicker = true
             } label: {
@@ -1928,21 +1907,25 @@ struct ContactDetailView: View {
         }
     }
 
-    /// Keeps every message of a drop as a highlighted email on this contact.
-    /// Called inside `performDrop`, so the drop time is taken here. Messages
-    /// with no usable Message-ID are skipped. The section updates from the
+    /// Adds a drop to this contact: every message becomes a highlighted
+    /// email, and every web link becomes a website row. Called inside
+    /// `performDrop`, so the drop time is taken here. Messages with no usable
+    /// Message-ID are skipped. The email section updates from the
     /// repository's change notifications, and the card then scrolls to the
-    /// first row of this drop.
-    private func highlightDroppedEmails(_ drop: MailDropReader.PendingDrop) {
+    /// first email row of this drop. New website rows show after the card
+    /// re-loads; the card does not scroll to them.
+    private func addDroppedItems(_ drop: MailDropReader.PendingDrop) {
         let contactID = loadedContactID ?? id
         let droppedAt = Date()
         let previousDrop = highlightDropTask
         highlightDropTask = Task {
-            let headers = await MailDropReader.read(drop)
-            let emails = headers.compactMap { HighlightedEmail(headers: $0, highlightedAt: droppedAt) }
+            let items = await MailDropReader.read(drop)
+            let emails = items.messages.compactMap { HighlightedEmail(headers: $0, highlightedAt: droppedAt) }
+            // Counts only: never a subject, an address, or a URL.
             Self.highlightedEmailLog.info("highlighted email drop", [
-                "messages": headers.count,
+                "messages": items.messages.count,
                 "usable": emails.count,
+                "webAddresses": items.webAddresses.count,
             ])
             await previousDrop?.value
             // One write at a time: a first write can mint the contact's
@@ -1967,7 +1950,32 @@ struct ContactDetailView: View {
             if !writtenIDs.isEmpty {
                 highlightScrollIDs = writtenIDs
             }
+            await addDroppedWebAddresses(items.webAddresses, for: contactID)
         }
+    }
+
+    /// Adds every web address of one drop as a website row, in ONE call: the
+    /// call saves the whole card, so a second call that overlapped it could
+    /// lose this one's rows. The caller runs this inside the drop chain, after
+    /// the drop's email writes.
+    private func addDroppedWebAddresses(_ webAddresses: [URL], for contactID: ContactID) async {
+        guard !webAddresses.isEmpty else { return }
+        let added: Int
+        do {
+            added = try await repository.addWebAddresses(webAddresses, for: contactID)
+        } catch {
+            Self.highlightedEmailLog.error(
+                "add web addresses failed: \(error.localizedDescription)"
+            )
+            service.recordError("add web addresses failed: \(error.localizedDescription)")
+            return
+        }
+        guard added > 0 else { return }
+        // The website rows render from `contact`, and nothing sets it on the
+        // repository's reload post: that re-reads only the email sections
+        // (`repositoryDidReloadForMailSections`). Same re-read as a LinkedIn
+        // import or an inline edit save.
+        await loadContact(preferFresh: true)
     }
 
     @ViewBuilder

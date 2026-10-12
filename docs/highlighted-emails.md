@@ -174,35 +174,94 @@ Writes throw `SidecarUnavailableError` when the sidecar engine is unavailable.
 
 ### Dropping an email
 
-The whole contact card is the drop target: one drop handler sits on the card's
-outermost container, the `List`, so a drop anywhere on the profile works.
-There is no drop zone and no drop highlight\[^drop].
+The whole contact card is the drop target: one UIKit `UIDropInteraction` sits
+on the backing `UICollectionView` of the card's outermost container, the
+`List`, so a drop anywhere on the profile works. There is no drop zone and no
+drop highlight\[^drop].
 
-- **What it accepts:** whatever `MailDropReader.canAccept(_:)` accepts, the
-  one check for both `validateDrop` and `performDrop`\[^accept]. A provider
+- **Why not SwiftUI's `.onDrop`:** SwiftUI bug FB24490454. A SwiftUI `List`
+  on iOS and Mac Catalyst is a `UICollectionView`, and the collection view
+  has a built-in `UIDropInteraction`. That interaction claims every drop
+  session from another app over the list and then refuses it, so a SwiftUI
+  `.onDrop` on the `List` never sees a Mail drag. The author of the
+  workaround this follows found that a second interaction next to the
+  built-in one is not enough, because the built-in one still wins over the
+  cells:
+  <https://developer.apple.com/forums/content/attachment/75bcafd5-b927-465a-9648-b8fc856f556f>.
+- **How it is installed:** `ListMailDropTarget` is an invisible,
+  non-interactive `.background` on the `List`\[^install]. It searches only
+  inside the card's own view controller: it follows the responder chain
+  (`next`, not the superviews, because a hosting view's next responder is not
+  always its controller) to the nearest `UIViewController`, the card's
+  hosting controller, and searches that controller's view, breadth first, for
+  a `UICollectionView` whose frame overlaps its own. It never looks above that
+  view. A collection view behind the card, or the card below during an
+  animated navigation push, overlaps the card too, and a search of the whole
+  window took those (measured in review on Catalyst, before this rule). The
+  list's collection view can join the view tree after its background joins
+  the window, so the search runs up to 20 times, 100 ms apart. If the
+  collection view the target holds leaves the target's window, the target
+  gives it back its own interactions and searches again. While the target is
+  enabled, it removes the collection view's other drop interactions, keeps
+  them, and adds its own. Every SwiftUI update checks again, in case UIKit or
+  SwiftUI adds a drop interaction later; it is removed and kept the same way.
+  When SwiftUI removes the background, the target removes its own interaction
+  and adds the kept ones back. Only public UIKit API is used. The
+  workaround's author notes that removing the built-in
+  interaction also turns off the `List`'s own drop handling (`.onMove`,
+  `.onInsert`, drops onto rows); the card uses `.onMove` only in the editor,
+  where the kept interactions are back.
+- **What it accepts:** the delegate's `canHandle` returns
+  `MailDropReader.canAccept(_:)` for the providers of the session's items,
+  and `performDrop` checks the same again\[^accept]. A provider
   counts when it has Mail's message type (`com.apple.mail.email`) or
   `public.email-message` — a Finder `.eml` has these too. A provider with
   only a URL counts when it is neither `public.file-url` nor `public.image`:
-  Catalyst may expose only Mail's `message:` URL, but a Finder file (whose
+  Catalyst may expose only Mail's `message:` URL, and a web link adds a
+  website (see "Dropping a web address"), but a Finder file (whose
   `public.file-url` conforms to `public.url`) or a dragged image would
-  otherwise make the whole card accept a drop that adds nothing. Any other web
-  link is still accepted; the reader finds no Message-ID in it, so it adds
-  nothing. The reader turns each dragged message into `EmailMessageHeaders`.
-  Any message is kept, from any sender.
+  otherwise make the whole card accept a drop that adds nothing. Only the
+  type is known before the drop, not the scheme, so a URL of any other
+  scheme (`mailto:`, `ftp:`, …) is accepted too; the reader finds neither a
+  Message-ID nor a web address in it, so it adds nothing\[^read]. The reader
+  turns each dragged message into `EmailMessageHeaders`. Any message is kept,
+  from any sender.
 - **No drop while the user edits the contact.** The section is hidden during
-  the edit, so the delegate's `isEnabled` is false and both `validateDrop`
-  and `performDrop` refuse.
+  the edit, so the target is disabled: it removes its own interaction and adds
+  the kept ones back, because the inline editor pins edit mode and uses
+  `.onMove` drag-handle reorder, which may need them. The installer is the
+  one owner of this state; the delegate has none, because UIKit asks it only
+  while its interaction is on the list.
 - **Data requests start inside `performDrop`**, because UIKit allows them only
-  there: the delegate calls `MailDropReader.startLoading(_:)` synchronously,
-  then a task awaits `MailDropReader.read(_:)`.
+  there: `dropInteraction(_:performDrop:)` takes the providers of the
+  session's items, calls `MailDropReader.startLoading(_:)` synchronously, and
+  hands the result to `addDroppedItems(_:)`, where a task awaits
+  `MailDropReader.read(_:)`. `sessionDidUpdate` proposes `.copy`.
+- **The log for a hand test** (channel `app.mail-drop`, at info, so the
+  default log floor keeps it):
+    - `list drop target installed` (with the search `attempt`) once the
+      target finds the list, or `list drop target not found` after the last
+      attempt. Without an `installed` line, the card has no Mail drop
+      interaction.
+    - `mail drop session`, once per drag session that UIKit asks the target
+      about, also when the answer is no: `items` (the item count), `types` (each
+      provider's `registeredTypeIdentifiers`, as `0: a b | 1: c`), and
+      `canHandle`. This line shows what Catalyst exposes for a Mail drag.
+    - On a drop, `mail drop provider` for each provider, then
+      `highlighted email drop` (channel `app.highlighted-email`) with the
+      `messages`, `usable`, and `webAddresses` counts.
+
+  None of these lines holds a subject, an address, a file name, or a URL.
 - **Mapping:** `HighlightedEmail.init?(headers:highlightedAt:)` builds each
   email, with `highlightedAt` set to the time of the drop\[^mapping]. A message
-  with no usable Message-ID is skipped; a drop with none adds nothing.
+  with no usable Message-ID is skipped; a drop with none adds no highlighted
+  email.
 - **Writes are serial.** The task awaits `highlightEmail(_:for:)` for each
-  email in turn, as the caller precondition above requires, and a second drop
-  on the same card waits for the first drop's writes before it starts its own.
-  A failed write is logged (never the subject or an address) and the loop
-  goes on to the next message.
+  email in turn, as the caller precondition above requires, then adds the
+  drop's web addresses (see "Dropping a web address"). A second drop on the
+  same card waits for the first drop's writes before it starts its own. A
+  failed write is logged (never the subject or an address) and the loop goes
+  on to the next message.
 - **The card scrolls to the drop.** When a drop's writes finish, the view
   keeps the ids it wrote; when the section shows one of them, the card
   forgets the ids and scrolls (animated, row centered) to the first of them
@@ -211,11 +270,93 @@ There is no drop zone and no drop highlight\[^drop].
   scroll. In a normal drop the row and the scroll target arrive in the same
   update, so the scroll runs on a later main-actor turn. A newer drop
   replaces the ids of an older one that has not scrolled yet.
-- **The monogram's photo drop still works.** It is a nested drop destination
-  for `.image` inside the header row, and the two targets never want the same
-  drag. A Mail message has no image type, so the photo drop does not take it.
-  The email target refuses an image or file drag that has no Mail type, so
-  only the photo drop can take an image.
+- **The monogram's photo drop from another app is not measured.** It is a
+  view-level SwiftUI `.onDrop(of: [.image])` on the monogram in the header
+  row, not one of the `List`'s own row drops (`.onInsert`, `.onMove`).
+  SwiftUI serves a view-level drop from its own drop interaction on the root
+  hosting view, above the list (seen in a hosted test on macOS
+  27\[^bridge], and described in the workaround source). Before this target,
+  FB24490454 broke it on Catalyst: the list's built-in interaction took every
+  session from another app, images too, and refused it, so an image dragged
+  from Finder onto the monogram did not drop (seen in a hand test). The
+  `.onDrop` code did not change, but the route did: while this target is
+  enabled, the built-in interaction is removed, and this target refuses an
+  image or file drag that has no Mail type, so its interaction does not
+  claim that session and UIKit can offer it to another interaction, such as
+  the root one. Whether an image dragged from another app now reaches the
+  photo drop is not measured.
+
+### Dropping a web address
+
+A dropped web link that is not a Mail message becomes a website row on the
+contact: a `urlAddresses` value on its Contacts record, not a highlighted
+email. It uses the same drop target as an email (see "Dropping an email").
+Which types a link dragged from another app, such as Safari, exposes on
+Catalyst is not measured; the `mail drop session` log line shows them.
+
+On the card:
+
+- **Which providers are web addresses.** `MailDropReader.read(_:)` returns
+  the drop's messages and web addresses, each in provider order\[^read]. A
+  provider whose loads yield a Message-ID (the `.eml`, else a `message:`
+  URL) is a message. Any other provider whose URL is `http` or `https`, in
+  any case, is a web address. Any other provider adds nothing.
+- **One call per drop, after the emails.** In the same task chain as the
+  emails (`highlightDropTask`), after the drop's email writes, the card
+  passes ALL of the drop's web addresses to ONE `addWebAddresses(_:for:)`
+  call\[^webDrop], as the caller precondition below requires. The call is for
+  the contact the drop landed on: the id is taken in `performDrop`, like the
+  emails' id.
+- **The card re-loads.** When the call added at least one row, the card runs
+  `loadContact(preferFresh: true)`. It must: the website rows render from
+  the card's `contact` state, and nothing sets that state when the
+  repository posts `.contactsRepositoryDidReload` — the card's observer
+  re-reads only the two email sections\[^coarse]. A LinkedIn import and an
+  inline edit save re-load the same way. A drop with nothing new does not
+  re-load. The card does not scroll to the new row; the scroll after a drop
+  is for emails only.
+- **Errors.** A failed call (a gone contact, a failed save) is logged as
+  `add web addresses failed` (channel `app.highlighted-email`) and recorded
+  with `service.recordError`. The card puts no URL in either.
+
+`ContactsRepository.addWebAddresses(_:for:)` takes `[URL]` and a
+`ContactID` and returns how many rows it added\[^addWeb]. It uses the merge
+rules of the LinkedIn import's websites field\[^importWebsites]:
+
+- **Web addresses only.** An `http` or `https` URL counts, in any case. Any
+  other scheme (`mailto:`, `message:`, `file:`, `ftp:`, …) is ignored, not an
+  error. An input with no web address returns 0 and does not read the contact.
+- **No duplicates.** A URL the contact already has, or one repeated in the
+  input, is skipped. The compare key is `urlDedupKey`: lowercased, with no
+  scheme, no leading `www.`, and no trailing slash, so
+  `https://www.example.com/` matches a stored `example.com`\[^dedup]. The
+  first spelling in the input wins, and input order is kept.
+- **Default label.** A new row holds the URL's `absoluteString` with an empty
+  label, so Contacts gives it its default label.
+- **Save and stamp only on a change.** Nothing new: no Contacts save and no
+  stamp. Something new: `saveContact`, then a best-effort Last Modified stamp,
+  so the contact sorts as edited. The stamp is a sidecar write, so it mints the
+  GuessWho ID of a contact that has none.
+- **A gone contact throws.** An id that does not resolve, or a contact with no
+  Contacts record, throws `ContactStoreError.contactNotFound`, like the
+  LinkedIn import. A failed save is rethrown.
+- **Caller precondition: one write at a time per contact.** A caller awaits
+  each call before it starts the next write to the same contact — this
+  method, `highlightEmail(_:for:)`, or any other card or sidecar write. One
+  drop passes all of its URLs in ONE call, and a second drop on the same card
+  waits for the first, the way the card chains its drops\[^webDrop]. The
+  method reads the card and then saves the WHOLE card back: a save writes
+  every `urlAddresses` row from the saved value\[^save]. So two calls that
+  overlap can both read the same rows, and the later save wins. **A website
+  row the first call added is lost**, although both calls return 1. An
+  overlap with a write that mints the contact's identity has the reconcile
+  risk that the `highlightEmail(_:for:)` precondition names (see "Repository
+  surface").
+- **Notifications.** The save refreshes the cached record and posts
+  `.contactsRepositoryDidReload` (`contactDataChanged: true`); a stamp that
+  succeeds posts it again\[^webPosts]. No highlighted-email notification is
+  posted.
+- **Logging** records counts only, never a URL.
 
 ### The section
 
@@ -274,10 +415,18 @@ later wins over it.
 \[^watcher]: [ContactsRepository.postContactCellsDidChange(forContactKeys:)](../Sources/GuessWhoSync/ContactsRepository.swift:ContactsRepository.postContactCellsDidChange)
 \[^mint]: [GuessWhoSync.handleCaseA mints Contact.deterministicGuessWhoID](../Sources/GuessWhoSync/GuessWhoSync.swift:GuessWhoSync.handleCaseA)
 \[^save]: [CNContactStoreAdapter.save → apply(\_:to:) sets urlAddresses from the saved value](../Sources/GuessWhoSync/CNContactStoreAdapter.swift:CNContactStoreAdapter.apply)
-\[^drop]: [HighlightEmailDropDelegate / ContactDetailView.highlightDroppedEmails(\_:)](../App/GuessWho/ContactDetailView.swift:HighlightEmailDropDelegate)
+\[^drop]: [ListMailDropTarget / MailDropInteractionDelegate / ContactDetailView.addDroppedItems(\_:)](../App/GuessWho/Support/ListMailDropTarget.swift:ListMailDropTarget)
+\[^install]: [ListDropInstallerView.ownListCollectionView() / update(isEnabled:)](../App/GuessWho/Support/ListMailDropTarget.swift:ListDropInstallerView.ownListCollectionView)
+\[^bridge]: [ListMailDropTargetTests.aViewAboveTheListKeepsADropInteractionThatIsNotOurs](../App/GuessWhoTests/ListMailDropTargetTests.swift:ListMailDropTargetTests.aViewAboveTheListKeepsADropInteractionThatIsNotOurs)
 \[^accept]: [MailDropReader.canAccept(\_:) / isMailMessage(\_:)](../App/GuessWho/Support/MailDropReader.swift:MailDropReader.canAccept)
+\[^read]: [MailDropReader.read(\_:) / PendingItem.item()](../App/GuessWho/Support/MailDropReader.swift:MailDropReader.read)
+\[^webDrop]: [ContactDetailView.addDroppedItems(\_:) / addDroppedWebAddresses(\_:for:)](../App/GuessWho/ContactDetailView.swift:ContactDetailView.addDroppedWebAddresses)
 \[^scroll]: [ContactDetailView.highlightScrollTarget / ScrollToHighlightedEmailModifier](../App/GuessWho/ContactDetailView.swift:ScrollToHighlightedEmailModifier)
 \[^mapping]: [HighlightedEmail.init?(headers:highlightedAt:)](../Sources/GuessWhoSync/HighlightedEmail.swift:HighlightedEmail.init)
+\[^addWeb]: [ContactsRepository.addWebAddresses(\_:for:)](../Sources/GuessWhoSync/ContactsRepository.swift:ContactsRepository.addWebAddresses)
+\[^importWebsites]: [ContactsRepository.applyLinkedIn — the `.websites` branch](../Sources/GuessWhoSync/ContactsRepository.swift:ContactsRepository.applyLinkedIn)
+\[^dedup]: [ContactsRepository.urlDedupKey / newValues(\_:notIn:key:)](../Sources/GuessWhoSync/ContactsRepository.swift:ContactsRepository.urlDedupKey)
+\[^webPosts]: [ContactsRepository.saveContact → refreshContact(localID:) → postDidReload; stampTimestamps posts its own reload](../Sources/GuessWhoSync/ContactsRepository.swift:ContactsRepository.stampTimestamps)
 \[^section]: [ContactDetailView.highlightedEmailsSection](../App/GuessWho/ContactDetailView.swift:ContactDetailView.highlightedEmailsSection)
 \[^row]: [ContactDetailView.highlightedEmailLabel / mailMessageLabel](../App/GuessWho/ContactDetailView.swift:ContactDetailView.mailMessageLabel)
 \[^removeUI]: [ContactDetailView.highlightedEmailRow / removeHighlightedEmail(\_:)](../App/GuessWho/ContactDetailView.swift:ContactDetailView.highlightedEmailRow)
