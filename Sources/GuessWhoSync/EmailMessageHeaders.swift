@@ -218,8 +218,11 @@ extension EmailMessageHeaders {
             }
             let followsWord = run != nil && before.allSatisfy { $0 == " " || $0 == "\t" }
             if let encoding = word.encoding, let bytes = word.bytes {
-                if followsWord, let pending = run, pending.encoding == encoding {
-                    run = (encoding, pending.bytes + bytes, pending.raw + before + word.raw)
+                if followsWord, run?.encoding == encoding {
+                    // Appended in place: rebuilding the run per word would be
+                    // quadratic in the number of adjacent words.
+                    run?.bytes += bytes
+                    run?.raw += before + word.raw
                 } else {
                     flushRun()
                     if !followsWord { output += before }

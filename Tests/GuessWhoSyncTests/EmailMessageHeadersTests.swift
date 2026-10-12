@@ -315,6 +315,18 @@ struct EmailMessageHeadersTests {
         #expect(subject("=?ISO-8859-1?Q?caf=E9?= =?UTF-8?B?5pel5pys6Kqe44Gu5Lu25ZCN?=") == "café日本語の件名")
     }
 
+    @Test func longEncodedWordRunParsesInLinearTime() {
+        let word = "=?UTF-8?Q?a?= "
+        let count = (EmailMessageHeaders.maximumHeaderBytes - 64) / word.utf8.count
+        let start = ContinuousClock.now
+
+        let headers = EmailMessageHeaders.parse(message(["Subject: " + String(repeating: word, count: count)]))
+
+        let elapsed = ContinuousClock.now - start
+        #expect(headers.subject == String(repeating: "a", count: count))
+        #expect(elapsed < .seconds(5), "took \(elapsed)")
+    }
+
     @Test func characterSplitAcrossTwoWordsStillDecodes() {
         #expect(subject("=?UTF-8?Q?caf=C3?= =?UTF-8?Q?=A9?=") == "café")
     }
