@@ -84,14 +84,13 @@ enum MailDropReader {
 
     // MARK: - The .eml file
 
+    /// Loads the `.eml` once. Mail's type conforms to `public.email-message`,
+    /// so a second identifier would ask Mail for the same file again.
     private static func fileHeaders(from provider: NSItemProvider) async -> EmailMessageHeaders? {
-        for identifier in [mailMessageTypeIdentifier, UTType.emailMessage.identifier]
-        where provider.hasItemConformingToTypeIdentifier(identifier) {
-            if let headers = await loadFileHeaders(from: provider, typeIdentifier: identifier) {
-                return headers
-            }
-        }
-        return nil
+        guard let identifier = [mailMessageTypeIdentifier, UTType.emailMessage.identifier]
+            .first(where: provider.hasItemConformingToTypeIdentifier)
+        else { return nil }
+        return await loadFileHeaders(from: provider, typeIdentifier: identifier)
     }
 
     private static func loadFileHeaders(
