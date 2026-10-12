@@ -21,10 +21,10 @@ enum MailMessageLink {
 /// on the contact card keeps them as highlighted emails. No visible drop zone.
 ///
 /// The monogram's photo drop (`.image`) sits inside the header row, nested
-/// in this target. SwiftUI activates a drop destination only when the drag
-/// holds one of its supported types, so a Mail message never activates the
-/// photo drop and falls through to this one; an image dropped on the
-/// monogram goes to the nested photo drop.
+/// in this target, and the two never want the same drag. A Mail message has
+/// no image type, so the photo drop does not take it. This target refuses
+/// an image or file drag that has no Mail type (`MailDropReader.canAccept`),
+/// so only the photo drop can take an image.
 struct HighlightEmailDropDelegate: DropDelegate {
     /// Called inside `performDrop` with the loads already started.
     let onDrop: @MainActor (MailDropReader.PendingDrop) -> Void

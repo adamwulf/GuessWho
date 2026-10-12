@@ -178,11 +178,17 @@ The whole contact card is the drop target: one drop handler sits on the card's
 outermost container, the `List`, so a drop anywhere on the profile works.
 There is no drop zone and no drop highlight\[^drop].
 
-- **What it accepts:** whatever `MailDropReader.canAccept(_:)` accepts — a
-  provider with Mail's message type (`com.apple.mail.email`),
-  `public.email-message`, or a URL. The reader turns each dragged message into
-  `EmailMessageHeaders`; a URL that is not Mail's `message:` URL gives no
-  Message-ID, so it adds nothing. Any message is kept, from any sender.
+- **What it accepts:** whatever `MailDropReader.canAccept(_:)` accepts, the
+  one check for both `validateDrop` and `performDrop`\[^accept]. A provider
+  counts when it has Mail's message type (`com.apple.mail.email`) or
+  `public.email-message` — a Finder `.eml` has these too. A provider with
+  only a URL counts when it is neither `public.file-url` nor `public.image`:
+  Catalyst may expose only Mail's `message:` URL, but a Finder file (whose
+  `public.file-url` conforms to `public.url`) or a dragged image would
+  otherwise make the whole card accept a drop that adds nothing. Any other web
+  link is still accepted; the reader finds no Message-ID in it, so it adds
+  nothing. The reader turns each dragged message into `EmailMessageHeaders`.
+  Any message is kept, from any sender.
 - **Data requests start inside `performDrop`**, because UIKit allows them only
   there: the delegate calls `MailDropReader.startLoading(_:)` synchronously,
   then a task awaits `MailDropReader.read(_:)`.
@@ -195,10 +201,10 @@ There is no drop zone and no drop highlight\[^drop].
   A failed write is logged (never the subject or an address) and the loop
   goes on to the next message.
 - **The monogram's photo drop still works.** It is a nested drop destination
-  for `.image` inside the header row. SwiftUI activates a destination only
-  when the drag holds one of its supported types, so a Mail message never
-  activates the photo drop; an image dropped on the monogram goes to the
-  nested photo drop.
+  for `.image` inside the header row, and the two targets never want the same
+  drag. A Mail message has no image type, so the photo drop does not take it.
+  The email target refuses an image or file drag that has no Mail type, so
+  only the photo drop can take an image.
 
 ### The section
 
@@ -258,6 +264,7 @@ later wins over it.
 \[^mint]: [GuessWhoSync.handleCaseA mints Contact.deterministicGuessWhoID](../Sources/GuessWhoSync/GuessWhoSync.swift:GuessWhoSync.handleCaseA)
 \[^save]: [CNContactStoreAdapter.save → apply(\_:to:) sets urlAddresses from the saved value](../Sources/GuessWhoSync/CNContactStoreAdapter.swift:CNContactStoreAdapter.apply)
 \[^drop]: [HighlightEmailDropDelegate / ContactDetailView.highlightDroppedEmails(\_:)](../App/GuessWho/ContactDetailView.swift:HighlightEmailDropDelegate)
+\[^accept]: [MailDropReader.canAccept(\_:) / isMailMessage(\_:)](../App/GuessWho/Support/MailDropReader.swift:MailDropReader.canAccept)
 \[^mapping]: [HighlightedEmail.init?(headers:highlightedAt:)](../Sources/GuessWhoSync/HighlightedEmail.swift:HighlightedEmail.init)
 \[^section]: [ContactDetailView.highlightedEmailsSection](../App/GuessWho/ContactDetailView.swift:ContactDetailView.highlightedEmailsSection)
 \[^row]: [ContactDetailView.highlightedEmailLabel / mailMessageLabel](../App/GuessWho/ContactDetailView.swift:ContactDetailView.mailMessageLabel)
