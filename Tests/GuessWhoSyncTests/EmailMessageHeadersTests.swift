@@ -302,6 +302,32 @@ struct EmailMessageHeadersTests {
         #expect(escaped.address == "jd@example.com")
     }
 
+    @Test func unquotedCommaStaysInTheDisplayName() {
+        let plain = from("Doe, Jane <jane@example.com>")
+        #expect(plain.name == "Doe, Jane")
+        #expect(plain.address == "jane@example.com")
+
+        let encoded = from("=?UTF-8?Q?Doe,_Jane?= <jane@example.com>")
+        #expect(encoded.name == "Doe, Jane")
+        #expect(encoded.address == "jane@example.com")
+    }
+
+    @Test func phraseWithoutAnAddressIsNotAnAddress() {
+        let mailbox = from("Jane Example")
+        #expect(mailbox.name == nil)
+        #expect(mailbox.address == nil)
+
+        #expect(from("MAILER-DAEMON").address == nil)
+        #expect(from("Jane <>").address == nil)
+        #expect(from("Jane <jane @example.com>").address == nil)
+        #expect(from("Jane <jane@@example.com>").address == nil)
+    }
+
+    @Test func quotedLocalPartAndSourceRouteAreKept() {
+        #expect(from("\"jane doe\"@example.com").address == "\"jane doe\"@example.com")
+        #expect(from("<@relay.example.net:jane@example.com>").address == "jane@example.com")
+    }
+
     @Test func qEncodedNameWithUnderscore() {
         let mailbox = from("=?iso-8859-1?Q?Andr=E9_Fran=E7ois?= <andre@example.fr>")
         #expect(mailbox.name == "André François")

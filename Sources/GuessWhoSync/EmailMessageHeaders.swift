@@ -13,7 +13,8 @@ public struct EmailMessageHeaders: Sendable, Equatable {
     /// The decoded display name of the first `From` mailbox. For the legacy
     /// `addr (Full Name)` spelling, the comment is the name.
     public var fromName: String?
-    /// The addr-spec of the first `From` mailbox.
+    /// The addr-spec of the first `From` mailbox. Nil when that mailbox has
+    /// no well-formed addr-spec (one `@`, no unquoted spaces or specials).
     public var fromAddress: String?
     /// The parsed `Date` header. Nil when absent or unparseable.
     public var date: Date?
@@ -35,8 +36,10 @@ public struct EmailMessageHeaders: Sendable, Equatable {
     /// Parses the header block of an RFC 5322 message (the bytes of an .eml file).
     ///
     /// Reads at most the first `maximumHeaderBytes` bytes, and stops at the
-    /// first empty line. Never fails: a missing or malformed header leaves its
-    /// property nil, so garbage input returns all-nil headers.
+    /// first empty line. Never throws or traps. A header that is missing, or
+    /// whose value doesn't parse (a `From` mailbox with no valid addr-spec, an
+    /// unreadable `Date`), leaves its property nil, so garbage input returns
+    /// all-nil headers.
     public static func parse(_ data: Data) -> EmailMessageHeaders {
         let fields = headerFields(in: data)
         var headers = EmailMessageHeaders()
@@ -365,6 +368,10 @@ extension EmailMessageHeaders {
     /// The display name and address of the first mailbox in an address-list
     /// value. A group (`Name: a@b, c@d;`) contributes its first member; empty
     /// entries (`undisclosed-recipients:;`, stray commas) are skipped.
+    ///
+    /// A comma before the entry has any address (no `<` and no `@` yet)
+    /// belongs to an unquoted display name, as in `Doe, Jane <jane@x>`, so it
+    /// doesn't end the entry.
     static func firstMailbox(in value: String) -> (name: String?, address: String?) {
         var entry: [AddressToken] = []
         var inAngle = false
@@ -379,6 +386,9 @@ extension EmailMessageHeaders {
                     // Everything so far was a group's display name.
                     entry.removeAll()
                     continue
+                case "," where !inAngle && !hasAddress(entry):
+                    if !entry.allSatisfy(isBlank) { entry.append(token) }
+                    continue
                 case ",", ";":
                     guard !inAngle else { break }
                     let mailbox = mailbox(from: entry)
@@ -392,6 +402,19 @@ extension EmailMessageHeaders {
             entry.append(token)
         }
         return mailbox(from: entry)
+    }
+
+    private static func hasAddress(_ tokens: [AddressToken]) -> Bool {
+        tokens.contains { isCharacter($0, "<") || isCharacter($0, "@") }
+    }
+
+    /// Whitespace or a comment.
+    private static func isBlank(_ token: AddressToken) -> Bool {
+        switch token {
+        case .character(let character): character.isWhitespace
+        case .comment: true
+        case .quoted: false
+        }
     }
 
     /// `phrase <addr-spec>`, or a bare addr-spec whose comment (the legacy
@@ -429,22 +452,39 @@ extension EmailMessageHeaders {
         nonEmpty(decodeEncodedWords(collapsingFoldingWhitespace(text)))
     }
 
-    /// The addr-spec spelled by `tokens`: comments and folding whitespace
-    /// dropped, quoted local parts kept as written, and an obsolete source
-    /// route (`@relay:`) removed.
+    /// Characters that can't appear in an addr-spec outside a quoted string.
+    private static let addrSpecSpecials: Set<Character> = ["<", ">", ",", ";", ":", "\\", "(", ")"]
+
+    /// The addr-spec spelled by `tokens`, with quoted local parts kept as
+    /// written and an obsolete source route (`@relay:`) removed. Nil unless
+    /// it is one unbroken run (whitespace and comments only around it) with
+    /// exactly one `@` outside quotes, so a phrase such as `Jane Example`
+    /// is never taken for an address.
     private static func addrSpec(_ tokens: ArraySlice<AddressToken>) -> String? {
+        var tokens = tokens
+        if let first = tokens.first(where: { !isBlank($0) }), isCharacter(first, "@"),
+           let colon = tokens.firstIndex(where: { isCharacter($0, ":") }) {
+            tokens = tokens[tokens.index(after: colon)...]
+        }
         var spec = ""
+        var atSigns = 0
+        var endedRun = false
         for token in tokens {
             switch token {
-            case .character(let character) where !character.isWhitespace: spec.append(character)
-            case .quoted(let raw, _): spec += raw
-            case .character, .comment: break
+            case .comment:
+                endedRun = !spec.isEmpty
+            case .character(let character) where character.isWhitespace:
+                endedRun = !spec.isEmpty
+            case .character(let character):
+                guard !endedRun, !addrSpecSpecials.contains(character) else { return nil }
+                if character == "@" { atSigns += 1 }
+                spec.append(character)
+            case .quoted(let raw, _):
+                guard !endedRun else { return nil }
+                spec += raw
             }
         }
-        if spec.hasPrefix("@"), let colon = spec.firstIndex(of: ":") {
-            spec = String(spec[spec.index(after: colon)...])
-        }
-        return spec.isEmpty ? nil : spec
+        return atSigns == 1 ? spec : nil
     }
 }
 
