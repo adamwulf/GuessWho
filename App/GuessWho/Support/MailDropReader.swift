@@ -92,16 +92,18 @@ enum MailDropReader {
     /// `dropInteraction(_:performDrop:)`: UIKit allows a drop's data to be
     /// requested only within that method. Then await `read(_:)`.
     static func startLoading(_ providers: [NSItemProvider]) -> PendingDrop {
-        PendingDrop(items: providers.enumerated().map { index, provider in
+        let start = ContinuousClock.now
+        return PendingDrop(items: providers.enumerated().map { index, provider in
             // At info so the hand test sees it: the default log floor is info.
             log.info("mail drop provider", [
                 "index": index,
                 "types": provider.registeredTypeIdentifiers.joined(separator: " "),
             ])
+            let load = LoadLog(index: index, start: start)
             return PendingItem(
-                file: loadFileHeaders(from: provider),
-                url: loadURL(from: provider),
-                plainText: loadPlainText(from: provider),
+                file: loadFileHeaders(from: provider, log: load),
+                url: loadURL(from: provider, log: load),
+                plainText: loadPlainText(from: provider, log: load),
                 suggestedSubject: suggestedSubject(provider.suggestedName)
             )
         })
@@ -127,9 +129,31 @@ enum MailDropReader {
 
     // MARK: - Loads
 
+    /// Logs one line per finished load, at info so the hand test sees it:
+    /// which provider, which load (`file`, `url`, or `text`), whether it
+    /// gave a value, how many milliseconds after `startLoading` it finished,
+    /// and the error as `domain#code`. Never a subject, an address, a URL,
+    /// or a file name. It shows which load is slow, and whether Mail's
+    /// `.eml` arrives at all.
+    private struct LoadLog: Sendable {
+        let index: Int
+        let start: ContinuousClock.Instant
+
+        func finished(_ kind: String, ok: Bool, error: (any Error)?) {
+            let elapsed = ContinuousClock.now - start
+            MailDropReader.log.info("mail drop load", [
+                "index": index,
+                "kind": kind,
+                "ok": ok,
+                "ms": Int((elapsed / .milliseconds(1)).rounded()),
+                "error": MailDropReader.errorSummary(error),
+            ])
+        }
+    }
+
     /// Loads the `.eml` once. Mail's type conforms to `public.email-message`,
     /// so a second identifier would ask Mail for the same file again.
-    private static func loadFileHeaders(from provider: NSItemProvider) -> PendingValue<EmailMessageHeaders>? {
+    private static func loadFileHeaders(from provider: NSItemProvider, log: LoadLog) -> PendingValue<EmailMessageHeaders>? {
         guard let identifier = [mailMessageTypeIdentifier, UTType.emailMessage.identifier]
             .first(where: provider.hasItemConformingToTypeIdentifier)
         else { return nil }
@@ -140,38 +164,38 @@ enum MailDropReader {
             // of the mapped data without copying, so only the pages that
             // hold the header block are read from disk.
             guard let url else {
-                log.debug("mail drop file unavailable", ["type": identifier, "error": errorSummary(error)])
+                log.finished("file", ok: false, error: error)
                 pending.complete(with: nil)
                 return
             }
             do {
                 let data = try Data(contentsOf: url, options: .alwaysMapped)
+                log.finished("file", ok: true, error: nil)
                 pending.complete(with: EmailMessageHeaders.parse(data))
             } catch {
-                log.debug("mail drop file unreadable", ["type": identifier, "error": errorSummary(error)])
+                log.finished("file", ok: false, error: error)
                 pending.complete(with: nil)
             }
         }
         return pending
     }
 
-    private static func loadURL(from provider: NSItemProvider) -> PendingValue<URL>? {
+    private static func loadURL(from provider: NSItemProvider, log: LoadLog) -> PendingValue<URL>? {
         guard provider.canLoadObject(ofClass: URL.self) else { return nil }
         let pending = PendingValue<URL>()
         _ = provider.loadObject(ofClass: URL.self) { @Sendable url, error in
-            if url == nil {
-                log.debug("mail drop URL unavailable", ["error": errorSummary(error)])
-            }
+            log.finished("url", ok: url != nil, error: error)
             pending.complete(with: url)
         }
         return pending
     }
 
-    private static func loadPlainText(from provider: NSItemProvider) -> PendingValue<String>? {
+    private static func loadPlainText(from provider: NSItemProvider, log: LoadLog) -> PendingValue<String>? {
         let identifier = UTType.utf8PlainText.identifier
         guard provider.hasItemConformingToTypeIdentifier(identifier) else { return nil }
         let pending = PendingValue<String>()
-        _ = provider.loadDataRepresentation(forTypeIdentifier: identifier) { @Sendable data, _ in
+        _ = provider.loadDataRepresentation(forTypeIdentifier: identifier) { @Sendable data, error in
+            log.finished("text", ok: data != nil, error: error)
             pending.complete(with: data.flatMap { nonEmpty(String(decoding: $0, as: UTF8.self)) })
         }
         return pending
