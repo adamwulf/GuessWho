@@ -253,8 +253,8 @@ struct ContactDetailView: View {
     // precondition for highlightEmail). Never cancelled: a drop is a user
     // write and must land even if the card goes away.
     @State private var highlightDropTask: Task<Void, Never>?
-    // The emails the newest drop wrote. The card scrolls to the first of their
-    // rows when the section shows it, then clears this.
+    // The emails the newest drop wrote. When the section shows one of their
+    // rows, the card clears this and scrolls to the first of them.
     @State private var highlightScrollIDs: Set<UUID> = []
     // Imported-guide matches keyed by the individual contact street line they
     // describe. Each summary renders directly below its own address rather than
