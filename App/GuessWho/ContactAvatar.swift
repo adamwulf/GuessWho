@@ -28,6 +28,11 @@ struct ContactAvatar: View {
     // the row paints initials-first and swaps in the photo when it arrives.
     @State private var image: UIImage?
 
+    private struct PhotoLoadID: Hashable {
+        let contactID: ContactID
+        let generation: Int
+    }
+
     var body: some View {
         ZStack {
             if let image {
@@ -54,7 +59,7 @@ struct ContactAvatar: View {
         // Keyed on the opaque ContactID so SwiftUI cancels a stale load when the
         // row is recycled onto a different contact. The loader/decoder already
         // runs off the main actor; only the final assignment happens here.
-        .task(id: contact.contactID) {
+        .task(id: PhotoLoadID(contactID: contact.contactID, generation: photoLoader.cacheGeneration)) {
             await loadThumbnail()
         }
     }
@@ -68,7 +73,7 @@ struct ContactAvatar: View {
         // Reset to the initials placeholder while the (possibly recycled) row
         // loads its new contact's photo.
         image = nil
-        // Stale-load protection lives in `.task(id: contact.contactID)`: when the
+        // Stale-load protection lives in `.task(id: PhotoLoadID(contactID: contact.contactID, generation: photoLoader.cacheGeneration))`: when the
         // row is recycled onto a different contact, SwiftUI cancels this task and
         // restarts it for the new id, so a late result can't land on the wrong
         // row. (`id` is a value-type copy of `contact.contactID`, so a post-await

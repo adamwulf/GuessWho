@@ -471,7 +471,12 @@ final class MailBridgeController {
                 // most once per contact-data revision and the repository moves
                 // the actual Contacts fetch off the main actor.
                 do {
-                    thumbnail = try await repository.contactPhotoData(for: id, kind: .thumbnail)?.data
+                    if let photo = try await repository.contactPhotoData(for: id, kind: .thumbnail) {
+                        thumbnail = await Task.detached(priority: .utility) {
+                            // Preserve the existing no-crop path and its bounded byte policy.
+                            photo.crop == nil ? photo.data : photo.displayImage(maxDimension: 256)?.jpegData(compressionQuality: 0.85)
+                        }.value
+                    }
                     guard !Task.isCancelled,
                           !repository.isLoading,
                           repository.contactDataRevision == contactRevision,
