@@ -50,6 +50,53 @@ struct ContactPhotoCropTests {
 
 @Suite("Original photo and crop persistence")
 struct ContactPhotoCropPersistenceTests {
+    @Test func simultaneousFirstCropsMergeAsOnePhoto() throws {
+        let firstStore = InMemorySidecarStore()
+        let secondStore = InMemorySidecarStore()
+        let first = GuessWhoSync(contacts: InMemoryContactStore(), events: InMemoryEventStore(), sidecars: firstStore, deviceID: "a")
+        let second = GuessWhoSync(contacts: InMemoryContactStore(), events: InMemoryEventStore(), sidecars: secondStore, deviceID: "b")
+        let key = SidecarKey(kind: .contact, id: UUID().uuidString.lowercased())
+        let cropA = try #require(ContactPhotoCrop(x: 0, y: 0, width: 0.5, height: 0.5))
+        let cropB = try #require(ContactPhotoCrop(x: 0.5, y: 0.5, width: 0.5, height: 0.5))
+        let blobA: String = try first.setBlobField(at: key, field: ContactsRepository.profilePhotoFieldName,
+            data: Data([1]), contentType: "image/jpeg", photoCrop: cropA)
+        let blobB: String = try second.setBlobField(at: key, field: ContactsRepository.profilePhotoFieldName,
+            data: Data([2]), contentType: "image/jpeg", photoCrop: cropB)
+        let a = try #require(firstStore.read(key))
+        let b = try #require(secondStore.read(key))
+        let ab = try merge(a, b).get()
+        let ba = try merge(b, a).get()
+        #expect(ab.fields.count == 1)
+        #expect(ba.fields.count == 1)
+        // Simulate both blob arrivals as well as the merged envelope.
+        try firstStore.writeBlob(Data([2]), blobId: blobB, for: key)
+        try secondStore.writeBlob(Data([1]), blobId: blobA, for: key)
+        try firstStore.write(ab, at: key)
+        try secondStore.write(ba, at: key)
+        let readA = try #require(first.profilePhoto(at: key))
+        let readB = try #require(second.profilePhoto(at: key))
+        #expect(readA.pointer == readB.pointer)
+        #expect(readA.photo.data == readB.photo.data)
+        #expect(readA.photo.crop == (readA.photo.data == Data([1]) ? cropA : cropB))
+    }
+
+    @Test func cropCommitRejectsAnOriginalReplacedAfterItWasRead() throws {
+        let sync = GuessWhoSync(contacts: InMemoryContactStore(), events: InMemoryEventStore(),
+                                sidecars: InMemorySidecarStore(), deviceID: "test")
+        let key = SidecarKey(kind: .contact, id: UUID().uuidString.lowercased())
+        let firstID: String = try sync.setBlobField(at: key, field: ContactsRepository.profilePhotoFieldName,
+                                                  data: Data([1]), contentType: "image/jpeg")
+        try sync.setBlobField(at: key, field: ContactsRepository.profilePhotoFieldName,
+                             data: Data([2]), contentType: "image/jpeg")
+        do {
+            try sync.setBlobField(at: key, field: ContactsRepository.profilePhotoFieldName,
+                data: Data([1]), contentType: "image/jpeg",
+                photoCrop: ContactPhotoCrop(x: 0, y: 0, width: 0.5, height: 0.5), replacingBlobID: firstID)
+            Issue.record("A stale pointer overwrote a replacement")
+        } catch ContactPhotoEditError.photoChanged {}
+        #expect(try sync.profilePhoto(at: key)?.photo.data == Data([2]))
+    }
+
     @Test @MainActor func originalSurvivesSaveReloadReframeAndReset() async throws {
         let contacts = InMemoryContactStore(contacts: [Contact(localID: "ada", givenName: "Ada")])
         let sidecars = InMemorySidecarStore()
@@ -77,10 +124,10 @@ struct ContactPhotoCropPersistenceTests {
             #expect(photo.crop == crop)
         }
         let reframed = try #require(ContactPhotoCrop(x: 0, y: 0, width: 0.4, height: 0.2))
-        try await reopened.setContactPhotoCrop(for: reopenedID, crop: reframed)
+        try await reopened.setContactPhotoCrop(for: reopenedID, crop: reframed, originalData: original)
         #expect(try await reopened.contactPhotoData(for: reopenedID, kind: .fullSize)?.crop == reframed)
         #expect(try await reopened.contactPhotoData(for: reopenedID, kind: .fullSize)?.data == original)
-        try await reopened.setContactPhotoCrop(for: reopenedID, crop: nil)
+        try await reopened.setContactPhotoCrop(for: reopenedID, crop: nil, originalData: original)
         let reset = try #require(try await reopened.contactPhotoData(for: reopenedID, kind: .fullSize))
         #expect(reset.crop == nil)
         #expect(reset.data == original)
@@ -125,7 +172,7 @@ struct ContactPhotoCropPersistenceTests {
         let id = try #require(repository.contact(localID: "ada")).contactID
         #expect(try await repository.contactPhotoData(for: id, kind: .fullSize)?.crop == nil)
         let crop = try #require(ContactPhotoCrop(x: 0.1, y: 0.1, width: 0.5, height: 0.5))
-        try await repository.setContactPhotoCrop(for: id, crop: crop)
+        try await repository.setContactPhotoCrop(for: id, crop: crop, originalData: original)
         #expect(try await repository.contactPhotoData(for: id, kind: .fullSize)?.data == original)
         #expect(try await contacts.loadImageData(localID: "ada") == original)
     }

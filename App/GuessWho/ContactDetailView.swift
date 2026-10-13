@@ -176,8 +176,7 @@ struct ContactDetailView: View {
     // Edit-mode photo change. Presents the system PhotosPicker on iOS/iPadOS, or
     // a native macOS file Open panel on Catalyst — driven in-process by the
     // AppKitBridge bundle, NOT a document-picker sheet (see `PhotoChangeModifier`)
-    // — with no intermediate Choose/Remove menu. `photoPickerItem` binds the
-    // iOS/iPadOS PhotosPicker selection so the picked item can be written.
+    // `photoPickerItem` binds the iOS/iPadOS selection before opening the crop editor.
     @State private var presentingPhotoPicker = false
     @State private var photoPickerItem: PhotosPickerItem?
     @State private var photoSaveError: String?
@@ -452,7 +451,7 @@ struct ContactDetailView: View {
                 if request.isReplacement {
                     try await repository.setContactPhoto(for: request.contactID, imageData: request.data, crop: crop)
                 } else {
-                    try await repository.setContactPhotoCrop(for: request.contactID, crop: crop)
+                    try await repository.setContactPhotoCrop(for: request.contactID, crop: crop, originalData: request.data)
                 }
                 photoLoader.invalidate(request.contactID)
                 await loadContact(preferFresh: true)
@@ -1281,7 +1280,8 @@ struct ContactDetailView: View {
 
     private func resetPhotoCrop() async {
         do {
-            try await repository.setContactPhotoCrop(for: id, crop: nil)
+            guard let photo = try await repository.contactPhotoData(for: id, kind: .fullSize) else { return }
+            try await repository.setContactPhotoCrop(for: id, crop: nil, originalData: photo.data)
             photoLoader.invalidate(id)
             await loadHeaderPhoto()
         } catch {
@@ -1356,9 +1356,8 @@ struct ContactDetailView: View {
     }
 
     /// The circular profile image (photo or monogram fallback). Tap behavior
-    /// depends on state: in edit mode it jumps to the platform picker (a
-    /// translucent viewfinder overlay signals this; long-press/right-click offers
-    /// Remove when a photo exists); in view mode with a photo it opens the
+    /// depends on state: edit mode offers choose, reframe, reset, and remove;
+    /// in view mode with a photo it opens the
     /// fullscreen zoom/pan viewer; in view mode WITHOUT a photo it jumps to the
     /// picker so a first photo can be added without entering the editor.
     @ViewBuilder
@@ -1395,9 +1394,7 @@ struct ContactDetailView: View {
         }
 
         if isEditingContact {
-            // In edit mode the circle is the "change photo" control: tap jumps
-            // straight to the platform picker (no intermediate Choose/Remove
-            // menu). Remove stays available via long-press / right-click.
+            // Reframing always starts from the preserved full photo.
             Menu {
                 Button("Choose Photo") { presentingPhotoPicker = true }
                 if headerPhoto != nil {
@@ -3898,7 +3895,8 @@ private struct PhotoChangeModifier: ViewModifier {
                 presentOpenPanelForPhoto()
             }
             #else
-            .photosPicker(isPresented: $presentingPhotoPicker, selection: $photoPickerItem, matching: .images)
+            .photosPicker(isPresented: $presentingPhotoPicker, selection: $photoPickerItem,
+                          matching: .images, preferredItemEncoding: .current)
             .onChange(of: photoPickerItem) { _, newItem in
                 guard let newItem else { return }
                 onPick(newItem)

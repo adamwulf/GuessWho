@@ -14,12 +14,15 @@ public struct BlobPointer: Equatable, Sendable {
     public let contentType: String
     public let byteCount: Int
     public let photoCrop: ContactPhotoCrop?
+    public let systemPhotoDigest: String?
 
-    public init(blobId: String, contentType: String, byteCount: Int, photoCrop: ContactPhotoCrop? = nil) {
+    public init(blobId: String, contentType: String, byteCount: Int, photoCrop: ContactPhotoCrop? = nil,
+                systemPhotoDigest: String? = nil) {
         self.blobId = blobId
         self.contentType = contentType
         self.byteCount = byteCount
         self.photoCrop = photoCrop
+        self.systemPhotoDigest = systemPhotoDigest
     }
 }
 
@@ -42,6 +45,7 @@ extension BlobPointer {
                 "width": .number(photoCrop.width), "height": .number(photoCrop.height),
             ])
         }
+        if let systemPhotoDigest { value["systemPhotoDigest"] = .string(systemPhotoDigest) }
         return .object(value)
     }
 
@@ -78,6 +82,9 @@ extension BlobPointer {
         } else {
             crop = nil
         }
-        self.init(blobId: blobId, contentType: contentType, byteCount: Int(count), photoCrop: crop)
+        let systemDigest: String?
+        if case .string(let digest) = pointer["systemPhotoDigest"] { systemDigest = digest } else { systemDigest = nil }
+        self.init(blobId: blobId, contentType: contentType, byteCount: Int(count), photoCrop: crop,
+                  systemPhotoDigest: systemDigest)
     }
 }

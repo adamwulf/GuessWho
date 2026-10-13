@@ -29,16 +29,43 @@ preserves those same bytes in the encrypted `profilePhoto` blob beside the
 contact envelope. It never writes the displayed cropped image as the original.
 The optional `photoCrop` object lives inside that blob pointer, so normal
 whole-cell synchronization keeps the rectangle attached to its original image.
+The active photo uses one fixed cell ID per contact, so simultaneous first edits
+on different devices converge to one original/crop pair. Crop commits check the
+original that the editor showed; a replacement makes the stale editor report an
+error instead of applying its rectangle to a different image.
 The slot is reserved and hidden from custom fields. The existing `previousPhoto`
 snapshot still captures replaced original bytes. Replacing a photo clears the
 old crop unless the caller supplies a new one; removing a photo deletes the
 active pointer as well as the Contacts photo.
+If committing storage fails after a Contacts write, the repository restores the
+previous system photo and reports the failure. A failure to restore is also
+reported, rather than presented as a successful save.
 
 `setContactPhotoCrop` retains the original bytes and changes only the selected
 rectangle (using the existing blob replacement path). It does not write to the
 Contacts image property. Editing a photo that predates crop support preserves
 the full image returned by Contacts at that time. If Contacts only has a
 thumbnail, the existing thumbnail fallback supplies the available image.
+
+## Changes made in Contacts.app
+
+An external replacement becomes the new full original with no crop; external
+removal removes the active photo. The outgoing original goes into the existing
+previous-photo slot. Unrelated contact edits do not change the crop.
+
+Tracking adds one `systemPhotoDigest` SHA-256 hash to the synced photo pointer.
+It describes the bytes Contacts returns after the write, which may differ from
+the selected file. Local preferences hold two hashes per contact UUID: the
+original last observed and the system image last observed. No photo bytes or
+Contacts-local identifiers go into preferences. These baselines survive relaunch
+and are updated during photo reads; they are not themselves synced.
+
+A device seeing an original for the first time establishes its local baseline.
+Subsequent system-image changes replace that original and clear its crop, except
+when the expected system-image hash arrives: Contacts sync and photo-file sync
+can finish in either order, and that expected arrival preserves the crop. An
+unseen system change before the first baseline cannot be distinguished from
+initial synchronization; the first observation trusts the preserved original.
 
 ## Rendering and refresh
 
@@ -64,7 +91,11 @@ changes; unrelated notes and timestamp changes retain their inexpensive refresh.
 resolution independence, invalid rectangles, and JSON round trips.
 `ContactPhotoCropPersistenceTests` covers original-byte preservation, repository
 reload, crop changes and reset, replacement/removal, an existing uncropped photo,
-and encrypted filesystem storage reopened through a fresh engine.
+encrypted filesystem storage reopened through a fresh engine, and simultaneous
+first edits. `ContactPhotoSourceTests` covers external replacement/removal after
+relaunch, unrelated edits, stale crop editors, failed storage writes, pending
+download refresh, and expected system-image arrival. App rendering tests check
+that large uncropped originals still produce bounded Mail thumbnails after reset.
 
 Hand-check on iPhone/iPad and Mac Catalyst: choose a portrait and a landscape
 image, drag to every edge, pinch to minimum and maximum zoom, cancel a replacement,
