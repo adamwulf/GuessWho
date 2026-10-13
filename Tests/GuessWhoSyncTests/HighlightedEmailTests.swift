@@ -75,6 +75,76 @@ struct HighlightedEmailTests {
         return object
     }
 
+    @Test
+    func starredActivitySavesMetadataAndCanBeUnstarredAndSavedAgain() throws {
+        let sidecars = InMemorySidecarStore()
+        let sync = makeSync(sidecars)
+        let activity = try #require(MailActivity(
+            senderAddress: "ada@example.com",
+            subject: "An important message",
+            receivedAt: Date(timeIntervalSince1970: 1_790_000_000),
+            messageID: "<star@Example.COM>"
+        ))
+        _ = try sync.recordMailActivity(activity, at: key)
+        let before = try sidecars.read(key)
+        let savedAt = Date(timeIntervalSince1970: 1_791_000_000)
+        let saved = try #require(HighlightedEmail(activity: activity, highlightedAt: savedAt))
+        #expect(saved.messageID == activity.messageID)
+        #expect(saved.id != activity.id)
+        #expect(saved.subject == activity.subject)
+        #expect(saved.senderAddress == activity.senderAddress)
+        #expect(saved.senderName == nil)
+        #expect(saved.sentAt == activity.receivedAt)
+        #expect(saved.highlightedAt == savedAt)
+
+        #expect(try sync.highlightEmail(saved, at: key))
+        #expect(try !sync.highlightEmail(saved, at: key))
+        let activities = try sync.mailActivities(at: key)
+        let highlighted = try sync.highlightedEmails(at: key)
+        #expect(highlighted == [saved])
+        #expect(activities == [activity])
+        #expect(MailActivity.excludingHighlightedEmails(highlighted, from: activities).isEmpty)
+        let after = try sidecars.read(key)
+        // Saving does not modify activity history or lastInteracted.
+        for (key, cell) in before?.fields ?? [:] {
+            try expectSameCell(cell, after?.fields[key])
+        }
+
+        #expect(try sync.removeHighlightedEmail(id: saved.id, at: key))
+        let removed = try sync.highlightedEmails(at: key)
+        #expect(removed.isEmpty)
+        #expect(MailActivity.excludingHighlightedEmails(removed, from: activities) == [activity])
+        #expect(try sync.highlightEmail(saved, at: key))
+        #expect(try sync.highlightedEmails(at: key) == [saved])
+    }
+
+    @Test
+    func recentEmailsExcludeAllSavedMessagesBeforeTakingTen() throws {
+        let activities = try (0..<15).map { index in
+            try #require(MailActivity(
+                senderAddress: "ada@example.com",
+                subject: "Same subject",
+                receivedAt: Date(timeIntervalSince1970: Double(1_790_000_000 - index)),
+                messageID: "<message\(index)@EXAMPLE.com>"
+            ))
+        }
+        // Dropped messages match too, independent of subject or sender.
+        let saved = try [
+            email("message0@example.com", subject: "A different subject"),
+            email("<message1@Example.com>"),
+            email("<message12@example.com>"),
+            email("<unrelated@example.com>"),
+        ]
+        let filtered = MailActivity.excludingHighlightedEmails(saved, from: activities)
+        #expect(filtered == Array(activities[2..<12]) + Array(activities[13..<15]))
+        #expect(Array(filtered.prefix(10)) == Array(activities[2..<12]))
+        #expect(MailActivity.excludingHighlightedEmails([], from: activities) == activities)
+        #expect(MailActivity.excludingHighlightedEmails(saved, from: []).isEmpty)
+        // Message-ID local parts are case-sensitive.
+        let differentCase = try email("<MESSAGE0@example.com>")
+        #expect(MailActivity.excludingHighlightedEmails([differentCase], from: activities) == activities)
+    }
+
     // MARK: - Model
 
     @Test

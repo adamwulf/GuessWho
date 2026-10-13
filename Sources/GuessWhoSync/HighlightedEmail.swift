@@ -1,6 +1,6 @@
 import Foundation
 
-/// One email message the user dropped onto a contact to keep with it — the
+/// One email message the user saved on a contact by dropping or starring it — the
 /// contact card's "Highlighted Emails" section.
 ///
 /// Unlike `MailActivity` (mail the Mail extension finds automatically), a
@@ -77,6 +77,19 @@ public struct HighlightedEmail: Hashable, Sendable, Identifiable {
             senderName: headers.fromName,
             senderAddress: headers.fromAddress,
             sentAt: headers.date,
+            highlightedAt: highlightedAt
+        )
+    }
+
+    /// Saves an automatically recorded message. Its received date is the
+    /// best available message date; the Mail journal has no Date header.
+    public init?(activity: MailActivity, highlightedAt: Date) {
+        self.init(
+            messageID: activity.messageID,
+            subject: activity.subject,
+            senderName: nil,
+            senderAddress: activity.senderAddress,
+            sentAt: activity.receivedAt,
             highlightedAt: highlightedAt
         )
     }
