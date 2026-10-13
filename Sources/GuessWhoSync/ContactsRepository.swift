@@ -477,14 +477,16 @@ public final class ContactsRepository: NSObject {
         contacts: ContactStoreProtocol,
         sync: GuessWhoSync? = nil,
         favorites: FavoritesStore? = nil,
-        notificationCenter: NotificationCenter = .default
+        notificationCenter: NotificationCenter = .default,
+        photoSourceDefaults: UserDefaults = .standard
     ) {
         self.init(
             contacts: contacts,
             sync: sync,
             favorites: favorites,
             notificationCenter: notificationCenter,
-            creationTimestampRepairs: UserDefaultsContactCreationTimestampRepairStore()
+            creationTimestampRepairs: UserDefaultsContactCreationTimestampRepairStore(),
+            photoSourceDefaults: photoSourceDefaults
         )
     }
 
@@ -514,13 +516,15 @@ public final class ContactsRepository: NSObject {
         sync: GuessWhoSync? = nil,
         favorites: FavoritesStore? = nil,
         notificationCenter: NotificationCenter = .default,
-        creationTimestampRepairs: ContactCreationTimestampRepairStoring
+        creationTimestampRepairs: ContactCreationTimestampRepairStoring,
+        photoSourceDefaults: UserDefaults = .standard
     ) {
         self.contactsStore = contacts
         self.sync = sync
         self.favorites = favorites
         self.notificationCenter = notificationCenter
         self.creationTimestampRepairs = creationTimestampRepairs
+        self.photoSources = ContactPhotoSourceTracker(defaults: photoSourceDefaults)
         super.init()
         notificationCenter.addObserver(
             self,
@@ -1387,7 +1391,12 @@ public final class ContactsRepository: NSObject {
     /// operation initiated it.
     private static let saveLog = Logger(label: "sync.contact-save")
 
-    /// Lazily loads contact photo bytes for the app-facing `ContactID`.
+    private var loadedPhotoPointers: [SidecarKey: JSONValue] = [:]
+    private var photoWrites: Set<String> = []
+    private var systemPhotoWrites: Set<String> = []
+    private let photoSources: ContactPhotoSourceTracker
+
+    /// Lazily loads original contact photo bytes and optional normalized framing.
     ///
     /// Bulk contact reloads only fetch `imageDataAvailable`; the expensive image
     /// bytes stay behind this visible-row/detail-driven path. The app passes an
@@ -1406,6 +1415,17 @@ public final class ContactsRepository: NSObject {
         guard let contact = contact(id: id) else { return nil }
 
         do {
+            if let sync, let key = SidecarKey.forContact(contact) {
+                // Track pending reads so blob arrival refreshes visible placeholders.
+                if loadedPhotoPointers[key] == nil { loadedPhotoPointers[key] = .null }
+                let record = try await Task.detached(priority: .userInitiated) {
+                    try sync.profilePhoto(at: key)
+                }.value
+                loadedPhotoPointers[key] = record?.pointer.jsonValue ?? .null
+                if let record {
+                    return try await photoAfterCheckingSystemSource(record.photo, key: key, contact: contact)
+                }
+            }
             switch kind {
             case .thumbnail:
                 guard let data = try await contactsStore.loadThumbnailImageData(localID: contact.localID) else {
@@ -1454,6 +1474,32 @@ public final class ContactsRepository: NSObject {
             ])
             throw error
         }
+    }
+
+    private func systemPhotoBytes(localID: String) async throws -> Data? {
+        if let data = try await contactsStore.loadImageData(localID: localID) { return data }
+        return try await contactsStore.loadThumbnailImageData(localID: localID)
+    }
+
+    private func photoAfterCheckingSystemSource(_ photo: ContactPhoto, key: SidecarKey, contact: Contact) async throws -> ContactPhoto? {
+        guard let blobID = photo.blobID, !systemPhotoWrites.contains(contact.localID) else { return photo }
+        let systemData = try await systemPhotoBytes(localID: contact.localID)
+        let (original, observed) = await Task.detached(priority: .userInitiated) {
+            (ContactPhotoSourceTracker.digest(photo.data), ContactPhotoSourceTracker.digest(systemData))
+        }.value
+        guard !systemPhotoWrites.contains(contact.localID) else { return photo }
+        if photoSources.usesSystemPhoto(key: key, original: original, blobID: blobID,
+                                       expected: photo.systemPhotoDigest, observed: observed) {
+            // A read must not author a competing synced value: Contacts can arrive
+            // before the matching preserved original/crop on another device.
+            guard let systemData else { return nil }
+            var adopted = ContactPhoto(data: systemData, kind: .fullSize)
+            adopted.systemPhotoDigest = observed
+            adopted.blobID = blobID
+            adopted.usesSystemPhoto = true
+            return adopted
+        }
+        return photo
     }
 
     /// One breadcrumb when bytes load fine but the record's availability flag
@@ -1524,15 +1570,94 @@ public final class ContactsRepository: NSObject {
     /// blocks the actual photo write; a failure is recorded in `lastError` only.
     @discardableResult
     public func setContactPhoto(for id: ContactID, imageData: Data?) async throws -> Bool {
+        try await setContactPhoto(for: id, imageData: imageData, crop: nil)
+    }
+
+    @discardableResult
+    public func setContactPhoto(for id: ContactID, imageData: Data?, crop: ContactPhotoCrop?) async throws -> Bool {
+        if crop != nil, sync == nil { throw SidecarUnavailableError() }
         guard let localID = contact(id: id)?.localID else { return false }
+        guard photoWrites.insert(localID).inserted else { throw ContactPhotoEditError.saveInProgress }
+        systemPhotoWrites.insert(localID)
+        defer {
+            photoWrites.remove(localID)
+            systemPhotoWrites.remove(localID)
+        }
+        var previousSystemData = try await contactsStore.loadImageData(localID: localID)
+        if previousSystemData == nil {
+            previousSystemData = try await contactsStore.loadThumbnailImageData(localID: localID)
+        }
+        let key: SidecarKey?
+        if sync != nil {
+            key = SidecarKey(kind: .contact, id: try await resolveOrMintGuessWhoID(for: id))
+        } else {
+            key = nil
+        }
         await snapshotCurrentPhotoIfPresent(for: id, localID: localID)
         Self.saveLog.notice("contact save requested", metadata: [
             "op": "setContactPhoto", "localID": .string(localID),
             "bytes": .stringConvertible(imageData?.count ?? 0),
         ])
         try await contactsStore.setImageData(localID: localID, imageData: imageData)
+        do {
+            if let sync, let key {
+                if let imageData {
+                    let systemData = try await systemPhotoBytes(localID: localID)
+                    let observed = ContactPhotoSourceTracker.digest(systemData)
+                    try await sync.setBlobField(at: key, field: Self.profilePhotoFieldName,
+                                                data: imageData, contentType: Self.imageContentType(of: imageData),
+                                                photoCrop: crop, systemPhotoDigest: observed)
+                    photoSources.record(key: key, original: ContactPhotoSourceTracker.digest(imageData), observed: observed)
+                } else {
+                    try sync.removeProfilePhoto(at: key)
+                    photoSources.remove(key: key)
+                }
+            }
+        } catch {
+            // Contacts and file storage cannot share a transaction. Restore the system
+            // photo if committing the preserved original/crop fails.
+            do {
+                try await contactsStore.setImageData(localID: localID, imageData: previousSystemData)
+            } catch let restoreError {
+                await refreshContact(localID: localID)
+                throw ContactPhotoEditError.restoreFailed(save: error.localizedDescription,
+                                                         restore: restoreError.localizedDescription)
+            }
+            await refreshContact(localID: localID)
+            throw error
+        }
         await refreshContact(localID: localID)
         return true
+    }
+
+    /// Reframes the preserved original without writing cropped bytes to Contacts.
+    public func setContactPhotoCrop(for id: ContactID, crop: ContactPhotoCrop?, originalData: Data) async throws {
+        guard let sync else { throw SidecarUnavailableError() }
+        guard let localID = contact(id: id)?.localID else { throw ContactPhotoEditError.photoChanged }
+        guard photoWrites.insert(localID).inserted else { throw ContactPhotoEditError.saveInProgress }
+        defer { photoWrites.remove(localID) }
+        guard let photo = try await contactPhotoData(for: id, kind: .fullSize),
+              photo.data == originalData else { throw ContactPhotoEditError.photoChanged }
+        let guessWhoID = try await resolveOrMintGuessWhoID(for: id)
+        let key = SidecarKey(kind: .contact, id: guessWhoID)
+        let systemData = try await systemPhotoBytes(localID: localID)
+        let observed = ContactPhotoSourceTracker.digest(systemData)
+        if photo.usesSystemPhoto {
+            // Keep the ignored full original recoverable when explicitly adopting
+            // an external image. The active-pointer precondition below still applies.
+            guard let previous = try sync.profilePhoto(at: key),
+                  previous.photo.blobID == photo.blobID else { throw ContactPhotoEditError.photoChanged }
+            try await sync.setBlobField(at: key, field: Self.previousPhotoFieldName,
+                                        data: previous.photo.data,
+                                        contentType: Self.imageContentType(of: previous.photo.data))
+        }
+        try await sync.setBlobField(at: key,
+                                    field: Self.profilePhotoFieldName, data: photo.data,
+                                    contentType: Self.imageContentType(of: photo.data), photoCrop: crop,
+                                    systemPhotoDigest: photo.systemPhotoDigest ?? observed,
+                                    expectation: photo.blobID.map { .matching($0) } ?? .absent)
+        photoSources.record(key: key, original: ContactPhotoSourceTracker.digest(photo.data), observed: observed)
+        await refreshContact(localID: localID)
     }
 
     /// Read-before-write: if the contact currently HAS a photo, snapshot those
@@ -1548,7 +1673,7 @@ public final class ContactsRepository: NSObject {
         guard let sync else { return }
         do {
             // Read the CURRENT full-size bytes that are about to be replaced.
-            guard let currentBytes = try await contactsStore.loadImageData(localID: localID),
+            guard let currentBytes = try await contactPhotoData(for: id, kind: .fullSize)?.data,
                   !currentBytes.isEmpty else { return }
 
             let minted = id.guessWhoID == nil
@@ -1578,6 +1703,8 @@ public final class ContactsRepository: NSObject {
     /// feature would render its own plain-language label and read the bytes via
     /// `GuessWhoSync.blobFieldData`, not surface this name. v1 only guarantees
     /// capture.
+    nonisolated static let profilePhotoFieldName = "profilePhoto"
+
     static let previousPhotoFieldName = "previousPhoto"
 
     /// Field NAMES that external writers (the CLI/MCP write tools, imports)
@@ -1590,6 +1717,7 @@ public final class ContactsRepository: NSObject {
     /// place (plans/cli-mcp.md Phase 2 custom-field guardrails).
     public nonisolated static let reservedFieldNames: Set<String> = [
         ContactsRepository.previousPhotoFieldName,
+        ContactsRepository.profilePhotoFieldName,
         GuessWhoSync.contactNoteFieldName,
         GuessWhoSync.eventTagFieldName,
     ]
@@ -5167,6 +5295,13 @@ public final class ContactsRepository: NSObject {
     /// what is on disk. The pass never refreshes fingerprints, so an
     /// already-pinned identity costs one sidecar read and no Contacts fetch.
     private func refreshFromSidecarChange(_ changeSet: SidecarChangeSet, generation: Int) async {
+        // Only a changed photo pointer invalidates photo consumers; notes and timestamps
+        // keep their existing presentation-only refresh behavior.
+        let photosChanged = cachedPhotoPointersChanged(changeSet)
+        defer {
+            if photosChanged, generation == refreshGeneration { postDidReload() }
+        }
+
         guard let changedKeys = changeSet.changedKeys else {
             // No exact keys. Known kinds that exclude `.group` cannot carry an
             // identity; a coarse `.group` directory item or a globally unknown
@@ -5263,6 +5398,25 @@ public final class ContactsRepository: NSObject {
         // or highlighted emails without making it wait on (or re-read for)
         // the global reload.
         postContactCellsDidChange(forContactKeys: contactKeys)
+    }
+
+    private func cachedPhotoPointersChanged(_ changeSet: SidecarChangeSet) -> Bool {
+        guard let sync else { return false }
+        var changed = false
+        for (key, previous) in loadedPhotoPointers {
+            if let keys = changeSet.changedKeys, !keys.contains(key) { continue }
+            if let kinds = changeSet.changedKinds, !kinds.contains(.contact) { continue }
+            do {
+                let pointer = try sync.fields(at: key).first {
+                    $0.field == Self.profilePhotoFieldName && $0.type == .blob
+                }?.value ?? .null
+                if pointer != previous { changed = true }
+            } catch {
+                // A failed read must not certify a cached image as current.
+                changed = true
+            }
+        }
+        return changed
     }
 
     /// A delivery that can only have changed folders: re-read the hierarchy and

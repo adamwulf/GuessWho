@@ -123,7 +123,7 @@ final class ContactPhotoLoader {
             }
             guard let photo else { return .noPhoto }
             guard !Task.isCancelled else { return .failed }
-            guard let image = await Self.decodeImage(from: photo.data) else {
+            guard let image = await Self.decodeImage(photo, kind: kind) else {
                 return .noPhoto
             }
             guard !Task.isCancelled else { return .failed }
@@ -164,9 +164,9 @@ final class ContactPhotoLoader {
         inFlight.removeAll()
     }
 
-    private static func decodeImage(from data: Data) async -> UIImage? {
+    private static func decodeImage(_ photo: ContactPhoto, kind: ContactPhotoKind) async -> UIImage? {
         await Task.detached(priority: .userInitiated) {
-            UIImage(data: data)
+            photo.displayImage(maxDimension: kind == .thumbnail ? 256 : nil)
         }.value
     }
 }

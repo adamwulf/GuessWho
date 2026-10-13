@@ -176,11 +176,21 @@ struct ContactDetailView: View {
     // Edit-mode photo change. Presents the system PhotosPicker on iOS/iPadOS, or
     // a native macOS file Open panel on Catalyst — driven in-process by the
     // AppKitBridge bundle, NOT a document-picker sheet (see `PhotoChangeModifier`)
-    // — with no intermediate Choose/Remove menu. `photoPickerItem` binds the
-    // iOS/iPadOS PhotosPicker selection so the picked item can be written.
+    // `photoPickerItem` binds the iOS/iPadOS selection before opening the crop editor.
     @State private var presentingPhotoPicker = false
     @State private var photoPickerItem: PhotosPickerItem?
     @State private var photoSaveError: String?
+    @State private var photoCropRequest: PhotoCropRequest?
+
+    private struct PhotoCropRequest: Identifiable {
+        let id = UUID()
+        let contactID: ContactID
+        let data: Data
+        let image: UIImage
+        let crop: ContactPhotoCrop?
+        let isReplacement: Bool
+    }
+
     @State private var notesStore: NotesStore?
     @State private var fieldsStore: FieldsStore?
     @State private var linksStore: ContactLinksStore?
@@ -436,6 +446,18 @@ struct ContactDetailView: View {
         }
         // Photo-change UI (picker + error) lives in one modifier to keep the
         // body's modifier chain within the type-checker's budget.
+        .sheet(item: $photoCropRequest) { request in
+            ContactPhotoCropEditor(image: request.image, initialCrop: request.crop) { crop in
+                if request.isReplacement {
+                    try await repository.setContactPhoto(for: request.contactID, imageData: request.data, crop: crop)
+                } else {
+                    try await repository.setContactPhotoCrop(for: request.contactID, crop: crop, originalData: request.data)
+                }
+                photoLoader.invalidate(request.contactID)
+                await loadContact(preferFresh: true)
+                await loadHeaderPhoto()
+            }
+        }
         .modifier(PhotoChangeModifier(
             presentingPhotoPicker: $presentingPhotoPicker,
             photoPickerItem: $photoPickerItem,
@@ -502,6 +524,7 @@ struct ContactDetailView: View {
         // Hoisted into a method — an inline multi-statement closure here blows
         // the body's type-checker budget (see PhotoChangeModifier's note).
         .task { await performInitialLoad() }
+        .task(id: photoLoader.cacheGeneration) { await loadHeaderPhoto() }
         .onDisappear {
             // Backstop for the edge-swipe-back gesture: the system pop bypasses
             // our custom back button, so commit here too. A no-op if
@@ -1230,29 +1253,38 @@ struct ContactDetailView: View {
     /// write failures. Never logs a subject, an address, or a URL.
     private static let highlightedEmailLog = GuessWhoLog.logger("app.highlighted-email")
 
-    /// Loads the picked photo's bytes, downscales them to a sane contact-photo
-    /// size, and writes them to the CNContact itself (not a sidecar), so the new
-    /// photo shows in Contacts.app too. Resets the picker selection so picking
-    /// the same asset again re-fires.
+    /// Keep the original bytes intact and ask for a crop before committing anything.
     private func applyPickedPhoto(_ item: PhotosPickerItem) async {
         defer { photoPickerItem = nil }
         do {
-            guard let rawData = try await item.loadTransferable(type: Data.self) else {
-                Self.photoLog.error("picked photo returned no data")
-                photoSaveError = "That photo couldn't be loaded."
-                return
-            }
-            // Downscale off the main actor so a large asset doesn't hitch it;
-            // contact photos don't need full camera resolution.
-            let jpegData = await Self.normalizedPhotoData(from: rawData)
-            guard let jpegData else {
-                Self.photoLog.error("picked photo failed to decode (\(rawData.count) bytes)")
-                photoSaveError = "That photo couldn't be processed."
-                return
-            }
-            try await writePhoto(jpegData)
+            let data = try await item.loadTransferable(type: Data.self)
+            await applyRawPhotoData(data, loadError: nil)
         } catch {
-            Self.photoLog.error("picked photo save failed: \(error.localizedDescription)")
+            photoSaveError = error.localizedDescription
+        }
+    }
+
+    private func editPhotoCrop() async {
+        do {
+            guard let photo = try await repository.contactPhotoData(for: id, kind: .fullSize),
+                  let image = UIImage(data: photo.data) else {
+                photoSaveError = "That photo couldn’t be loaded."
+                return
+            }
+            photoCropRequest = PhotoCropRequest(contactID: id, data: photo.data, image: image,
+                                                crop: photo.crop, isReplacement: false)
+        } catch {
+            photoSaveError = error.localizedDescription
+        }
+    }
+
+    private func resetPhotoCrop() async {
+        do {
+            guard let photo = try await repository.contactPhotoData(for: id, kind: .fullSize) else { return }
+            try await repository.setContactPhotoCrop(for: id, crop: nil, originalData: photo.data)
+            photoLoader.invalidate(id)
+            await loadHeaderPhoto()
+        } catch {
             photoSaveError = error.localizedDescription
         }
     }
@@ -1266,30 +1298,19 @@ struct ContactDetailView: View {
         }
     }
 
-    /// Handles raw image bytes from a source that hands back `Data` directly
-    /// rather than a `PhotosPickerItem` — a drop onto the monogram, or the
-    /// Catalyst file Open panel. `rawData`/`loadError` are already hopped back to
-    /// the main thread by the caller, so this method needn't reason about which
-    /// thread produced them. Otherwise shares the `PhotosPicker` path's
-    /// downscale/write tail.
+    /// Photos, file selection, and drops all use the same non-destructive editor.
     private func applyRawPhotoData(_ rawData: Data?, loadError: Error?) async {
         guard let rawData else {
-            Self.photoLog.error("photo failed to load: \(loadError?.localizedDescription ?? "none")")
-            photoSaveError = "That photo couldn't be loaded."
+            photoSaveError = loadError?.localizedDescription ?? "That photo couldn’t be loaded."
             return
         }
-        do {
-            let jpegData = await Self.normalizedPhotoData(from: rawData)
-            guard let jpegData else {
-                Self.photoLog.error("photo failed to decode (\(rawData.count) bytes)")
-                photoSaveError = "That photo couldn't be processed."
-                return
-            }
-            try await writePhoto(jpegData)
-        } catch {
-            Self.photoLog.error("photo save failed: \(error.localizedDescription)")
-            photoSaveError = error.localizedDescription
+        let image = await Task.detached(priority: .userInitiated) { UIImage(data: rawData) }.value
+        guard let image else {
+            photoSaveError = "That photo couldn’t be processed."
+            return
         }
+        photoCropRequest = PhotoCropRequest(contactID: id, data: rawData, image: image,
+                                            crop: nil, isReplacement: true)
     }
 
     /// Shared write tail for set/clear: persist to Contacts, drop the decoded
@@ -1300,30 +1321,6 @@ struct ContactDetailView: View {
         photoLoader.invalidate(loadedContactID ?? id)
         await loadContact(preferFresh: true)
         await loadHeaderPhoto()
-    }
-
-    /// Decode, downscale (longest side ≤ 1024pt), and re-encode the picked bytes
-    /// as JPEG off the main actor. Returns nil if the bytes don't decode. 1024 is
-    /// plenty for a contact photo and keeps the OS-thumbnailed write small.
-    private static func normalizedPhotoData(from data: Data) async -> Data? {
-        await Task.detached(priority: .userInitiated) {
-            guard let image = UIImage(data: data) else { return nil }
-            let maxSide: CGFloat = 1024
-            let longest = max(image.size.width, image.size.height)
-            let scaledImage: UIImage
-            if longest > maxSide {
-                let ratio = maxSide / longest
-                let newSize = CGSize(width: image.size.width * ratio, height: image.size.height * ratio)
-                let format = UIGraphicsImageRendererFormat.default()
-                format.scale = 1
-                scaledImage = UIGraphicsImageRenderer(size: newSize, format: format).image { _ in
-                    image.draw(in: CGRect(origin: .zero, size: newSize))
-                }
-            } else {
-                scaledImage = image
-            }
-            return scaledImage.jpegData(compressionQuality: 0.85)
-        }.value
     }
 
     /// Inline detail header: large monogram circle, name, and a
@@ -1359,9 +1356,8 @@ struct ContactDetailView: View {
     }
 
     /// The circular profile image (photo or monogram fallback). Tap behavior
-    /// depends on state: in edit mode it jumps to the platform picker (a
-    /// translucent viewfinder overlay signals this; long-press/right-click offers
-    /// Remove when a photo exists); in view mode with a photo it opens the
+    /// depends on state: edit mode offers choose, reframe, reset, and remove;
+    /// in view mode with a photo it opens the
     /// fullscreen zoom/pan viewer; in view mode WITHOUT a photo it jumps to the
     /// picker so a first photo can be added without entering the editor.
     @ViewBuilder
@@ -1398,23 +1394,18 @@ struct ContactDetailView: View {
         }
 
         if isEditingContact {
-            // In edit mode the circle is the "change photo" control: tap jumps
-            // straight to the platform picker (no intermediate Choose/Remove
-            // menu). Remove stays available via long-press / right-click.
-            Button {
-                presentingPhotoPicker = true
+            // Reframing always starts from the preserved full photo.
+            Menu {
+                Button("Choose Photo") { presentingPhotoPicker = true }
+                if headerPhoto != nil {
+                    Button("Edit Crop") { Task { await editPhotoCrop() } }
+                    Button("Reset Crop") { Task { await resetPhotoCrop() } }
+                    Button("Remove Photo", role: .destructive) { Task { await removePhoto() } }
+                }
             } label: {
                 circle
             }
-            .buttonStyle(.plain)
             .accessibilityLabel("Change photo")
-            .contextMenu {
-                if contact.imageDataAvailable {
-                    Button("Remove Photo", role: .destructive) {
-                        Task { await removePhoto() }
-                    }
-                }
-            }
         } else if headerPhoto != nil {
             Button {
                 if let headerPhoto {
@@ -3904,7 +3895,8 @@ private struct PhotoChangeModifier: ViewModifier {
                 presentOpenPanelForPhoto()
             }
             #else
-            .photosPicker(isPresented: $presentingPhotoPicker, selection: $photoPickerItem, matching: .images)
+            .photosPicker(isPresented: $presentingPhotoPicker, selection: $photoPickerItem,
+                          matching: .images, preferredItemEncoding: .current)
             .onChange(of: photoPickerItem) { _, newItem in
                 guard let newItem else { return }
                 onPick(newItem)
@@ -3925,7 +3917,7 @@ private struct PhotoChangeModifier: ViewModifier {
 
     #if targetEnvironment(macCatalyst)
     /// Drives the native macOS file Open panel (via the in-process AppKitBridge
-    /// bundle) and feeds the picked image's bytes into the shared downscale/write
+    /// bundle) and feeds the picked image's bytes into the shared crop editor
     /// tail as raw `Data`, matching the `NSItemProvider` shape the drag-and-drop
     /// path uses. The panel's completion fires on the main thread; we read the
     /// file off it so a large image can't stall the UI, then hop back.

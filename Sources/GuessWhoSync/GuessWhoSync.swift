@@ -560,13 +560,17 @@ public final class GuessWhoSync: @unchecked Sendable {
         at key: SidecarKey,
         field: String,
         data: Data,
-        contentType: String
+        contentType: String,
+        photoCrop: ContactPhotoCrop? = nil,
+        systemPhotoDigest: String? = nil,
+        expectation: BlobFieldExpectation? = nil
     ) async throws -> String {
         try await withCheckedThrowingContinuation { [self] continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 do {
                     let result: String = try self.setBlobField(
-                        at: key, field: field, data: data, contentType: contentType
+                        at: key, field: field, data: data, contentType: contentType, photoCrop: photoCrop,
+                        systemPhotoDigest: systemPhotoDigest, expectation: expectation
                     )
                     continuation.resume(returning: result)
                 } catch {
@@ -587,19 +591,42 @@ public final class GuessWhoSync: @unchecked Sendable {
         at key: SidecarKey,
         field: String,
         data: Data,
-        contentType: String
+        contentType: String,
+        photoCrop: ContactPhotoCrop? = nil,
+        systemPhotoDigest: String? = nil,
+        expectation: BlobFieldExpectation? = nil
     ) throws -> String {
         let newBlobId = UUID().uuidString.lowercased()
         let pointer = BlobPointer(
             blobId: newBlobId,
             contentType: contentType,
-            byteCount: data.count
+            byteCount: data.count,
+            photoCrop: photoCrop,
+            systemPhotoDigest: systemPhotoDigest
         ).jsonValue
 
         // Capture the superseded blobId (if any) to delete after the envelope
         // write commits the repoint.
         var supersededBlobId: String?
         try withKeyLocked(key) { ctx in
+            if let expectation {
+                let current = try ctx.read()?.fields.values.first { cell in
+                    guard cell.deletedAt == nil,
+                          case .object(let inner) = cell.value,
+                          inner[SidecarField.innerFieldKey] == .string(field) else { return false }
+                    return true
+                }
+                switch expectation {
+                case .absent:
+                    guard current == nil else { throw ContactPhotoEditError.photoChanged }
+                case .matching(let blobID):
+                    guard let current, case .object(let inner) = current.value,
+                          let value = inner[SidecarField.innerValueKey],
+                          BlobPointer.referencedBlobId(from: value) == blobID else {
+                        throw ContactPhotoEditError.photoChanged
+                    }
+                }
+            }
             // Write the bytes FIRST, but INSIDE the per-key lock (the only way to
             // reach `ctx.writeBlob`): the orphan sweep re-reads this key's
             // envelope under the same lock, so committing the `.dat` and the
@@ -663,14 +690,16 @@ public final class GuessWhoSync: @unchecked Sendable {
                 if conflicting {
                     throw SidecarStoreError.typeValueMismatch(expected: .blob, got: pointer)
                 }
-                let id = UUID()
+                // A stable cell makes simultaneous first photo edits converge.
+                let id = field == ContactsRepository.profilePhotoFieldName
+                    ? "B473DB08-4B5B-42D2-991E-64C487E67C63" : UUID().uuidString
                 let inner = SidecarField.makeInnerValue(
                     field: field,
                     type: .blob,
                     value: pointer,
                     createdAt: now
                 )
-                fields[id.uuidString] = SidecarCell(value: inner, modifiedAt: now, modifiedBy: deviceID)
+                fields[id] = SidecarCell(value: inner, modifiedAt: now, modifiedBy: deviceID)
             }
 
             let envelope = SidecarEnvelope(
@@ -718,6 +747,47 @@ public final class GuessWhoSync: @unchecked Sendable {
                 return try ctx.readBlob(blobId: pointer.blobId)
             }
             return nil
+        }
+    }
+
+    /// Reads the original bytes and crop under one lock, so they always belong together.
+    func profilePhoto(at key: SidecarKey) throws -> (photo: ContactPhoto, pointer: BlobPointer)? {
+        try withKeyLocked(key) { ctx in
+            guard let envelope = try ctx.read() else { return nil }
+            for (rawID, cell) in envelope.fields {
+                guard let id = UUID(uuidString: rawID), cell.deletedAt == nil,
+                      let field = SidecarField.decode(id: id, from: cell),
+                      field.field == ContactsRepository.profilePhotoFieldName, field.type == .blob,
+                      let pointer = BlobPointer(from: field.value) else { continue }
+                guard let data = try ctx.readBlob(blobId: pointer.blobId) else {
+                    throw SidecarStoreError.notYetDownloaded(key)
+                }
+                var photo = ContactPhoto(data: data, kind: .fullSize, crop: pointer.photoCrop)
+                photo.systemPhotoDigest = pointer.systemPhotoDigest
+                photo.blobID = pointer.blobId
+                return (photo, pointer)
+            }
+            return nil
+        }
+    }
+
+    func removeProfilePhoto(at key: SidecarKey, replacingBlobID: String? = nil) throws {
+        try withKeyLocked(key) { ctx in
+            guard let envelope = try ctx.read() else { return }
+            var fields = envelope.fields
+            for (id, cell) in envelope.fields {
+                guard cell.deletedAt == nil,
+                      case .object(let inner) = cell.value,
+                      inner[SidecarField.innerFieldKey] == .string(ContactsRepository.profilePhotoFieldName),
+                      let value = inner[SidecarField.innerValueKey] else { continue }
+                if let replacingBlobID, BlobPointer.referencedBlobId(from: value) != replacingBlobID {
+                    throw ContactPhotoEditError.photoChanged
+                }
+                let now = Date()
+                fields[id] = SidecarCell(value: cell.value, modifiedAt: now,
+                                        modifiedBy: deviceID, deletedAt: now)
+            }
+            try ctx.write(SidecarEnvelope(schemaVersion: envelope.schemaVersion, entityID: envelope.entityID, fields: fields))
         }
     }
 

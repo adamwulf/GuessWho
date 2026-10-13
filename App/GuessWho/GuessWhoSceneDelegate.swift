@@ -2428,7 +2428,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             loadExistingPhoto: { [weak repo] in
                 guard let repo else { return nil }
                 let photo = try? await repo.contactPhotoData(for: matchID, kind: .thumbnail)
-                return photo.flatMap { UIImage(data: $0.data) }
+                return photo?.displayImage(maxDimension: 256)
             },
             onConfirm: { [weak self, weak repo] selected in
                 self?.dismissHandoffSheet(sheet.sheet)
@@ -2675,7 +2675,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
                 loadExistingPhoto: { [weak repo] in
                     guard let repo, let matchID else { return nil }
                     let data = try? await repo.contactPhotoData(for: matchID, kind: .thumbnail)
-                    return data.flatMap { UIImage(data: $0.data) }
+                    return data?.displayImage(maxDimension: 256)
                 }
             )
         }
