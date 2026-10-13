@@ -560,13 +560,14 @@ public final class GuessWhoSync: @unchecked Sendable {
         at key: SidecarKey,
         field: String,
         data: Data,
-        contentType: String
+        contentType: String,
+        photoCrop: ContactPhotoCrop? = nil
     ) async throws -> String {
         try await withCheckedThrowingContinuation { [self] continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 do {
                     let result: String = try self.setBlobField(
-                        at: key, field: field, data: data, contentType: contentType
+                        at: key, field: field, data: data, contentType: contentType, photoCrop: photoCrop
                     )
                     continuation.resume(returning: result)
                 } catch {
@@ -587,13 +588,15 @@ public final class GuessWhoSync: @unchecked Sendable {
         at key: SidecarKey,
         field: String,
         data: Data,
-        contentType: String
+        contentType: String,
+        photoCrop: ContactPhotoCrop? = nil
     ) throws -> String {
         let newBlobId = UUID().uuidString.lowercased()
         let pointer = BlobPointer(
             blobId: newBlobId,
             contentType: contentType,
-            byteCount: data.count
+            byteCount: data.count,
+            photoCrop: photoCrop
         ).jsonValue
 
         // Capture the superseded blobId (if any) to delete after the envelope
@@ -716,6 +719,24 @@ public final class GuessWhoSync: @unchecked Sendable {
                       let pointer = BlobPointer(from: decoded.value)
                 else { continue }
                 return try ctx.readBlob(blobId: pointer.blobId)
+            }
+            return nil
+        }
+    }
+
+    /// Reads the original bytes and crop under one lock, so they always belong together.
+    func profilePhoto(at key: SidecarKey) throws -> (photo: ContactPhoto, pointer: BlobPointer)? {
+        try withKeyLocked(key) { ctx in
+            guard let envelope = try ctx.read() else { return nil }
+            for (rawID, cell) in envelope.fields {
+                guard let id = UUID(uuidString: rawID), cell.deletedAt == nil,
+                      let field = SidecarField.decode(id: id, from: cell),
+                      field.field == ContactsRepository.profilePhotoFieldName, field.type == .blob,
+                      let pointer = BlobPointer(from: field.value) else { continue }
+                guard let data = try ctx.readBlob(blobId: pointer.blobId) else {
+                    throw SidecarStoreError.notYetDownloaded(key)
+                }
+                return (ContactPhoto(data: data, kind: .fullSize, crop: pointer.photoCrop), pointer)
             }
             return nil
         }

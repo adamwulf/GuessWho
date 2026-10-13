@@ -8,9 +8,11 @@ public enum ContactPhotoKind: Hashable, Sendable {
 public struct ContactPhoto: Sendable {
     public let data: Data
     public let kind: ContactPhotoKind
+    public let crop: ContactPhotoCrop?
 
-    public init(data: Data, kind: ContactPhotoKind) {
+    public init(data: Data, kind: ContactPhotoKind, crop: ContactPhotoCrop? = nil) {
         self.data = data
         self.kind = kind
+        self.crop = crop
     }
 }

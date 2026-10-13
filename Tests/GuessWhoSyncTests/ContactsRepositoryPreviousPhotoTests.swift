@@ -94,16 +94,16 @@ struct ContactsRepositoryPreviousPhotoTests {
         let key = try contactKey(repository, localID: "ada")
         #expect(try sync.blobFieldData(at: key, field: ContactsRepository.previousPhotoFieldName) == firstPhoto)
         let firstBlobIds = try sidecars.blobIds(for: key)
-        #expect(firstBlobIds.count == 1)
+        #expect(firstBlobIds.count == 2) // original plus previous photo
 
         // Second replacement: snapshot now holds `secondPhoto`; still exactly
-        // ONE `.dat` on disk (the superseded one was reclaimed) and ONE live
+        // two `.dat` files (original and previous; superseded files reclaimed) and ONE live
         // previousPhoto field.
         let thirdPhoto = Data([0xFF, 0xD8, 0xFF, 0xCC])
         _ = try await repository.setContactPhoto(for: id, imageData: thirdPhoto)
         #expect(try sync.blobFieldData(at: key, field: ContactsRepository.previousPhotoFieldName) == secondPhoto)
         let secondBlobIds = try sidecars.blobIds(for: key)
-        #expect(secondBlobIds.count == 1)
+        #expect(secondBlobIds.count == 2)
         #expect(secondBlobIds != firstBlobIds) // fresh blobId per snapshot
         let live = try sync.fields(at: key).filter { $0.deletedAt == nil && $0.field == ContactsRepository.previousPhotoFieldName }
         #expect(live.count == 1)
@@ -122,14 +122,14 @@ struct ContactsRepositoryPreviousPhotoTests {
         // First-ever photo: nothing to snapshot.
         _ = try await repository.setContactPhoto(for: id, imageData: Data([0x10, 0x20]))
 
-        // No previousPhoto field exists, and no `.dat` was written.
+        // No previousPhoto field exists; only the preserved original was written.
         guard let guessWhoID = ContactID(contact: try #require(repository.contact(localID: "ada"))).guessWhoID else {
             // An unreconciled contact never minted — equally proves "no snapshot."
             return
         }
         let key = SidecarKey(kind: .contact, id: guessWhoID)
         #expect(try sync.fields(at: key).filter { $0.field == ContactsRepository.previousPhotoFieldName }.isEmpty)
-        #expect(try sidecars.blobIds(for: key).isEmpty)
+        #expect(try sidecars.blobIds(for: key).count == 1)
     }
 
     @Test @MainActor

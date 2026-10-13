@@ -13,11 +13,13 @@ public struct BlobPointer: Equatable, Sendable {
     public let blobId: String
     public let contentType: String
     public let byteCount: Int
+    public let photoCrop: ContactPhotoCrop?
 
-    public init(blobId: String, contentType: String, byteCount: Int) {
+    public init(blobId: String, contentType: String, byteCount: Int, photoCrop: ContactPhotoCrop? = nil) {
         self.blobId = blobId
         self.contentType = contentType
         self.byteCount = byteCount
+        self.photoCrop = photoCrop
     }
 }
 
@@ -29,11 +31,18 @@ extension BlobPointer {
 
     /// The pointer object encoded as the `.blob` field `value`.
     public var jsonValue: JSONValue {
-        .object([
+        var value: [String: JSONValue] = [
             BlobPointer.blobIdKey: .string(blobId),
             BlobPointer.contentTypeKey: .string(contentType),
             BlobPointer.byteCountKey: .number(Double(byteCount)),
-        ])
+        ]
+        if let photoCrop {
+            value["photoCrop"] = .object([
+                "x": .number(photoCrop.x), "y": .number(photoCrop.y),
+                "width": .number(photoCrop.width), "height": .number(photoCrop.height),
+            ])
+        }
+        return .object(value)
     }
 
     /// Leniently extract JUST the `blobId` from a `.blob` field's `value`,
@@ -63,6 +72,12 @@ extension BlobPointer {
         guard case .string(let contentType) = pointer[BlobPointer.contentTypeKey] ?? .null else { return nil }
         guard case .number(let count) = pointer[BlobPointer.byteCountKey] ?? .null,
               count >= 0, count.rounded() == count else { return nil }
-        self.init(blobId: blobId, contentType: contentType, byteCount: Int(count))
+        let crop: ContactPhotoCrop?
+        if let value = pointer["photoCrop"] {
+            crop = try? JSONDecoder().decode(ContactPhotoCrop.self, from: JSONEncoder().encode(value))
+        } else {
+            crop = nil
+        }
+        self.init(blobId: blobId, contentType: contentType, byteCount: Int(count), photoCrop: crop)
     }
 }

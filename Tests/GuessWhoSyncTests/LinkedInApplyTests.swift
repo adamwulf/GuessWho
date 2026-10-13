@@ -536,8 +536,7 @@ struct LinkedInApplyPhotoTests {
         )
         let live = try await repo.contactPhotoData(for: id, kind: .fullSize)
         #expect(live?.data == incoming)
-        // No prior photo → no previous-photo snapshot (and no mint at all
-        // unless something else wrote sidecar data).
+        // No prior photo → no previous-photo snapshot; the original is preserved.
         if let guessWhoID = ContactID(contact: try #require(repo.contact(localID: "T"))).guessWhoID {
             let key = SidecarKey(kind: .contact, id: guessWhoID)
             #expect(try sync.fields(at: key).filter { $0.field == ContactsRepository.previousPhotoFieldName }.isEmpty)
