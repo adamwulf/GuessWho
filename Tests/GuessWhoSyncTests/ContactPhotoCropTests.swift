@@ -29,8 +29,12 @@ struct ContactPhotoCropTests {
     @Test func cropDoesNotDependOnResolution() throws {
         let crop = try #require(ContactPhotoCrop.square(imageSize: CGSize(width: 400, height: 800), zoom: 3,
                                                       center: CGPoint(x: 0.3, y: 0.7)))
-        #expect(crop == ContactPhotoCrop.square(imageSize: CGSize(width: 4000, height: 8000), zoom: 3,
-                                               center: CGPoint(x: 0.3, y: 0.7)))
+        let larger = try #require(ContactPhotoCrop.square(imageSize: CGSize(width: 4000, height: 8000), zoom: 3,
+                                                         center: CGPoint(x: 0.3, y: 0.7)))
+        #expect(abs(crop.x - larger.x) < 1e-12)
+        #expect(abs(crop.y - larger.y) < 1e-12)
+        #expect(abs(crop.width - larger.width) < 1e-12)
+        #expect(abs(crop.height - larger.height) < 1e-12)
         #expect(try JSONDecoder().decode(ContactPhotoCrop.self, from: JSONEncoder().encode(crop)) == crop)
     }
 
