@@ -2,6 +2,10 @@ import UIKit
 import GuessWhoSync
 
 extension ContactPhoto {
+    nonisolated func mailThumbnailData() -> Data? {
+        displayImage(maxDimension: 256)?.jpegData(compressionQuality: 0.85)
+    }
+
     /// Drawing applies EXIF orientation before interpreting the normalized rectangle.
     /// The result is only a display image; the stored bytes are never replaced.
     nonisolated func displayImage(maxDimension: CGFloat? = nil) -> UIImage? {
