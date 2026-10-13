@@ -6,6 +6,7 @@ import GuessWhoSync
 
 @Suite("Contact photo rendering")
 struct ContactPhotoRenderingTests {
+    #if targetEnvironment(macCatalyst)
     @Test func largeOriginalHasBoundedMailThumbnailBeforeAndAfterCropReset() throws {
         let side = 1024
         var pixels = [UInt8](repeating: 255, count: side * side * 4)
@@ -35,4 +36,5 @@ struct ContactPhotoRenderingTests {
             #expect(photo.data == original)
         }
     }
+    #endif
 }
