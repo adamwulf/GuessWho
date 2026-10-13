@@ -34,7 +34,7 @@ public struct HighlightedEmail: Hashable, Sendable, Identifiable {
     public let senderAddress: String?
     /// The message's Date header, at the sidecar's stored precision.
     public let sentAt: Date?
-    /// When the user dropped the message on the contact, at the sidecar's
+    /// When the user dropped or starred the message on the contact, at the sidecar's
     /// stored precision.
     public let highlightedAt: Date
 
@@ -81,7 +81,7 @@ public struct HighlightedEmail: Hashable, Sendable, Identifiable {
         )
     }
 
-    /// Saves an automatically recorded message. Its received date is the
+    /// Builds a highlighted email from an automatic message. Its received date is the
     /// best available message date; the Mail journal has no Date header.
     public init?(activity: MailActivity, highlightedAt: Date) {
         self.init(

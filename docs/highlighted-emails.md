@@ -498,25 +498,29 @@ The merge is the LinkedIn import's for each field\[^importValues]:
 ### The section
 
 Recent Email rows have a **Save Email** star, revealed on hover on Catalyst
-and always visible on touch devices. The context menu also offers Save Email.
+and always visible on touch devices. The context menu also offers Save Email\[^starUI].
 Starring copies the message into Highlighted Emails using the existing write
 API and the same serial write chain as drops. It preserves the Message-ID,
 subject, and sender; the received date supplies the message date because the
-automatic journal has no Date header. Saving does not change `lastInteracted`
-or delete the automatic activity.
+automatic journal has no Date header\[^activityMapping]. Saving does not change
+`lastInteracted` or delete the automatic activity\[^write].
 
 Recent Email excludes every message currently in Highlighted Emails, including
 messages saved by a drop, before taking the ten newest. Matching uses the
 normalized Message-ID, since the two cell families have different UUIDs. The
 filter is derived from the current saved list, so its existing reload
-notifications update both sections together.
+notifications update both sections together\[^savedFilter].
 
-Highlighted rows have a filled star with **Remove Saved Email** as its action.
+Highlighted rows have a filled star, also revealed on hover on Catalyst, with
+**Remove Saved Email** as its action\[^starUI].
 Unstarring uses the same tombstone removal as the existing Remove menu item.
 If the automatic activity is still retained and ranks in the newest ten
 unsaved messages, it reappears in Recent Email. Starring it again revives the
-saved email. Stars, drops, late file updates, and removals on a card share one
-serial write chain. No storage format change or migration is needed.
+saved email with fresh activity metadata, following the existing revive rule:
+an earlier drop's sender name and Date-header sent date are not restored; the
+row uses the sender address and received date instead\[^write]. Stars, drops,
+late file updates, and removals on a card share one serial write chain\[^starUI].
+No storage format change or migration is needed.
 
 The contact card shows a **Highlighted Emails** section directly above Recent
 Email\[^section]. It lists every highlighted email in the repository order,
@@ -559,6 +563,9 @@ read may publish. The full load uses the same gate, so a re-read that started
 later wins over it.
 
 \[^key]: [HighlightedEmail.cellKey / cellKeyPrefix](../Sources/GuessWhoSync/HighlightedEmail.swift:HighlightedEmail.cellKey)
+\[^starUI]: [ContactDetailView.saveMailActivity / removeHighlightedEmail / EmailFavoriteRow](../App/GuessWho/ContactDetailView.swift:ContactDetailView.saveMailActivity)
+\[^activityMapping]: [HighlightedEmail.init?(activity:highlightedAt:)](../Sources/GuessWhoSync/HighlightedEmail.swift:HighlightedEmail.init)
+\[^savedFilter]: [MailActivity.excludingHighlightedEmails](../Sources/GuessWhoSync/MailActivity.swift:MailActivity.excludingHighlightedEmails)
 \[^value]: [HighlightedEmail.cellValue(overlaying:)](../Sources/GuessWhoSync/HighlightedEmail.swift:HighlightedEmail.cellValue)
 \[^decode]: [HighlightedEmail.init?(cellKey:cell:)](../Sources/GuessWhoSync/HighlightedEmail.swift:HighlightedEmail.init)
 \[^fields]: [GuessWhoSync.fields(at:) skips HighlightedEmail.isCellKey](../Sources/GuessWhoSync/GuessWhoSync.swift:GuessWhoSync.fields)

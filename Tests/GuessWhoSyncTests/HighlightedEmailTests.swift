@@ -86,7 +86,7 @@ struct HighlightedEmailTests {
             messageID: "<star@Example.COM>"
         ))
         _ = try sync.recordMailActivity(activity, at: key)
-        let before = try sidecars.read(key)
+        let before = try #require(try sidecars.read(key))
         let savedAt = Date(timeIntervalSince1970: 1_791_000_000)
         let saved = try #require(HighlightedEmail(activity: activity, highlightedAt: savedAt))
         #expect(saved.messageID == activity.messageID)
@@ -106,14 +106,16 @@ struct HighlightedEmailTests {
         #expect(MailActivity.excludingHighlightedEmails(highlighted, from: activities).isEmpty)
         let after = try sidecars.read(key)
         // Saving does not modify activity history or lastInteracted.
-        for (key, cell) in before?.fields ?? [:] {
+        for (key, cell) in before.fields {
             try expectSameCell(cell, after?.fields[key])
         }
 
         #expect(try sync.removeHighlightedEmail(id: saved.id, at: key))
         let removed = try sync.highlightedEmails(at: key)
+        let remainingActivities = try sync.mailActivities(at: key)
         #expect(removed.isEmpty)
-        #expect(MailActivity.excludingHighlightedEmails(removed, from: activities) == [activity])
+        #expect(remainingActivities == [activity])
+        #expect(MailActivity.excludingHighlightedEmails(removed, from: remainingActivities) == [activity])
         #expect(try sync.highlightEmail(saved, at: key))
         #expect(try sync.highlightedEmails(at: key) == [saved])
     }

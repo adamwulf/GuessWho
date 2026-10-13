@@ -211,7 +211,7 @@ struct ContactDetailView: View {
     // mail-only refreshes. A slow older disk read must not restore stale rows.
     @State private var mailActivitiesLoadID = UUID()
     @State private var coarseMailActivityReloadTask: Task<Void, Never>?
-    // Emails the user dropped onto this profile, in the repository's order.
+    // Emails the user dropped onto or starred on this profile, in repository order.
     // Same newest-wins gate and coarse-reload fallback as mail activity: a drop
     // of several messages posts one change per message, and the re-reads can
     // finish out of order.
@@ -219,8 +219,8 @@ struct ContactDetailView: View {
     @State private var highlightedEmailsLoadID = UUID()
     @State private var coarseHighlightedEmailReloadTask: Task<Void, Never>?
     // The newest link of this contact's write chain: a drop's writes (its
-    // highlighted emails, then its contact values), or the write of one
-    // message's late .eml headers. Each link waits for the one before it, so
+    // highlighted emails, then its contact values), a star or remove, or the
+    // write of one message's late .eml headers. Each link waits for the one before it, so
     // writes for this contact never overlap (the repository's caller
     // precondition for highlightEmail and addContactValues). Never
     // cancelled: a drop is a user write and must land even if the card goes
@@ -1765,14 +1765,15 @@ struct ContactDetailView: View {
         .buttonStyle(.plain)
     }
 
-    /// The ten newest incoming messages recorded for this contact. Message
-    /// links are a best-effort Apple Mail convenience: the undocumented
-    /// `message:` scheme may fail when Mail no longer has the message locally,
-    /// so a row remains useful activity history even without a working URL.
+    /// All retained automatic messages that are not currently saved.
     private var unsavedMailActivities: [MailActivity] {
         MailActivity.excludingHighlightedEmails(highlightedEmails, from: mailActivities)
     }
 
+    /// The ten newest incoming messages not in Highlighted Emails. Message
+    /// links are a best-effort Apple Mail convenience: the undocumented
+    /// `message:` scheme may fail when Mail no longer has the message locally,
+    /// so a row remains useful activity history even without a working URL.
     @ViewBuilder
     private var recentMailSection: some View {
         if !unsavedMailActivities.isEmpty {
@@ -4596,7 +4597,11 @@ private struct EmailFavoriteRow<Content: View>: View {
             Button(action: onToggle) {
                 Image(systemName: isSaved ? "star.fill" : "star")
                     .foregroundStyle(.tint)
+                    #if targetEnvironment(macCatalyst)
                     .frame(width: 32, height: 32)
+                    #else
+                    .frame(width: 44, height: 44)
+                    #endif
                     .contentShape(Rectangle())
             }
             .buttonStyle(.borderless)
