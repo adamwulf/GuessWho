@@ -120,12 +120,15 @@ touching that subsystem:
   Message-ID-derived id, the overlay/revive write rules, the repository
   surface, its change notification, the contact card's whole-profile drop
   target (a UIKit drop interaction on the `List`'s collection view, because
-  of SwiftUI bug FB24490454) and its hand-test log, and the section. Also
-  covers a dropped web link, which the same drop target adds to the
-  contact's website rows through `addWebAddresses` (one call per drop, then
-  a card re-load). Read before touching highlighted emails, the card's drop
-  target, a drop onto a SwiftUI `List`, or any code that walks every cell of
-  a contact envelope.
+  of SwiftUI bug FB24490454, with the system drop progress UI turned off)
+  and its hand-test log, the two phases of a Mail drop (the row from the
+  `message:` URL at once, the `.eml`'s sender and sent date later, never
+  reviving a removed row), and the section. Also covers a dropped web,
+  `mailto:`, or `tel:` link, which the same drop target adds to the
+  contact's website, email, or phone rows through `addContactValues` (one
+  call per drop, then a card re-load). Read before touching highlighted
+  emails, the card's drop target, a drop onto a SwiftUI `List`, or any code
+  that walks every cell of a contact envelope.
 - [`docs/autocomplete.md`](docs/autocomplete.md) — text-field autocomplete:
   how a field opts in (`.autocomplete(text:candidates:)` +
   `.autocompleteMenuHost()`), the shared filter, the candidate lists, and

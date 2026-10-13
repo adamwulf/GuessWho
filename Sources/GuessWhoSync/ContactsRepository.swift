@@ -197,6 +197,23 @@ public enum ContactsRepositoryDidReloadKey {
     public static let mailContactProjectionChanged = "mailContactProjectionChanged"
 }
 
+/// How many rows `ContactsRepository.addContactValues(from:for:)` added to
+/// each field of the contact's Contacts record.
+public struct AddedContactValues: Equatable, Sendable {
+    public var emailAddresses = 0
+    public var phoneNumbers = 0
+    public var urlAddresses = 0
+
+    public init(emailAddresses: Int = 0, phoneNumbers: Int = 0, urlAddresses: Int = 0) {
+        self.emailAddresses = emailAddresses
+        self.phoneNumbers = phoneNumbers
+        self.urlAddresses = urlAddresses
+    }
+
+    /// The rows added to all three fields.
+    public var total: Int { emailAddresses + phoneNumbers + urlAddresses }
+}
+
 /// Package-owned in-memory read repository for Contacts.
 ///
 /// Deliberately a read-model cache, not a second source of truth: Contacts
@@ -1664,7 +1681,7 @@ public final class ContactsRepository: NSObject {
             let additions = Self.newValues(
                 profile.contactInfo?.emails ?? [],
                 notIn: edited.emailAddresses.map(\.value),
-                key: { $0.trimmed.lowercased() }
+                key: Self.emailDedupKey
             )
             // CNContact field — default label (empty -> the adapter passes nil,
             // so Contacts assigns its own default). NOT "LinkedIn".
@@ -1833,21 +1850,41 @@ public final class ContactsRepository: NSObject {
         return contact(id: id) ?? edited
     }
 
-    /// Adds web addresses to the contact's Contacts record — the card's website
-    /// rows (`urlAddresses`) — and returns how many it added. The package entry
-    /// point behind dropping a web link onto a contact.
+    /// Adds the values that `urls` carry to the contact's Contacts record —
+    /// the card's email, phone, and website rows — and returns how many rows
+    /// it added to each field. The package entry point behind dropping a
+    /// `mailto:`, `tel:`, or web URL onto a contact.
     ///
-    /// Rules (the same merge the LinkedIn import's `.websites` field uses):
-    /// - Only `http` / `https` URLs count. Any other scheme (`mailto:`,
-    ///   `message:`, `file:`, …) is ignored, not an error. An input with no web
-    ///   address returns 0 without reading the contact.
-    /// - A URL the contact already has, or one repeated in `urls`, is skipped,
-    ///   compared by the scheme-insensitive `urlDedupKey` (scheme, a leading
-    ///   `www.`, a trailing slash, and case do not count). Input order is kept.
+    /// Each URL goes by its scheme, in any case:
+    /// - `http` / `https`: its `absoluteString` is a website (`urlAddresses`).
+    /// - `mailto`: each address is an email (`emailAddresses`). The part
+    ///   before any `?` is percent-decoded, then split at `,` and `;`; the
+    ///   query (`subject=`, `cc=`, …) is ignored. An entry in display-name
+    ///   form (`Jane Doe <jane@x.com>`) gives the address inside its last
+    ///   `<…>`. An entry is kept only when it is then a bare address (see
+    ///   `bareEmailAddress(in:)`).
+    /// - `tel`: the number before any `;` parameter (`;ext=`, …),
+    ///   percent-decoded, is a phone number (`phoneNumbers`), kept as written
+    ///   so Contacts formats it. `tel:5550100` and `tel://5550100` are the
+    ///   same number. A number with no digits is skipped.
+    /// - Any other scheme (`message:`, `file:`, `ftp:`, …) is ignored, not an
+    ///   error. An input with no value returns zero without reading the
+    ///   contact.
+    ///
+    /// The merge is the LinkedIn import's, field by field:
+    /// - A value the contact already has, or one repeated in `urls`, is
+    ///   skipped. Emails compare by `emailDedupKey` (trimmed, lowercased),
+    ///   phone numbers by `phoneDedupKey` (the E.164 digits, without the `+`,
+    ///   of the first of several parses that succeeds, else the digits; see
+    ///   `PhoneNumberDisplayFormatter.comparisonKey(for:region:)`), and
+    ///   websites by the scheme-insensitive
+    ///   `urlDedupKey` (scheme, a leading `www.`, a trailing slash, and case
+    ///   do not count). The first spelling wins, and input order is kept.
     /// - New rows get the default label (empty -> adapter passes nil).
-    /// - Nothing new: no save and no Last Modified stamp. Something new: save,
-    ///   then stamp Last Modified best-effort so the contact sorts as edited.
-    ///   The stamp can MINT a GuessWho ID for a previously-unreconciled contact.
+    /// - Nothing new: no save and no Last Modified stamp. Something new: ONE
+    ///   save for all three fields, then stamp Last Modified best-effort so
+    ///   the contact sorts as edited. The stamp can MINT a GuessWho ID for a
+    ///   previously-unreconciled contact.
     ///
     /// **Caller precondition:** await each call before starting the next write
     /// to the same contact — this method, `highlightEmail(_:for:)`, or any
@@ -1855,47 +1892,157 @@ public final class ContactsRepository: NSObject {
     /// and chain drops the way the card chains `highlightDropTask` (each drop
     /// awaits the one before it). This method reads the card and then saves
     /// the WHOLE card back (the adapter's `apply(_:to:)` sets every
-    /// `urlAddresses` row from the saved value), so two calls that overlap can
-    /// both read the same rows and the later save wins: a website row the
-    /// first call added is LOST, although both calls return 1. An overlap with
-    /// a write that mints the contact's identity also has the reconcile risk
-    /// the `highlightEmail(_:for:)` precondition names
+    /// `emailAddresses`, `phoneNumbers`, and `urlAddresses` row from the saved
+    /// value), so two calls that overlap can both read the same rows and the
+    /// later save wins: a row the first call added is LOST, although both
+    /// calls report it as added. An overlap with a write that mints the
+    /// contact's identity also has the reconcile risk the
+    /// `highlightEmail(_:for:)` precondition names
     /// (docs/highlighted-emails.md).
     ///
     /// Throws `ContactStoreError.contactNotFound` when the contact is gone, like
     /// `applyLinkedIn`, and rethrows a failed save.
     @discardableResult
-    public func addWebAddresses(_ urls: [URL], for id: ContactID) async throws -> Int {
-        let webAddresses = urls.filter(Self.isWebAddress).map(\.absoluteString)
-        guard !webAddresses.isEmpty else { return 0 }
+    public func addContactValues(from urls: [URL], for id: ContactID) async throws -> AddedContactValues {
+        let offered = Self.contactValues(in: urls)
+        guard !offered.isEmpty else { return AddedContactValues() }
         guard var edited = try await editableContact(id: id) else {
             throw ContactStoreError.contactNotFound(localID: id.localID)
         }
-        let additions = Self.newValues(
-            webAddresses,
+        let emails = Self.newValues(
+            offered.emailAddresses,
+            notIn: edited.emailAddresses.map(\.value),
+            key: Self.emailDedupKey
+        )
+        let phones = Self.newValues(
+            offered.phoneNumbers,
+            notIn: edited.phoneNumbers.map(\.value),
+            key: Self.phoneDedupKey
+        )
+        let websites = Self.newValues(
+            offered.urlAddresses,
             notIn: edited.urlAddresses.map(\.value),
             key: Self.urlDedupKey
         )
-        // Counts only: a URL is user data and never goes in the log.
-        Self.saveLog.notice("web address add requested", metadata: [
-            "op": "addWebAddresses", "localID": .string(edited.localID),
+        let added = AddedContactValues(
+            emailAddresses: emails.count,
+            phoneNumbers: phones.count,
+            urlAddresses: websites.count
+        )
+        // Counts only: an address, a number, or a URL is user data and never
+        // goes in the log.
+        Self.saveLog.notice("contact values add requested", metadata: [
+            "op": "addContactValues", "localID": .string(edited.localID),
             "offered": .stringConvertible(urls.count),
-            "web": .stringConvertible(webAddresses.count),
-            "new": .stringConvertible(additions.count),
+            "emails": .stringConvertible(offered.emailAddresses.count),
+            "phones": .stringConvertible(offered.phoneNumbers.count),
+            "web": .stringConvertible(offered.urlAddresses.count),
+            "newEmails": .stringConvertible(added.emailAddresses),
+            "newPhones": .stringConvertible(added.phoneNumbers),
+            "newWeb": .stringConvertible(added.urlAddresses),
         ])
-        guard !additions.isEmpty else { return 0 }
+        guard added.total > 0 else { return added }
 
-        // CNContact field — default label (empty -> adapter passes nil).
-        edited.urlAddresses += additions.map { LabeledValue(label: "", value: $0) }
+        // CNContact fields — default label (empty -> adapter passes nil).
+        edited.emailAddresses += emails.map { LabeledValue(label: "", value: $0) }
+        edited.phoneNumbers += phones.map { LabeledValue(label: "", value: $0) }
+        edited.urlAddresses += websites.map { LabeledValue(label: "", value: $0) }
         try await saveContact(edited, for: id)
-        await stampModifiedBestEffort(id, operation: "add web addresses")
-        return additions.count
+        await stampModifiedBestEffort(id, operation: "add contact values")
+        return added
     }
 
-    /// Whether `url` is a web address: an `http` or `https` scheme, any case.
-    private static func isWebAddress(_ url: URL) -> Bool {
-        guard let scheme = url.scheme?.lowercased() else { return false }
-        return scheme == "http" || scheme == "https"
+    /// The values a list of URLs carries for each field, in input order and
+    /// not yet deduplicated.
+    private struct OfferedContactValues {
+        var emailAddresses: [String] = []
+        var phoneNumbers: [String] = []
+        var urlAddresses: [String] = []
+
+        var isEmpty: Bool {
+            emailAddresses.isEmpty && phoneNumbers.isEmpty && urlAddresses.isEmpty
+        }
+    }
+
+    /// Routes each URL by its scheme; see `addContactValues(from:for:)` for
+    /// the rules.
+    private static func contactValues(in urls: [URL]) -> OfferedContactValues {
+        var values = OfferedContactValues()
+        for url in urls {
+            switch url.scheme?.lowercased() {
+            case "http", "https":
+                values.urlAddresses.append(url.absoluteString)
+            case "mailto":
+                values.emailAddresses += mailtoAddresses(url)
+            case "tel":
+                if let number = telNumber(url) { values.phoneNumbers.append(number) }
+            default:
+                continue
+            }
+        }
+        return values
+    }
+
+    /// The part of `url` after `<scheme>:` and before any `?` or `#`, still
+    /// percent-encoded, with a leading `//` dropped, so `tel://5550100` gives
+    /// the same part as `tel:5550100` (in the `//` form the value is the
+    /// URL's host, and its path is empty).
+    private static func schemeSpecificPart(of url: URL) -> Substring {
+        let string = url.absoluteString
+        guard let colon = string.firstIndex(of: ":") else { return "" }
+        var part = string[string.index(after: colon)...]
+        if part.hasPrefix("//") { part = part.dropFirst(2) }
+        if let end = part.firstIndex(where: { $0 == "?" || $0 == "#" }) { part = part[..<end] }
+        return part
+    }
+
+    /// The addresses of a `mailto:` URL, in order. The part before any `?` is
+    /// percent-decoded FIRST and then split at `,` and `;`, so a list encoded
+    /// whole (`a%40x.com%2Cb%40y.com`, as `encodeURIComponent` writes it) and
+    /// an Outlook-style `;` list each give one address per entry. Each entry
+    /// goes through `bareEmailAddress(in:)`; one that gives no address is
+    /// left out, and so is the whole list when it does not percent-decode.
+    private static func mailtoAddresses(_ url: URL) -> [String] {
+        guard let decoded = schemeSpecificPart(of: url).removingPercentEncoding else { return [] }
+        return decoded
+            .split(whereSeparator: { $0 == "," || $0 == ";" })
+            .compactMap(bareEmailAddress(in:))
+    }
+
+    /// The address one entry of a `mailto:` list names: the part inside the
+    /// entry's last `<…>` when it has one (`Jane Doe <jane@x.com>`), else
+    /// the whole entry, trimmed. Nil unless that is a bare address: exactly
+    /// one `@` with text on both sides, and no whitespace, `<`, `>`, `,`,
+    /// `;`, or `"`. A quoted name with a comma (`"Doe, Jane" <jane@x.com>`)
+    /// is split in two by the list split; the half with the brackets still
+    /// gives the address, and the other half gives none.
+    private static func bareEmailAddress(in entry: Substring) -> String? {
+        var candidate = entry
+        if let open = entry.lastIndex(of: "<") {
+            let inside = entry[entry.index(after: open)...]
+            guard let close = inside.firstIndex(of: ">") else { return nil }
+            candidate = inside[..<close]
+        }
+        let address = String(candidate).trimmed
+        let parts = address.split(separator: "@", omittingEmptySubsequences: false)
+        guard parts.count == 2, !parts[0].isEmpty, !parts[1].isEmpty,
+              !address.contains(where: { $0.isWhitespace || "<>,;\"".contains($0) })
+        else { return nil }
+        return address
+    }
+
+    /// The number of a `tel:` URL: the part before any `;` parameter,
+    /// percent-decoded and trimmed (of a trailing `/` too, which the `//`
+    /// form can carry), as written. Nil when it does not percent-decode or
+    /// has no digit.
+    private static func telNumber(_ url: URL) -> String? {
+        let beforeParameters = schemeSpecificPart(of: url)
+            .split(separator: ";", omittingEmptySubsequences: false).first ?? ""
+        guard let number = String(beforeParameters).removingPercentEncoding?
+                .trimmingCharacters(in: CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: "/"))),
+              number.contains(where: \.isNumber)
+        else { return nil }
+        return number
     }
 
     /// New members of `incoming` not already present in `existing`, compared by
@@ -1928,8 +2075,28 @@ public final class ContactsRepository: NSObject {
         return t
     }
 
+    /// Phone dedup key: `PhoneNumberDisplayFormatter.comparisonKey(for:)` in
+    /// the device's region — the E.164 digits without the `+` (plus any
+    /// extension's digits) when the number parses, else its digits. It tries
+    /// a type-checked parse in the region; then, outside the NANP only, a
+    /// type-checked parse with a `+` added; then a parse with no type check;
+    /// then the digits. So a dropped `+1 555 010 0123` matches a stored
+    /// `(555) 010-0123` on a US device, and outside the NANP a full number
+    /// written with its country code but no `+` matches the same number
+    /// written with one. Limits (see `comparisonKey`): such a number whose
+    /// digits are also a valid national number of the region (on an AT
+    /// device) reads as national; outside the NANP a no-`+` national number
+    /// in a range the metadata does not list can read as another country's
+    /// number; and in the NANP a foreign full number with no `+` whose
+    /// digits look like a NANP number reads as NANP, so it does not match
+    /// its `+` spelling.
     private static func phoneDedupKey(_ s: String) -> String {
-        s.filter(\.isNumber)
+        PhoneNumberDisplayFormatter.shared.comparisonKey(for: s)
+    }
+
+    /// Case-insensitive email dedup key: trimmed and lowercased.
+    private static func emailDedupKey(_ s: String) -> String {
+        s.trimmed.lowercased()
     }
 
     /// Deletes the cached contact addressed by `ContactID`. Returns `false`

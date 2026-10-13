@@ -2,8 +2,9 @@ import SwiftUI
 import UIKit
 import GuessWhoLogging
 
-/// The contact card's whole-profile drop target for Mail messages and web
-/// links: a UIKit `UIDropInteraction` on the backing `UICollectionView` of the
+/// The contact card's whole-profile drop target for Mail messages and web,
+/// `mailto:`, and `tel:` links: a UIKit `UIDropInteraction` on the backing
+/// `UICollectionView` of the
 /// `List` this view is attached to, with `.background { ListMailDropTarget(...) }`.
 /// Invisible, and it takes no touches.
 ///
@@ -252,6 +253,26 @@ final class MailDropInteractionDelegate: NSObject, UIDropInteractionDelegate {
     func dropInteraction(_ interaction: UIDropInteraction, performDrop session: any UIDropSession) {
         let providers = session.items.map(\.itemProvider)
         guard MailDropReader.canAccept(providers) else { return }
+        // No system progress UI, set before any load starts. UIDragSession.h:
+        // "The kind of progress and cancellation UI that UIKit will display
+        // if handling this session's drop takes a significant amount of
+        // time. The default value is UIDropSessionProgressIndicatorStyleDefault,
+        // meaning that some progress UI will be shown. If you show your own
+        // progress indicator, hide the system progress UI by setting this
+        // property to UIDropSessionProgressIndicatorStyleNone."
+        // Every load started below counts toward the session's progress, and
+        // on Catalyst Mail's .eml file promise took about 29 s. In Adam's
+        // hand test UIKit's progress HUD showed during that load. AFTER the
+        // HUD went away, the window looked normal and still drew updates (a
+        // remove made in a second window showed up in it), but it took no
+        // input; a second window worked, and a sample showed every thread
+        // idle (no app frames). The system progress UI is the likely cause,
+        // so this is expected to prevent that; it is not measured. The card
+        // shows the drop's result itself, as rows. A test cannot make a
+        // UIDropSession, so only a hand test shows the effect, and it must
+        // check that the window still takes input after the row fills in,
+        // not only that no HUD shows.
+        session.progressIndicatorStyle = .none
         // UIKit allows a drop's data to be requested only within
         // performDrop, so every load starts here, synchronously.
         onDrop(MailDropReader.startLoading(providers))
