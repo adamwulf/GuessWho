@@ -271,6 +271,10 @@ permission and read-write access, consume the global write budget, serialize
 per contact, participate in idempotent replay, verify the saved state, and
 append agent activity only after a real write succeeds.
 
+The app preserves the full photo with an optional normalized crop for display.
+Setting a replacement through the CLI/MCP clears the previous crop. Photo reads
+return the original bytes. See [Profile photos](profile-photos.md).
+
 Set, replace, and delete route through `ContactsRepository.setContactPhoto`,
 the app's own photo path. Before replacing or deleting an existing photo that
 path stores the current bytes in the one reserved `previousPhoto` blob slot.

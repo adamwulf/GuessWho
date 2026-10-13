@@ -540,6 +540,9 @@ was reshaped from create-then-edit into the sheet below on 2026-07-26):
   list, so landing in the detail column is where they were headed anyway. An
   import arrives unannounced from the browser, over whatever the user was
   reading — so it asks in a dialog and gives the screen back.
+- **Photo originals and cropping.** The app preserves the full imported bytes.
+  Importing a replacement clears any previous crop; the user can edit its crop
+  later in the contact photo menu. See [Profile photos](profile-photos.md).
 - **Photo write path.** `.photo` routes through
   `ContactsRepository.setContactPhoto` inside `applyLinkedIn`: replacing an
   existing photo first snapshots the replaced bytes into the single-slot
