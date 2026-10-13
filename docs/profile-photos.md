@@ -32,7 +32,9 @@ whole-cell synchronization keeps the rectangle attached to its original image.
 The active photo uses one fixed cell ID per contact, so simultaneous first edits
 on different devices converge to one original/crop pair. Crop commits check the
 original that the editor showed; a replacement makes the stale editor report an
-error instead of applying its rectangle to a different image.
+error instead of applying its rectangle to a different image. This check also
+requires the slot to remain absent when editing a system-only photo for the
+first time.
 The slot is reserved and hidden from custom fields. The existing `previousPhoto`
 snapshot still captures replaced original bytes. Replacing a photo clears the
 old crop unless the caller supplies a new one; removing a photo deletes the
@@ -49,29 +51,38 @@ thumbnail, the existing thumbnail fallback supplies the available image.
 
 ## Changes made in Contacts.app
 
-An external replacement becomes the new full original with no crop; external
-removal removes the active photo. The outgoing original goes into the existing
-previous-photo slot. Unrelated contact edits do not change the crop.
+An external replacement displays the current full Contacts image with no crop;
+external removal displays no photo. Unrelated contact edits do not change the
+crop. Detection records a local override, without writing a competing synced
+photo cell. The outgoing preserved original remains stored until an explicit
+photo save, removal, or recrop moves it into the existing previous-photo slot.
+Recropping an external replacement preserves its full Contacts bytes as the new
+original.
 
 Tracking adds one `systemPhotoDigest` SHA-256 hash to the synced photo pointer.
 It describes the bytes Contacts returns after the write, which may differ from
-the selected file. Local preferences hold two hashes per contact UUID: the
-original last observed and the system image last observed. No photo bytes or
-Contacts-local identifiers go into preferences. These baselines survive relaunch
-and are updated during photo reads; they are not themselves synced.
+the selected file. Local preferences hold two hashes per contact UUID (the
+original last observed and the system image last observed), plus the ignored
+blob ID when an external change overrides the preserved photo. No photo bytes
+or Contacts-local identifiers go into preferences. This state survives relaunch
+and is updated during photo reads; it is not itself synced.
 
 A device seeing an original for the first time establishes its local baseline.
-Subsequent system-image changes replace that original and clear its crop, except
-when the expected system-image hash arrives: Contacts sync and photo-file sync
-can finish in either order, and that expected arrival preserves the crop. An
-unseen system change before the first baseline cannot be distinguished from
-initial synchronization; the first observation trusts the preserved original.
+Subsequent unexpected system-image changes enable the override. A different
+preserved original clears it. For a new crop of the same original, the override
+clears when both a new blob pointer and its expected system-image hash arrive.
+While waiting, the earlier ignored blob ID is retained. Contacts sync and
+photo-file sync can finish in either order without a photo read overwriting the
+incoming original/crop. An unseen system change before the first baseline cannot
+be distinguished from initial synchronization; the first observation trusts the
+preserved original.
 
 ## Rendering and refresh
 
 `contactPhotoData` returns original data plus optional crop metadata for both
-thumbnail and full-size requests. Stored originals take precedence over system
-thumbnails, whose framing may already differ. The pointer and bytes are read
+thumbnail and full-size requests. Unless a system-image change overrides them,
+stored originals take precedence over system thumbnails, whose framing may
+already differ. The pointer and bytes are read
 under the same storage lock. A pending original download remains retryable.
 
 The shared `ContactPhotoLoader` renders the rectangle for avatars, lists, and
@@ -92,9 +103,9 @@ resolution independence, invalid rectangles, and JSON round trips.
 `ContactPhotoCropPersistenceTests` covers original-byte preservation, repository
 reload, crop changes and reset, replacement/removal, an existing uncropped photo,
 encrypted filesystem storage reopened through a fresh engine, and simultaneous
-first edits. `ContactPhotoSourceTests` covers external replacement/removal after
+first edits and absent-to-present crop races. `ContactPhotoSourceTests` covers external replacement/removal after
 relaunch, unrelated edits, stale crop editors, failed storage writes, pending
-download refresh, and expected system-image arrival. App rendering tests check
+download refresh, and both sync arrival orders. Catalyst rendering tests check
 that large uncropped originals still produce bounded Mail thumbnails after reset.
 
 Hand-check on iPhone/iPad and Mac Catalyst: choose a portrait and a landscape

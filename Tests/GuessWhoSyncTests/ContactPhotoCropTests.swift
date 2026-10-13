@@ -91,8 +91,26 @@ struct ContactPhotoCropPersistenceTests {
         do {
             try sync.setBlobField(at: key, field: ContactsRepository.profilePhotoFieldName,
                 data: Data([1]), contentType: "image/jpeg",
-                photoCrop: ContactPhotoCrop(x: 0, y: 0, width: 0.5, height: 0.5), replacingBlobID: firstID)
+                photoCrop: ContactPhotoCrop(x: 0, y: 0, width: 0.5, height: 0.5), expectation: .matching(firstID))
             Issue.record("A stale pointer overwrote a replacement")
+        } catch ContactPhotoEditError.photoChanged {}
+        #expect(try sync.profilePhoto(at: key)?.photo.data == Data([2]))
+    }
+
+    @Test func firstCropRejectsAnOriginalArrivingAfterAbsentRead() throws {
+        let sync = GuessWhoSync(contacts: InMemoryContactStore(), events: InMemoryEventStore(),
+                               sidecars: InMemorySidecarStore(), deviceID: "test")
+        let key = SidecarKey(kind: .contact, id: UUID().uuidString.lowercased())
+        #expect(try sync.profilePhoto(at: key) == nil)
+        // A remote photo arrives after the editor read a system-only photo.
+        try sync.setBlobField(at: key, field: ContactsRepository.profilePhotoFieldName,
+                             data: Data([2]), contentType: "image/jpeg")
+        do {
+            try sync.setBlobField(at: key, field: ContactsRepository.profilePhotoFieldName,
+                                 data: Data([1]), contentType: "image/jpeg",
+                                 photoCrop: ContactPhotoCrop(x: 0, y: 0, width: 0.5, height: 0.5),
+                                 expectation: .absent)
+            Issue.record("A first crop overwrote an arriving original")
         } catch ContactPhotoEditError.photoChanged {}
         #expect(try sync.profilePhoto(at: key)?.photo.data == Data([2]))
     }

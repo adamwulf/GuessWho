@@ -37,12 +37,24 @@ struct ContactPhotoSourceTests {
         let adopted = try #require(try await reopened.contactPhotoData(for: id, kind: .fullSize))
         #expect(adopted.data == replacement)
         #expect(adopted.crop == nil)
-        #expect(try sync.blobFieldData(at: key, field: ContactsRepository.previousPhotoFieldName) == original)
+        // Detection is local: it cannot race an incoming synced photo/crop.
+        #expect(try sync.profilePhoto(at: key)?.photo.data == original)
+        #expect(try sync.profilePhoto(at: key)?.photo.crop == crop)
+        let relaunched = ContactsRepository(contacts: contacts, sync: sync, notificationCenter: NotificationCenter(), photoSourceDefaults: defaults)
+        await relaunched.reload()
+        #expect(try await relaunched.contactPhotoData(for: id, kind: .fullSize)?.data == replacement)
+        #expect(try await relaunched.contactPhotoData(for: id, kind: .fullSize)?.crop == nil)
 
         try await reopened.setContactPhotoCrop(for: id, crop: crop, originalData: replacement)
+        #expect(try sync.blobFieldData(at: key, field: ContactsRepository.previousPhotoFieldName) == original)
         try await contacts.setImageData(localID: contact.localID, imageData: nil)
         await reopened.reload()
         #expect(try await reopened.contactPhotoData(for: id, kind: .fullSize) == nil)
+        #expect(try sync.profilePhoto(at: key)?.photo.data == replacement)
+        let afterRemoval = ContactsRepository(contacts: contacts, sync: sync, notificationCenter: NotificationCenter(), photoSourceDefaults: defaults)
+        await afterRemoval.reload()
+        #expect(try await afterRemoval.contactPhotoData(for: id, kind: .fullSize) == nil)
+        try await afterRemoval.setContactPhoto(for: id, imageData: nil)
         #expect(try sync.profilePhoto(at: key) == nil)
         #expect(try sync.blobFieldData(at: key, field: ContactsRepository.previousPhotoFieldName) == replacement)
     }
@@ -61,6 +73,19 @@ struct ContactPhotoSourceTests {
         let current = try #require(try await repo.contactPhotoData(for: id, kind: .fullSize))
         #expect(current.data == replacement)
         #expect(current.crop == nil)
+    }
+
+    @Test func explicitReplacementRetainsTheOverriddenOriginal() async throws {
+        let (repo, contacts, _, sync, id, _) = try await fixture()
+        let original = Data([1, 2])
+        try await repo.setContactPhoto(for: id, imageData: original)
+        let contact = try #require(repo.contact(id: id))
+        let key = try #require(SidecarKey.forContact(contact))
+        try await contacts.setImageData(localID: contact.localID, imageData: Data([3, 4]))
+        #expect(try await repo.contactPhotoData(for: id, kind: .fullSize)?.data == Data([3, 4]))
+        try await repo.setContactPhoto(for: id, imageData: Data([5, 6]))
+        #expect(try sync.blobFieldData(at: key, field: ContactsRepository.previousPhotoFieldName) == original)
+        #expect(try await repo.contactPhotoData(for: id, kind: .fullSize)?.data == Data([5, 6]))
     }
 
     @Test(arguments: [false, true]) func failedStorageCommitRestoresSystemPhoto(removing: Bool) async throws {
@@ -105,16 +130,49 @@ struct ContactPhotoSourceTests {
         #expect(try await reader.contactPhotoData(for: id, kind: .thumbnail)?.data == Data([1, 2]))
     }
 
-    @Test func expectedContactsSyncArrivalPreservesCrop() throws {
+    @Test(arguments: [false, true]) func eitherSyncArrivalOrderPreservesCrop(contactsFirst: Bool) async throws {
+        let (repo, contacts, _, sync, id, _) = try await fixture()
+        let original = Data([1, 2])
+        let incoming = Data([3, 4])
+        let crop = try #require(ContactPhotoCrop(x: 0, y: 0, width: 0.5, height: 0.5))
+        try await repo.setContactPhoto(for: id, imageData: original, crop: crop)
+        let contact = try #require(repo.contact(id: id))
+        let key = try #require(SidecarKey.forContact(contact))
+        let before = try sync.profilePhoto(at: key)?.pointer
+        if contactsFirst {
+            try await contacts.setImageData(localID: contact.localID, imageData: incoming)
+            let interim = try #require(try await repo.contactPhotoData(for: id, kind: .fullSize))
+            #expect(interim.data == incoming)
+            #expect(interim.crop == nil)
+            #expect(try sync.profilePhoto(at: key)?.pointer == before)
+        }
+        try await sync.setBlobField(at: key, field: ContactsRepository.profilePhotoFieldName,
+                                   data: incoming, contentType: "image/jpeg", photoCrop: crop,
+                                   systemPhotoDigest: ContactPhotoSourceTracker.digest(incoming))
+        let incomingPointer = try sync.profilePhoto(at: key)?.pointer
+        #expect(try await repo.contactPhotoData(for: id, kind: .fullSize)?.crop == crop)
+        if !contactsFirst {
+            try await contacts.setImageData(localID: contact.localID, imageData: incoming)
+        }
+        let result = try #require(try await repo.contactPhotoData(for: id, kind: .fullSize))
+        #expect(result.data == incoming)
+        #expect(result.crop == crop)
+        #expect(try sync.profilePhoto(at: key)?.pointer == incomingPointer)
+    }
+
+    @Test func sameOriginalRecropWaitsForExpectedSystemImage() throws {
         let defaults = try #require(UserDefaults(suiteName: "PhotoSourceTests.\(UUID().uuidString)"))
         let tracker = ContactPhotoSourceTracker(defaults: defaults)
         let key = SidecarKey(kind: .contact, id: UUID().uuidString.lowercased())
-        // The original/crop arrives first; the system image is still the previous photo.
-        #expect(!tracker.systemPhotoChanged(key: key, original: "new", expected: "new-system", observed: "old-system"))
-        tracker.record(key: key, original: "new", observed: "old-system")
-        #expect(!tracker.systemPhotoChanged(key: key, original: "new", expected: "new-system", observed: "new-system"))
-        tracker.record(key: key, original: "new", observed: "new-system")
-        #expect(tracker.systemPhotoChanged(key: key, original: "new", expected: "new-system", observed: "external"))
+        tracker.record(key: key, original: "original", observed: "system")
+        #expect(tracker.usesSystemPhoto(key: key, original: "original", blobID: "first", expected: "system", observed: "external"))
+        // Replacing the system photo with identical bytes alone cannot revive an old crop.
+        #expect(tracker.usesSystemPhoto(key: key, original: "original", blobID: "first", expected: "system", observed: "system"))
+        // A newer crop may arrive before its expected Contacts representation.
+        for _ in 0..<2 {
+            #expect(tracker.usesSystemPhoto(key: key, original: "original", blobID: "second", expected: "new-system", observed: "system"))
+        }
+        #expect(!tracker.usesSystemPhoto(key: key, original: "original", blobID: "second", expected: "new-system", observed: "new-system"))
     }
 }
 

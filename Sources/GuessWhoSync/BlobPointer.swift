@@ -1,5 +1,12 @@
 import Foundation
 
+/// A crop commit must still target the original it read, including the case
+/// where no preserved photo existed yet. Omit this for unconditional writes.
+public enum BlobFieldExpectation: Sendable {
+    case absent
+    case matching(String)
+}
+
 /// The decoded view of a `.blob` field's pointer object. A `.blob` cell stores
 /// a small JSON object — `{ "blobId", "contentType", "byteCount" }` — that
 /// points at a separate synced binary file (`root/<kind>/<id>.<blobId>.dat`),

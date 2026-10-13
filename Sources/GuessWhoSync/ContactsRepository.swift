@@ -1482,33 +1482,23 @@ public final class ContactsRepository: NSObject {
     }
 
     private func photoAfterCheckingSystemSource(_ photo: ContactPhoto, key: SidecarKey, contact: Contact) async throws -> ContactPhoto? {
-        guard let sync, !systemPhotoWrites.contains(contact.localID) else { return photo }
+        guard let blobID = photo.blobID, !systemPhotoWrites.contains(contact.localID) else { return photo }
         let systemData = try await systemPhotoBytes(localID: contact.localID)
         let (original, observed) = await Task.detached(priority: .userInitiated) {
             (ContactPhotoSourceTracker.digest(photo.data), ContactPhotoSourceTracker.digest(systemData))
         }.value
         guard !systemPhotoWrites.contains(contact.localID) else { return photo }
-        if photoSources.systemPhotoChanged(key: key, original: original,
-                                           expected: photo.systemPhotoDigest, observed: observed) {
-            // A real Contacts edit replaces the active photo and clears its framing.
-            // Preserve the outgoing full original using the existing previous-photo slot.
-            try await sync.setBlobField(at: key, field: Self.previousPhotoFieldName,
-                                        data: photo.data, contentType: Self.imageContentType(of: photo.data))
-            if let systemData {
-                let blobID = try await sync.setBlobField(at: key, field: Self.profilePhotoFieldName,
-                    data: systemData, contentType: Self.imageContentType(of: systemData),
-                    systemPhotoDigest: observed, replacingBlobID: photo.blobID)
-                photoSources.record(key: key, original: observed, observed: observed)
-                var adopted = ContactPhoto(data: systemData, kind: .fullSize)
-                adopted.systemPhotoDigest = observed
-                adopted.blobID = blobID
-                return adopted
-            }
-            try sync.removeProfilePhoto(at: key, replacingBlobID: photo.blobID)
-            photoSources.remove(key: key)
-            return nil
+        if photoSources.usesSystemPhoto(key: key, original: original, blobID: blobID,
+                                       expected: photo.systemPhotoDigest, observed: observed) {
+            // A read must not author a competing synced value: Contacts can arrive
+            // before the matching preserved original/crop on another device.
+            guard let systemData else { return nil }
+            var adopted = ContactPhoto(data: systemData, kind: .fullSize)
+            adopted.systemPhotoDigest = observed
+            adopted.blobID = blobID
+            adopted.usesSystemPhoto = true
+            return adopted
         }
-        photoSources.record(key: key, original: original, observed: observed)
         return photo
     }
 
@@ -1652,11 +1642,20 @@ public final class ContactsRepository: NSObject {
         let key = SidecarKey(kind: .contact, id: guessWhoID)
         let systemData = try await systemPhotoBytes(localID: localID)
         let observed = ContactPhotoSourceTracker.digest(systemData)
+        if photo.usesSystemPhoto {
+            // Keep the ignored full original recoverable when explicitly adopting
+            // an external image. The active-pointer precondition below still applies.
+            guard let previous = try sync.profilePhoto(at: key),
+                  previous.photo.blobID == photo.blobID else { throw ContactPhotoEditError.photoChanged }
+            try await sync.setBlobField(at: key, field: Self.previousPhotoFieldName,
+                                        data: previous.photo.data,
+                                        contentType: Self.imageContentType(of: previous.photo.data))
+        }
         try await sync.setBlobField(at: key,
                                     field: Self.profilePhotoFieldName, data: photo.data,
                                     contentType: Self.imageContentType(of: photo.data), photoCrop: crop,
                                     systemPhotoDigest: photo.systemPhotoDigest ?? observed,
-                                    replacingBlobID: photo.blobID)
+                                    expectation: photo.blobID.map { .matching($0) } ?? .absent)
         photoSources.record(key: key, original: ContactPhotoSourceTracker.digest(photo.data), observed: observed)
         await refreshContact(localID: localID)
     }

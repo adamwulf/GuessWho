@@ -11,6 +11,7 @@ public struct ContactPhoto: Sendable {
     public let crop: ContactPhotoCrop?
     package var systemPhotoDigest: String?
     package var blobID: String?
+    package var usesSystemPhoto = false
 
     public init(data: Data, kind: ContactPhotoKind, crop: ContactPhotoCrop? = nil) {
         self.data = data

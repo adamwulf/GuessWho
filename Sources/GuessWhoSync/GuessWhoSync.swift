@@ -563,14 +563,14 @@ public final class GuessWhoSync: @unchecked Sendable {
         contentType: String,
         photoCrop: ContactPhotoCrop? = nil,
         systemPhotoDigest: String? = nil,
-        replacingBlobID: String? = nil
+        expectation: BlobFieldExpectation? = nil
     ) async throws -> String {
         try await withCheckedThrowingContinuation { [self] continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 do {
                     let result: String = try self.setBlobField(
                         at: key, field: field, data: data, contentType: contentType, photoCrop: photoCrop,
-                        systemPhotoDigest: systemPhotoDigest, replacingBlobID: replacingBlobID
+                        systemPhotoDigest: systemPhotoDigest, expectation: expectation
                     )
                     continuation.resume(returning: result)
                 } catch {
@@ -594,7 +594,7 @@ public final class GuessWhoSync: @unchecked Sendable {
         contentType: String,
         photoCrop: ContactPhotoCrop? = nil,
         systemPhotoDigest: String? = nil,
-        replacingBlobID: String? = nil
+        expectation: BlobFieldExpectation? = nil
     ) throws -> String {
         let newBlobId = UUID().uuidString.lowercased()
         let pointer = BlobPointer(
@@ -609,15 +609,23 @@ public final class GuessWhoSync: @unchecked Sendable {
         // write commits the repoint.
         var supersededBlobId: String?
         try withKeyLocked(key) { ctx in
-            if let replacingBlobID {
-                let current = try ctx.read()?.fields.values.contains { cell in
+            if let expectation {
+                let current = try ctx.read()?.fields.values.first { cell in
                     guard cell.deletedAt == nil,
                           case .object(let inner) = cell.value,
-                          inner[SidecarField.innerFieldKey] == .string(field),
-                          let value = inner[SidecarField.innerValueKey] else { return false }
-                    return BlobPointer.referencedBlobId(from: value) == replacingBlobID
-                } ?? false
-                guard current else { throw ContactPhotoEditError.photoChanged }
+                          inner[SidecarField.innerFieldKey] == .string(field) else { return false }
+                    return true
+                }
+                switch expectation {
+                case .absent:
+                    guard current == nil else { throw ContactPhotoEditError.photoChanged }
+                case .matching(let blobID):
+                    guard let current, case .object(let inner) = current.value,
+                          let value = inner[SidecarField.innerValueKey],
+                          BlobPointer.referencedBlobId(from: value) == blobID else {
+                        throw ContactPhotoEditError.photoChanged
+                    }
+                }
             }
             // Write the bytes FIRST, but INSIDE the per-key lock (the only way to
             // reach `ctx.writeBlob`): the orphan sweep re-reads this key's
