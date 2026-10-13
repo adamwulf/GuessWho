@@ -89,6 +89,16 @@ public struct MailActivity: Hashable, Sendable, Identifiable {
         normalizedMessageID(messageID).map(activityID(forNormalizedMessageID:))
     }
 
+    /// Keeps the activity order, excluding every saved message before the UI
+    /// applies its display limit. The two models have different UUID namespaces,
+    /// so their shared identity is the normalized Message-ID.
+    public static func excludingHighlightedEmails(
+        _ emails: [HighlightedEmail], from activities: [MailActivity]
+    ) -> [MailActivity] {
+        let savedIDs = Set(emails.map(\.messageID))
+        return activities.filter { !savedIDs.contains($0.messageID) }
+    }
+
     /// Normalizes an RFC 5322 Message-ID for identity: drops all whitespace
     /// (header folding), strips one enclosing `<` `>` pair, and lowercases the
     /// part after the last `@` (domains are case-insensitive; the local part

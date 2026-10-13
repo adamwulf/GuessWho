@@ -211,7 +211,7 @@ struct ContactDetailView: View {
     // mail-only refreshes. A slow older disk read must not restore stale rows.
     @State private var mailActivitiesLoadID = UUID()
     @State private var coarseMailActivityReloadTask: Task<Void, Never>?
-    // Emails the user dropped onto this profile, in the repository's order.
+    // Emails the user dropped onto or starred on this profile, in repository order.
     // Same newest-wins gate and coarse-reload fallback as mail activity: a drop
     // of several messages posts one change per message, and the re-reads can
     // finish out of order.
@@ -219,8 +219,8 @@ struct ContactDetailView: View {
     @State private var highlightedEmailsLoadID = UUID()
     @State private var coarseHighlightedEmailReloadTask: Task<Void, Never>?
     // The newest link of this contact's write chain: a drop's writes (its
-    // highlighted emails, then its contact values), or the write of one
-    // message's late .eml headers. Each link waits for the one before it, so
+    // highlighted emails, then its contact values), a star or remove, or the
+    // write of one message's late .eml headers. Each link waits for the one before it, so
     // writes for this contact never overlap (the repository's caller
     // precondition for highlightEmail and addContactValues). Never
     // cancelled: a drop is a user write and must land even if the card goes
@@ -1765,15 +1765,20 @@ struct ContactDetailView: View {
         .buttonStyle(.plain)
     }
 
-    /// The ten newest incoming messages recorded for this contact. Message
+    /// All retained automatic messages that are not currently saved.
+    private var unsavedMailActivities: [MailActivity] {
+        MailActivity.excludingHighlightedEmails(highlightedEmails, from: mailActivities)
+    }
+
+    /// The ten newest incoming messages not in Highlighted Emails. Message
     /// links are a best-effort Apple Mail convenience: the undocumented
     /// `message:` scheme may fail when Mail no longer has the message locally,
     /// so a row remains useful activity history even without a working URL.
     @ViewBuilder
     private var recentMailSection: some View {
-        if !mailActivities.isEmpty {
+        if !unsavedMailActivities.isEmpty {
             TitledSection("Recent Email") {
-                ForEach(mailActivities.prefix(10)) { activity in
+                ForEach(unsavedMailActivities.prefix(10)) { activity in
                     mailActivityRow(activity)
                         .centeredRowContent()
                 }
@@ -1781,24 +1786,33 @@ struct ContactDetailView: View {
         }
     }
 
-    @ViewBuilder
     private func mailActivityRow(_ activity: MailActivity) -> some View {
-        if let url = MailMessageLink.url(forNormalizedMessageID: activity.messageID) {
-            Button {
-                openURL(url)
-            } label: {
-                mailActivityLabel(activity, opensMail: true)
+        let url = MailMessageLink.url(forNormalizedMessageID: activity.messageID)
+        return EmailFavoriteRow(isSaved: false, onToggle: { saveMailActivity(activity) }) {
+            if let url {
+                Button {
+                    openURL(url)
+                } label: {
+                    mailActivityLabel(activity, opensMail: true)
+                }
+                .buttonStyle(.plain)
+            } else {
+                mailActivityLabel(activity, opensMail: false)
             }
-            .buttonStyle(.plain)
-            .contextMenu {
+        }
+        .contextMenu {
+            if let url {
                 Button {
                     openURL(url)
                 } label: {
                     Label("Open in Mail", systemImage: "envelope.open")
                 }
             }
-        } else {
-            mailActivityLabel(activity, opensMail: false)
+            Button {
+                saveMailActivity(activity)
+            } label: {
+                Label("Save Email", systemImage: "star")
+            }
         }
     }
 
@@ -1811,7 +1825,7 @@ struct ContactDetailView: View {
         )
     }
 
-    /// Every email the user dropped onto this profile, in the repository's
+    /// Every email the user dropped onto or starred on this profile, in the repository's
     /// order, with no cap: the user chose to keep each one. Kept apart from
     /// "Recent Email" (mail the Mail extension finds by itself) because the
     /// sender can be anyone. The message link is best effort, as in Recent
@@ -1831,7 +1845,7 @@ struct ContactDetailView: View {
     @ViewBuilder
     private func highlightedEmailRow(_ email: HighlightedEmail) -> some View {
         let url = MailMessageLink.url(forNormalizedMessageID: email.messageID)
-        Group {
+        EmailFavoriteRow(isSaved: true, onToggle: { removeHighlightedEmail(email) }) {
             if let url {
                 Button {
                     openURL(url)
@@ -1893,11 +1907,31 @@ struct ContactDetailView: View {
         }
     }
 
+    /// Uses the same saved-email write path and serial chain as a drop.
+    private func saveMailActivity(_ activity: MailActivity) {
+        guard let email = HighlightedEmail(activity: activity, highlightedAt: Date()) else { return }
+        let contactID = loadedContactID ?? id
+        let previous = highlightDropTask
+        highlightDropTask = Task {
+            await previous?.value
+            do {
+                try await repository.highlightEmail(email, for: contactID)
+            } catch {
+                Self.highlightedEmailLog.error(
+                    "save email failed: \(error.localizedDescription)"
+                )
+                service.recordError("save email failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
     /// Removes `email` from this contact. The section updates from the
     /// repository's change notification, like every other change to it.
     private func removeHighlightedEmail(_ email: HighlightedEmail) {
         let contactID = loadedContactID ?? id
-        Task {
+        let previous = highlightDropTask
+        highlightDropTask = Task {
+            await previous?.value
             do {
                 try await repository.removeHighlightedEmail(id: email.id, for: contactID)
             } catch {
@@ -2008,9 +2042,9 @@ struct ContactDetailView: View {
     /// Writes the full headers of `email`, unless the user removed it while
     /// its file loaded. A remove writes a tombstone, and `highlightEmail`
     /// revives a tombstone (a re-drop brings a removed email back), so the
-    /// write runs only while the email is still on the contact. A remove is
-    /// not part of the drop chain: one that lands between this check and
-    /// the write is still revived; the window is one sidecar read.
+    /// write runs only while the email is still on the contact. Removes on
+    /// this card share the write chain, so they cannot interleave this check
+    /// and the write.
     private func writeLateFileHeaders(_ email: HighlightedEmail, for contactID: ContactID) async {
         let current = await repository.highlightedEmails(for: contactID)
         guard current.contains(where: { $0.id == email.id }) else {
@@ -4544,5 +4578,43 @@ private struct EditFieldAlert: ViewModifier {
                 field = nil
             }
         }
+    }
+}
+
+/// A separate hit region for the star keeps saving from opening Mail.
+private struct EmailFavoriteRow<Content: View>: View {
+    let isSaved: Bool
+    let onToggle: () -> Void
+    @ViewBuilder let content: () -> Content
+    @State private var isHovering = false
+
+    private var actionLabel: String { isSaved ? "Remove Saved Email" : "Save Email" }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            content()
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Button(action: onToggle) {
+                Image(systemName: isSaved ? "star.fill" : "star")
+                    .foregroundStyle(.tint)
+                    #if targetEnvironment(macCatalyst)
+                    .frame(width: 32, height: 32)
+                    #else
+                    .frame(width: 44, height: 44)
+                    #endif
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.borderless)
+            .accessibilityLabel(actionLabel)
+            .help(actionLabel)
+            #if targetEnvironment(macCatalyst)
+            .opacity(isHovering ? 1 : 0)
+            .allowsHitTesting(isHovering)
+            .accessibilityHidden(!isHovering)
+            #endif
+        }
+        .contentShape(Rectangle())
+        .onHover { isHovering = $0 }
+        .accessibilityAction(named: Text(actionLabel), onToggle)
     }
 }

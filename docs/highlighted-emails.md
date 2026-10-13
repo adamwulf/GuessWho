@@ -1,6 +1,6 @@
 # Highlighted emails
 
-A highlighted email is one email message the user dropped onto a contact to
+A highlighted email is one email message the user dropped onto a contact or starred to
 keep with it: Message-ID, subject, sender name and address, sent date, and the
 time it was dropped. The contact card lists them in a "Highlighted Emails"
 section, separate from the "Recent Email" section that lists mail the Mail
@@ -15,7 +15,7 @@ from mail activity:
 
 | | Mail activity | Highlighted email |
 |---|---|---|
-| Who adds it | The Mail extension, automatically | The user, by a drop |
+| Who adds it | The Mail extension, automatically | The user, by a drop or star |
 | Sender | The contact | Any address |
 | Moves `lastInteracted` | Yes, forward only | Never |
 | Retention | Newest 100 | No limit |
@@ -280,9 +280,9 @@ drop highlight\[^drop].
     3. **No revive.** A remove writes a tombstone and a highlight revives a
        tombstone, so the late link first reads the contact's highlighted
        emails and writes only when the email is still there: a row the user
-       removed while the file loaded stays removed. A remove is not part of
-       the write chain, so a remove that lands between that read and the
-       write is still revived; the window is one sidecar read.
+       removed while the file loaded stays removed. Removes on the same card
+       share the write chain, so they cannot land between that read and write.
+       A remove from another window or device can still race that check.
 - **The log for a hand test** (channel `app.mail-drop`, at info, so the
   default log floor keeps it):
     - `list drop target installed` (with the search `attempt`) once the
@@ -497,6 +497,31 @@ The merge is the LinkedIn import's for each field\[^importValues]:
 
 ### The section
 
+Recent Email rows have a **Save Email** star, revealed on hover on Catalyst
+and always visible on touch devices. The context menu also offers Save Email\[^starUI].
+Starring copies the message into Highlighted Emails using the existing write
+API and the same serial write chain as drops. It preserves the Message-ID,
+subject, and sender; the received date supplies the message date because the
+automatic journal has no Date header\[^activityMapping]. Saving does not change
+`lastInteracted` or delete the automatic activity\[^write].
+
+Recent Email excludes every message currently in Highlighted Emails, including
+messages saved by a drop, before taking the ten newest. Matching uses the
+normalized Message-ID, since the two cell families have different UUIDs. The
+filter is derived from the current saved list, so its existing reload
+notifications update both sections together\[^savedFilter].
+
+Highlighted rows have a filled star, also revealed on hover on Catalyst, with
+**Remove Saved Email** as its action\[^starUI].
+Unstarring uses the same tombstone removal as the existing Remove menu item.
+If the automatic activity is still retained and ranks in the newest ten
+unsaved messages, it reappears in Recent Email. Starring it again revives the
+saved email with fresh activity metadata, following the existing revive rule:
+an earlier drop's sender name and Date-header sent date are not restored; the
+row uses the sender address and received date instead\[^write]. Stars, drops,
+late file updates, and removals on a card share one serial write chain\[^starUI].
+No storage format change or migration is needed.
+
 The contact card shows a **Highlighted Emails** section directly above Recent
 Email\[^section]. It lists every highlighted email in the repository order,
 with no cap, and is hidden when there are none. A row has the Recent Email
@@ -538,6 +563,9 @@ read may publish. The full load uses the same gate, so a re-read that started
 later wins over it.
 
 \[^key]: [HighlightedEmail.cellKey / cellKeyPrefix](../Sources/GuessWhoSync/HighlightedEmail.swift:HighlightedEmail.cellKey)
+\[^starUI]: [ContactDetailView.saveMailActivity / removeHighlightedEmail / EmailFavoriteRow](../App/GuessWho/ContactDetailView.swift:ContactDetailView.saveMailActivity)
+\[^activityMapping]: [HighlightedEmail.init?(activity:highlightedAt:)](../Sources/GuessWhoSync/HighlightedEmail.swift:HighlightedEmail.init)
+\[^savedFilter]: [MailActivity.excludingHighlightedEmails](../Sources/GuessWhoSync/MailActivity.swift:MailActivity.excludingHighlightedEmails)
 \[^value]: [HighlightedEmail.cellValue(overlaying:)](../Sources/GuessWhoSync/HighlightedEmail.swift:HighlightedEmail.cellValue)
 \[^decode]: [HighlightedEmail.init?(cellKey:cell:)](../Sources/GuessWhoSync/HighlightedEmail.swift:HighlightedEmail.init)
 \[^fields]: [GuessWhoSync.fields(at:) skips HighlightedEmail.isCellKey](../Sources/GuessWhoSync/GuessWhoSync.swift:GuessWhoSync.fields)

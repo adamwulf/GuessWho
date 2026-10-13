@@ -17,6 +17,13 @@ Emails the user drops onto a contact are NOT mail activity: they are a separate
 `lastInteracted` move, no retention, tombstone removal). See
 [`highlighted-emails.md`](highlighted-emails.md).
 
+Starring a Recent Email row copies its metadata into a highlighted email; the
+automatic activity stays and remains subject to retention. Recent Email hides
+all saved messages using `MailActivity.excludingHighlightedEmails`, then takes
+the ten newest remaining messages. Unstarring removes the saved entry and lets
+a retained automatic message appear again; see [the highlighted-email section
+behavior](highlighted-emails.md#the-section).
+
 ## Synced format
 
 Each activity is **one cell** on the contact's sidecar envelope (kind
