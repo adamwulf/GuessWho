@@ -74,12 +74,17 @@ private struct EditorTabStop: ViewModifier {
                     backward: backward,
                     in: tabOrder
                 ) else { return .ignored }
-                focus.wrappedValue = next
-                // The next field can be below the visible part of the form,
-                // and a `List` builds a row only when it comes on screen, so
-                // bring its row into view.
-                withAnimation {
-                    scrollProxy?.scrollTo(Self.row(of: next))
+                // The next field can be outside the visible part of the form
+                // (the next row below, or the first row after a wrap), and a
+                // `List` builds a row only when it comes on screen: a field
+                // with no row yet can't take focus. So scroll its row into
+                // view first, with no animation, and move focus on a later
+                // main-actor turn, once the List has had the chance to build
+                // the row (the same pattern as
+                // `ScrollToHighlightedEmailModifier`).
+                scrollProxy?.scrollTo(Self.row(of: next))
+                Task { @MainActor in
+                    focus.wrappedValue = next
                 }
                 return .handled
             }
