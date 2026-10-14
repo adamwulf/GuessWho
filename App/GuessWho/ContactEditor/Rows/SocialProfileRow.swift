@@ -3,6 +3,7 @@ import GuessWhoSync
 
 struct SocialProfileRow: View {
     @Binding var model: ContactEditModel
+    let focus: ContactEditorFocus
     var body: some View {
         TitledSection("Social Profile") {
             ForEach(model.edited.socialProfiles.indices, id: \.self) { idx in
@@ -24,8 +25,11 @@ struct SocialProfileRow: View {
                     // clears the other, so a stale derived URL never survives
                     // a username change.
                     TextField("Username or URL", text: identityBinding(idx: idx))
+                        .focused(focus, equals: .socialProfile(idx))
+                        .editorTabStop(focus)
                 }
                 .centeredRowContent()
+                .editorRow(.socialProfile(idx))
             }
             .onDelete { offsets in
                 model.edited.socialProfiles.remove(atOffsets: offsets)

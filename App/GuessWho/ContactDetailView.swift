@@ -790,6 +790,9 @@ struct ContactDetailView: View {
             target: highlightScrollTarget,
             onScroll: { highlightScrollIDs = [] }
         ))
+        // Lets Tab in the inline editor bring a field below the visible part
+        // into view.
+        .contactEditorScrolling()
         // Inject the owned editMode binding so EditButton drives this view's own
         // .editMode state, not an ambient one we can't tear down. Reset to
         // .inactive on every contact-edit exit path.
@@ -816,28 +819,17 @@ struct ContactDetailView: View {
     }
 
     /// Editor section stack shown when `isEditingContact` is true, reusing the
-    /// sheet editor's row components. The binding falls back to a throwaway
-    /// empty model — never hit (the call site is gated on `editModel != nil`),
-    /// but the nil-coalesce keeps the binding total without a runtime trap.
+    /// sheet editor's rows (`ContactEditorSections`). The binding falls back to
+    /// a throwaway empty model — never hit (the call site is gated on
+    /// `editModel != nil`), but the nil-coalesce keeps the binding total
+    /// without a runtime trap.
     @ViewBuilder
     private var editingSections: some View {
         let binding = Binding<ContactEditModel>(
             get: { editModel ?? ContactEditModel(original: contact ?? Contact()) },
             set: { editModel = $0 }
         )
-        NameFieldsRow(model: binding)
-        OrgFieldsRow(model: binding)
-        PhoneRow(model: binding)
-        EmailRow(model: binding)
-        URLRow(model: binding)
-        PostalAddressRow(model: binding)
-        BirthdayRow(model: binding)
-        DateRow(model: binding)
-        RelationRow(model: binding)
-        SocialProfileRow(model: binding)
-        IMRow(model: binding)
-        PhoneticNameRow(model: binding)
-        ContactNotesRow(model: binding)
+        ContactEditorSections(model: binding)
         editableSidecarFieldsSection
         editableNotesSection
         Section {
