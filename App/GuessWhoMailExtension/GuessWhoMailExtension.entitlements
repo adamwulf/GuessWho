@@ -8,11 +8,15 @@
 	<!-- The App Group ONLY (no iCloud, no Contacts, no network): the extension
 	     reads the contact cache the app publishes and appends to the
 	     incoming-message journal the app drains, both in the shared container.
-	     Expands at signing time from GUESSWHO_APP_GROUP in
-	     Config/GuessWhoMailExtension-Shared.xcconfig — the same
-	     <TeamID>.com.milestonemade.guesswho group as the app's
-	     GuessWho-MacCatalyst.entitlements, and the value the extension's
-	     GuessWhoAppGroup Info.plist key carries, so the two can't drift. -->
+	     The copy embedded in GuessWho.app is signed by the app's "Build and
+	     Embed GuessWhoMailExtension" phase, which replaces the placeholder
+	     (with sed) by the APP target's GUESSWHO_APP_GROUP — the
+	     <TeamID>.com.milestonemade.guesswho group of the app's
+	     GuessWho-MacCatalyst.entitlements — and fails the build when that
+	     differs from the extension's GuessWhoAppGroup Info.plist value (from
+	     GUESSWHO_APP_GROUP in Config/GuessWhoMailExtension-Shared.xcconfig), so
+	     the two can't drift. Only a standalone build of this target expands it
+	     from the extension's own xcconfig. -->
 	<key>com.apple.security.application-groups</key>
 	<array>
 		<string>$(GUESSWHO_APP_GROUP)</string>
