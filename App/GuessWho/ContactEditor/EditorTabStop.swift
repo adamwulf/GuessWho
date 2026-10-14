@@ -68,8 +68,10 @@ extension View {
     /// fields (custom fields, dated notes); the host lists `stop` in
     /// `ContactEditorSections`' trailing stops.
     ///
-    /// Those fields keep their own focus state too, which decides when they
-    /// save (a custom field commits when it loses focus). A view can carry
+    /// Those fields keep their own focus state too. A custom field commits
+    /// when it loses focus. A dated note does not save on focus loss: it
+    /// keeps its draft until Done or Cmd-Return (or opening another note),
+    /// and its focus only picks which note those commit. A view can carry
     /// more than one `.focused`, and each binding follows the one keyboard
     /// focus, so moving the editor focus away by Tab is the same focus loss
     /// as a click elsewhere. The hand check verifies it: a custom field's

@@ -830,10 +830,12 @@ struct ContactDetailView: View {
             set: { editModel = $0 }
         )
         // The custom fields and dated notes ride inside the editor so their
-        // text fields bind the editor's focus too (they keep their own focus
-        // states, which decide when they save): they are stops of the tab
-        // order, after Notes. Delete Contact rides inside too, so Tab from
-        // the button stays in the form.
+        // text fields bind the editor's focus too: they are stops of the tab
+        // order, after Notes. They keep their own focus states. A custom
+        // field commits when it loses focus; a note keeps its draft until
+        // Done or Cmd-Return (or opening another note), and its focus only
+        // picks which note those commit. Delete Contact rides inside too, so
+        // Tab from the button stays in the form.
         ContactEditorSections(model: binding, trailingStops: trailingEditorStops) { editorFocus in
             editableSidecarFieldsSection(editorFocus: editorFocus)
             editableNotesSection(editorFocus: editorFocus)
