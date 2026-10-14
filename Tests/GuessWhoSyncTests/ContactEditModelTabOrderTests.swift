@@ -1,0 +1,106 @@
+import Foundation
+import Testing
+@testable import GuessWhoSync
+
+@Suite("ContactEditModel tab order")
+struct ContactEditModelTabOrderTests {
+
+    private static let nameAndOrganization: [ContactEditModel.Field] = [
+        .namePrefix, .givenName, .middleName, .familyName, .nameSuffix, .nickname,
+        .organizationName, .departmentName, .jobTitle,
+    ]
+
+    @Test("A blank contact tabs through the names, the organization fields, then Notes")
+    func blankContactOrder() {
+        let model = ContactEditModel(newContactSeed: Contact())
+        #expect(model.tabOrder(includingPhoneticName: false) == Self.nameAndOrganization + [.note])
+    }
+
+    @Test("Every entry of every multi-value row is a stop, in row order")
+    func multiValueRowsInRowOrder() {
+        let contact = Contact(
+            phoneNumbers: [
+                LabeledValue(label: "mobile", value: "1"),
+                LabeledValue(label: "home", value: "2"),
+            ],
+            emailAddresses: [LabeledValue(label: "home", value: "a@example.com")],
+            postalAddresses: [LabeledPostalAddress(label: "home", value: PostalAddress())],
+            urlAddresses: [LabeledValue(label: "home", value: "https://example.com")],
+            socialProfiles: [
+                LabeledSocialProfile(
+                    label: "",
+                    value: SocialProfile(urlString: "", username: "a", userIdentifier: "", service: "Twitter")
+                )
+            ],
+            instantMessageAddresses: [
+                LabeledInstantMessageAddress(
+                    label: "",
+                    value: InstantMessageAddress(username: "a", service: "Skype")
+                )
+            ],
+            contactRelations: [LabeledContactRelation(label: "friend", value: ContactRelation(name: "B"))]
+        )
+        let model = ContactEditModel(original: contact)
+
+        let expected: [ContactEditModel.Field] = Self.nameAndOrganization + [
+            .phone(0), .phone(1),
+            .email(0),
+            .url(0),
+            .street(0), .city(0), .state(0), .postalCode(0), .country(0),
+            .relation(0),
+            .socialProfile(0),
+            .instantMessage(0),
+            .note,
+        ]
+        #expect(model.tabOrder(includingPhoneticName: false) == expected)
+    }
+
+    @Test("The hidden guesswho:// URL is not a stop: only the URLs the editor shows are")
+    func hiddenURLIsNotAStop() {
+        let contact = Contact(urlAddresses: [
+            LabeledValue(label: "GuessWho", value: "guesswho://contact/550e8400-e29b-41d4-a716-446655440000"),
+            LabeledValue(label: "home", value: "https://example.com"),
+        ])
+        let model = ContactEditModel(original: contact)
+        let urls = model.tabOrder(includingPhoneticName: false).filter {
+            if case .url = $0 { return true }
+            return false
+        }
+        #expect(urls == [.url(0)])
+    }
+
+    @Test("The phonetic fields are stops only while their group is open, just before Notes")
+    func phoneticNameOnlyWhenOpen() {
+        let model = ContactEditModel(newContactSeed: Contact())
+        #expect(model.tabOrder(includingPhoneticName: true) == Self.nameAndOrganization + [
+            .phoneticGivenName, .phoneticMiddleName, .phoneticFamilyName, .note,
+        ])
+        #expect(!model.tabOrder(includingPhoneticName: false).contains(.phoneticGivenName))
+    }
+
+    @Test("Tab moves to the next field and Shift-Tab to the previous one")
+    func tabAndShiftTabStep() {
+        let model = ContactEditModel(newContactSeed: Contact())
+        #expect(model.tabStop(from: .givenName, backward: false, includingPhoneticName: false) == .middleName)
+        #expect(model.tabStop(from: .givenName, backward: true, includingPhoneticName: false) == .namePrefix)
+        #expect(model.tabStop(from: .nickname, backward: false, includingPhoneticName: false) == .organizationName)
+    }
+
+    @Test("Tab wraps at both ends, so it never leaves the editor")
+    func wrapsAtBothEnds() {
+        let model = ContactEditModel(newContactSeed: Contact())
+        #expect(model.tabStop(from: .note, backward: false, includingPhoneticName: false) == .namePrefix)
+        #expect(model.tabStop(from: .namePrefix, backward: true, includingPhoneticName: false) == .note)
+    }
+
+    @Test("A field that is not in the order goes to the first field, or the last going backward")
+    func unknownFieldGoesToAnEnd() {
+        let model = ContactEditModel(newContactSeed: Contact())
+        // No phone numbers, so `.phone(0)` has no row.
+        #expect(model.tabStop(from: .phone(0), backward: false, includingPhoneticName: false) == .namePrefix)
+        #expect(model.tabStop(from: .phone(0), backward: true, includingPhoneticName: false) == .note)
+        #expect(model.tabStop(from: nil, backward: false, includingPhoneticName: false) == .namePrefix)
+        // A collapsed phonetic group: its fields are not in the order.
+        #expect(model.tabStop(from: .phoneticFamilyName, backward: false, includingPhoneticName: false) == .namePrefix)
+    }
+}
