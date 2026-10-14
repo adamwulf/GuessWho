@@ -54,9 +54,11 @@ enum MailExtensionStorage {
 /// (subsystem `com.milestonemade.guesswho.mail`, this bundle's id; category =
 /// the label).
 ///
-/// Lines carry fixed messages, counts, states, and compose session IDs —
-/// never an address, name, subject, Message-ID, file path, or error
-/// description. Failures log `LoggedError.fingerprint`.
+/// Lines carry fixed messages, counts, states, compose session IDs, and the
+/// extension's version and build — never an address, name, subject,
+/// Message-ID, file path, or error description. Failures log
+/// `LoggedError.fingerprint`. Labels: `mail.extension` (process start),
+/// `mail.compose`, `mail.message-action`.
 enum MailLog {
     /// The compose popover and the app links it opens.
     static let compose = logger("mail.compose")
@@ -77,6 +79,14 @@ enum MailLog {
         // either); the embed script fails the build before that can ship.
         guard let appGroupID = MailHandoffContainer.appGroupIdentifier() else { return }
         GuessWhoLog.bootstrap(processName: "mail", appGroupID: appGroupID)
+        // Which build Mail is running: a Mail that stays open across an
+        // install can keep talking to the old extension process. Made here,
+        // not as a MailLog logger, whose initializer would re-enter this one.
+        let info = Bundle.main.infoDictionary
+        GuessWhoLog.logger("mail.extension").notice("mail extension started", [
+            "version": info?["CFBundleShortVersionString"] as? String ?? "?",
+            "build": info?["CFBundleVersion"] as? String ?? "?",
+        ])
     }()
 
     /// A swift-log logger made after the bootstrap, so its records reach the

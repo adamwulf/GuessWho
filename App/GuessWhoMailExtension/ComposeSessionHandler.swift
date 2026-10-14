@@ -1,4 +1,5 @@
 import Foundation
+import GuessWhoLogging
 import MailKit
 
 /// Backs the compose-window toolbar button: a popover listing each recipient
@@ -35,6 +36,9 @@ final class ComposeSessionHandler: NSObject, MEComposeSessionHandler {
     }
 
     nonisolated func mailComposeSessionDidBegin(_ session: MEComposeSession) {
+        // These session breadcrumbs show whether Mail called the extension
+        // at all, e.g. for a "no popover" report.
+        MailLog.compose.notice("compose session began", ["session": session.sessionID])
         // Decode the cache now, off the main thread, so the popover's
         // synchronous lookup finds it memoized. User-initiated: a click that
         // lands mid-decode waits on the store's lock from the main thread.
@@ -46,6 +50,7 @@ final class ComposeSessionHandler: NSObject, MEComposeSessionHandler {
 
     nonisolated func mailComposeSessionDidEnd(_ session: MEComposeSession) {
         let sessionID = session.sessionID
+        MailLog.compose.notice("compose session ended", ["session": sessionID])
         DispatchQueue.main.async {
             MainActor.assumeIsolated {
                 self.models[sessionID] = nil
@@ -59,6 +64,11 @@ final class ComposeSessionHandler: NSObject, MEComposeSessionHandler {
         // Synchronous, so the rows are in place when Mail first sizes the
         // popover from the view.
         model.showNow(RecipientsModel.recipients(from: session.mailMessage.allRecipientAddresses))
+        MailLog.compose.notice("popover requested", [
+            "session": session.sessionID,
+            "rows": model.rows.count,
+            "status": String(describing: model.status),
+        ])
         // MailKit's documented reload path: Mail answers by calling
         // annotateAddressesForSession for every To/Cc/Bcc address, which
         // re-runs show(_:) with Mail's current list — a defensive refresh in

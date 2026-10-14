@@ -41,47 +41,67 @@ final class MessageActionHandler: NSObject, MEMessageActionHandler, Sendable {
     /// key without ever asking for the body (`invokeAgainWithBody`).
     var requiredHeaders: [String] { ["message-id"] }
 
-    func decideAction(for message: MEMessage, completionHandler: @escaping (MEMessageActionDecision?) -> Void) {
-        completionHandler(decision(for: message))
+    /// What `decideAction` did with a message, for its log breadcrumb. It
+    /// says nothing about the message itself.
+    private enum Outcome: String {
+        /// Not a newly received message, so it wasn't looked at.
+        case notReceived = "not received"
+        /// No usable From address, or one the contact cache doesn't know.
+        case unknownSender = "unknown sender"
+        /// In the journal (appended now, or already there).
+        case journaled
+        /// Nothing journaled: no shared container, no readable cache, a
+        /// journal failure, no usable Message-ID, or a full journal. The line
+        /// logged just before says which.
+        case notJournaled = "not journaled"
     }
 
-    private func decision(for message: MEMessage) -> MEMessageActionDecision? {
-        guard message.state == .received,
-              let sender = Self.normalizedSender(of: message)
-        else { return nil }
+    func decideAction(for message: MEMessage, completionHandler: @escaping (MEMessageActionDecision?) -> Void) {
+        let result = decision(for: message)
+        Self.log.info("decided message action", ["outcome": result.outcome.rawValue])
+        completionHandler(result.decision)
+    }
+
+    private func decision(for message: MEMessage) -> (decision: MEMessageActionDecision?, outcome: Outcome) {
+        guard message.state == .received else { return (nil, .notReceived) }
+        guard let sender = Self.normalizedSender(of: message) else { return (nil, .unknownSender) }
 
         guard let contactCache, let journal else {
             Self.log.error("shared container unavailable; leaving message unchanged")
-            return nil
+            return (nil, .notJournaled)
         }
 
         let contents: MailContactCacheContents
         do {
-            guard let read = try contactCache.read() else { return nil }
+            guard let read = try contactCache.read() else {
+                Self.log.notice("no contact cache published yet; leaving message unchanged")
+                return (nil, .notJournaled)
+            }
             contents = read
         } catch {
             Self.log.error("contact cache read failed; leaving message unchanged", ["error": LoggedError.fingerprint(error)])
-            return nil
+            return (nil, .notJournaled)
         }
-        guard contents.isKnown(address: sender) else { return nil }
+        guard contents.isKnown(address: sender) else { return (nil, .unknownSender) }
 
         // Journal every known sender — even from a newer-format cache, whose
         // address index is all this build can read.
+        let outcome: Outcome
         do {
-            try record(message, sender: sender, in: journal)
+            outcome = try record(message, sender: sender, in: journal) ? .journaled : .notJournaled
         } catch {
             Self.log.error("journal append failed; leaving message unchanged", ["error": LoggedError.fingerprint(error)])
-            return nil
+            return (nil, .notJournaled)
         }
 
-        guard Self.flagsHighlightedSenders else { return nil }
+        guard Self.flagsHighlightedSenders else { return (nil, outcome) }
         // A newer-format cache yields no summaries, so the message is left
         // unflagged rather than guessed at. Two cards can share the sender's
         // address; their reasons count together.
         let reasons = contents.summaries(forAddress: sender)
             .reduce(into: Set<MailHighlightReason>()) { $0.formUnion($1.highlightReasons) }
-        guard let color = MailFlagColor.color(for: reasons) else { return nil }
-        return .action(.flag(Self.flag(for: color)))
+        guard let color = MailFlagColor.color(for: reasons) else { return (nil, outcome) }
+        return (.action(.flag(Self.flag(for: color))), outcome)
     }
 
     private static func flag(for color: MailFlagColor) -> MEMessageAction.Flag {
@@ -93,14 +113,15 @@ final class MessageActionHandler: NSObject, MEMessageActionHandler, Sendable {
         }
     }
 
-    /// Appends the message's metadata. A message with no usable Message-ID has
-    /// no de-duplication key, so it isn't journaled; neither is one the
-    /// journal has no room for. Neither is a failure — the highlight still
-    /// applies.
-    private func record(_ message: MEMessage, sender: String, in journal: MailIncomingJournal) throws {
+    /// Appends the message's metadata and returns whether the journal holds
+    /// it (appended now, or already there). A message with no usable
+    /// Message-ID has no de-duplication key, so it isn't journaled; neither is
+    /// one the journal has no room for. Neither is a failure — the highlight
+    /// still applies.
+    private func record(_ message: MEMessage, sender: String, in journal: MailIncomingJournal) throws -> Bool {
         guard let messageID = Self.messageIDHeader(of: message).flatMap(MailMessageID.normalize) else {
             Self.log.notice("known sender but no usable Message-ID; not journaled")
-            return
+            return false
         }
         let subject = message.subject.trimmingCharacters(in: .whitespacesAndNewlines)
         let entry = MailIncomingMessage(
@@ -114,7 +135,9 @@ final class MessageActionHandler: NSObject, MEMessageActionHandler, Sendable {
             messageURL: MailMessageID.mailDeepLink(for: messageID))
         if try journal.append(entry) == .droppedForCapacity {
             Self.log.notice("journal full of claimed entries; message not journaled")
+            return false
         }
+        return true
     }
 
     private static func normalizedSender(of message: MEMessage) -> String? {
