@@ -55,9 +55,9 @@ extension View {
     /// own Tab handler (accept the highlighted suggestion) must see the key
     /// first, and it passes the key on when nothing is highlighted.
     ///
-    /// `ContactEditorSections` also puts it on every row of the form, for
-    /// Tab from a control that is not a text field: no stop has focus then,
-    /// so Tab goes to the first stop and Shift-Tab to the last.
+    /// `ContactEditorSections` also puts it on every section of the form,
+    /// for Tab from a control that is not a text field: no stop has focus
+    /// then, so Tab goes to the first stop and Shift-Tab to the last.
     func editorTabStop(_ focus: ContactEditorFocus) -> some View {
         modifier(EditorTabStop(focus: focus))
     }
@@ -70,10 +70,11 @@ extension View {
     ///
     /// Those fields keep their own focus state too, which decides when they
     /// save (a custom field commits when it loses focus). A view can carry
-    /// more than one `.focused`: each binding follows the one keyboard
+    /// more than one `.focused`, and each binding follows the one keyboard
     /// focus, so moving the editor focus away by Tab is the same focus loss
-    /// as a click elsewhere. A nil `focus` (the same field in read mode,
-    /// outside the editor) leaves the text field as it is.
+    /// as a click elsewhere. The hand check verifies it: a custom field's
+    /// value is saved after Tab away. A nil `focus` (the same field in read
+    /// mode, outside the editor) leaves the text field as it is.
     @ViewBuilder
     func editorTabStop(_ stop: ContactEditorStop, focus: ContactEditorFocus?) -> some View {
         if let focus {

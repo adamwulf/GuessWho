@@ -64,12 +64,14 @@ struct ContactEditorSections<Trailing: View>: View {
         // button, the Phonetic Name disclosure). No text field takes the key
         // then, so the system's focus got it and could leave the form (to
         // the list column or its search field). A modifier on a `Group`
-        // reaches each of its views, and one on a `Section` each row, so
-        // every row of the form gets this handler. A text field's own
-        // `editorTabStop` takes the key first, so this runs only for the
-        // other controls. With no stop focused, Tab goes to the first stop
-        // and Shift-Tab to the last (`ContactEditModel.tabStop`): this
-        // handler can't tell where in the form the control is.
+        // applies to each of its views, so every section of the form gets
+        // this handler, for a key press from any control in it. A text
+        // field's own `editorTabStop` takes the key first, so this runs only
+        // for the other controls. With no stop focused, Tab goes to the
+        // first stop and Shift-Tab to the last (`ContactEditModel.tabStop`):
+        // this handler can't tell where in the form the control is. Whether
+        // such a control has keyboard focus at all (so that the key comes
+        // here) is up to the system; the hand check verifies it.
         .editorTabStop($focus)
         .environment(
             \.contactEditorTabOrder,
