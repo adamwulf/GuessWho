@@ -23,6 +23,9 @@ extension View {
     ///   second cancels the edit.
     /// - Tapping a suggestion accepts it. Losing focus closes the menu.
     ///
+    /// The field's system autocorrection — and with it spell-checking and
+    /// predictive text — is turned off, so the menu is its only suggester.
+    ///
     /// `onSubmit` stands in for `.onSubmit` on the field. A `TextField` turns
     /// the Return key into its submit action, and that is where a highlighted
     /// suggestion has to be accepted instead of submitting — so this modifier
@@ -84,6 +87,12 @@ struct AutocompleteModifier: ViewModifier {
     func body(content: Content) -> some View {
         content
             .focused($isFocused)
+            // Our menu is the field's only suggester. System autocorrect
+            // would rewrite a picked name, and its spell-check underlines and
+            // predictions compete with the menu. Spell-checking follows
+            // autocorrection (`UITextSpellCheckingType.default`), so this one
+            // modifier turns off all three.
+            .autocorrectionDisabled()
             .onGeometryChange(for: CGRect.self) { proxy in
                 proxy.frame(in: .global)
             } action: { frame in

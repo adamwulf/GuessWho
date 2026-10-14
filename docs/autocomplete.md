@@ -68,6 +68,11 @@ Both editor surfaces host the menu: the new-contact sheet's `Form`
   there is unsaved work. So one Escape closes the menu, a second cancels
   the edit behind that confirmation.
 - Tapping a row accepts it. Losing focus closes the menu.
+- The field has no system autocorrection, spell-check underlines, or
+  predictive text: the modifier applies `.autocorrectionDisabled()`, and
+  UIKit's default spell-checking and predictions follow autocorrection. The
+  menu is the field's only suggester, and autocorrect cannot rewrite a
+  name the user picked.
 - The menu opens just below the field, or above it when the keyboard, a bar,
   or the host's bottom edge leaves no room. It follows the field as the list
   scrolls and is pinned inside the host's visible band, so a field right
