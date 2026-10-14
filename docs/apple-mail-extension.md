@@ -377,8 +377,15 @@ app (`app-*.log`) and the Safari extension (`extension-*.log`).
   popover and the GuessWho / Add Contact links), `mail.message-action`
   (received messages). The minimum level is info.
 - **Breadcrumbs.** Each process start logs `mail extension started` with the
-  extension's version and build, so the log shows which build Mail is
-  running. A compose window logs `compose session began` and
+  extension's `version` and `build`, the process ID (`pid`), and the
+  modification date of the extension's executable (`executableModified`,
+  never its path). Version and build come from `SharedVersion.xcconfig`:
+  every local build reports 0.1 and 1, and only Xcode Cloud sets real
+  numbers, so they can't tell local builds apart. The executable date can:
+  a local app build sets it when it embeds and signs the extension. Mail
+  still talks to an old extension process if, after the install and a Mail
+  relaunch, no new `mail extension started` line appears, or the newest one
+  has a PID or executable date from before the install. A compose window logs `compose session began` and
   `compose session ended` with its session ID, and a toolbar click logs
   `popover requested` with the session ID, the row count, and the status
   (`ready` or `contactsUnavailable`). Each received message logs
@@ -411,7 +418,8 @@ app (`app-*.log`) and the Safari extension (`extension-*.log`).
   Services. Nothing is written to the App Group, and the app saves nothing
   until the user saves the editor.
 - Its log lines carry fixed messages, counts, states, the compose session ID,
-  the extension's version and build, and, for failures, only the error's
+  the extension's version, build, process ID, and executable modification
+  date, and, for failures, only the error's
   type, `NSError` domain, and code (`LoggedError.fingerprint`) — never an
   error description, file path, coding path, address, name, subject, or
   Message-ID.
@@ -434,14 +442,16 @@ Apple has never documented Mail’s `message:` URL scheme. Mail has long answere
    A Mail that was already running can keep using the old extension process
    and not connect to the new build. Turning the extension off and on in
    **Settings → Extensions** does not restart the extension process (the
-   process ID stays the same). The `mail extension started` line in
-   `mail-*.log` shows the version and build of the process Mail started.
+   process ID stays the same). When Mail next uses the extension, a new
+   `mail extension started` line in `mail-*.log` shows the new process ID
+   and an `executableModified` date from your latest build (local builds
+   all report version 0.1, build 1; see *Logs*).
 
 ## Human runtime checks
 
 Automated tests cover the shared formats, the wake URLs, display-name reading, the new-contact name split, cache projection, address matching, cache publication rules, preservation after a favorite-group read failure, and release of failed mail writes for retry. After enabling the extension, verify the OS-hosted MailKit behavior end to end:
 
-- After installing the build under test, quit Mail with Cmd-Q and open it again (toggling the extension in Mail's Settings does not restart the extension process). Once Mail uses the extension, today's `mail-*.log` in the App Group `Logs/` folder has a new `mail extension started` line with that build's version and build number.
+- After installing the build under test, quit Mail with Cmd-Q and open it again (toggling the extension in Mail's Settings does not restart the extension process). Once Mail uses the extension, today's `mail-*.log` in the App Group `Logs/` folder has a new `mail extension started` line with a new `pid` and an `executableModified` date from this build (local builds all report version 0.1, build 1, so those numbers don't identify the build).
 - Opening a compose window and clicking the toolbar button adds `compose session began` and `popover requested` (with the row count and status) to `mail-*.log`; closing the window adds `compose session ended`. A received message adds `decided message action` with its outcome.
 - Flagging is switched off (`flagsHighlightedSenders`), so no message is flagged; skip this check and the next until it is turned back on. When on: mail from a favorite contact, a favorite group member, a favorite organization member, or a member of a favorite department arrives flagged (blue for a contact, green for a group, orange for an organization or department). Clearing the flag in Mail's Flag menu should work and is unverified. After changing a favorite group in Contacts.app, activate GuessWho before checking the new Mail highlight because this app excludes group-only changes from its Contacts history request.
 - Mail from a known, non-favorite sender arrives unflagged and produces one journal entry; mail from an unknown sender produces none.

@@ -56,8 +56,9 @@ enum MailExtensionStorage {
 /// text, e.g. `label=mail.compose`.
 ///
 /// Lines carry fixed messages, counts, states, compose session IDs, and the
-/// extension's version and build — never an address, name, subject,
-/// Message-ID, file path, or error description. Failures log
+/// extension's version, build, process ID, and executable modification date —
+/// never an address, name, subject, Message-ID, file path, or error
+/// description. Failures log
 /// `LoggedError.fingerprint`. Labels: `mail.extension` (process start),
 /// `mail.compose`, `mail.message-action`.
 enum MailLog {
@@ -80,13 +81,24 @@ enum MailLog {
         // either); the embed script fails the build before that can ship.
         guard let appGroupID = MailHandoffContainer.appGroupIdentifier() else { return }
         GuessWhoLog.bootstrap(processName: "mail", appGroupID: appGroupID)
-        // Which build Mail is running: a Mail that stays open across an
-        // install can keep talking to the old extension process. Made here,
-        // not as a MailLog logger, whose initializer would re-enter this one.
+        // Which process and which build Mail is running: a Mail that stays
+        // open across an install can keep talking to the old extension
+        // process. Every local build reports version 0.1, build 1
+        // (SharedVersion.xcconfig; only Xcode Cloud sets real numbers), so
+        // the line also carries this process's ID and the modification date
+        // of the extension's executable (never its path), which a local app
+        // build sets when it embeds and signs the extension. Made here, not
+        // as a MailLog logger, whose initializer would re-enter this one.
         let info = Bundle.main.infoDictionary
+        let executableModified = (try? Bundle.main.executableURL?
+            .resourceValues(forKeys: [.contentModificationDateKey]))?
+            .contentModificationDate?
+            .formatted(.iso8601) ?? "?"
         GuessWhoLog.logger("mail.extension").notice("mail extension started", [
             "version": info?["CFBundleShortVersionString"] as? String ?? "?",
             "build": info?["CFBundleVersion"] as? String ?? "?",
+            "pid": ProcessInfo.processInfo.processIdentifier,
+            "executableModified": executableModified,
         ])
     }()
 
