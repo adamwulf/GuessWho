@@ -1262,8 +1262,9 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// brand-new-record semantics as Contacts.app), then hand it to `show`,
     /// which opens the standard detail view already in edit mode — the
     /// new-record form IS the edit form. `show` runs on the main actor
-    /// only after the create succeeded; a failure is logged and shows nothing
-    /// (the list is still consistent — nothing was created).
+    /// only after the create succeeded; a failure is logged and shown in an
+    /// alert, and opens nothing (the list is still consistent — nothing was
+    /// created).
     ///
     /// `seed` defaults to a blank person; the Organizations "+" passes a blank
     /// `.organization` seed so the record lands in the Organizations list.
@@ -1284,8 +1285,27 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
                 show(created)
             } catch {
                 Self.contactsLog.error("add-contact: create failed: \(error.localizedDescription)")
+                self.presentAddContactFailureAlert(error: error)
             }
         }
+    }
+
+    /// User-facing alert for a failed "+" create. Plain language only — the
+    /// developer detail is already in the log; `saveErrorCategory` owns the
+    /// message wording, same as the contact editor's save-failure alert.
+    @MainActor
+    private func presentAddContactFailureAlert(error: Error) {
+        let alert = UIAlertController(
+            title: "Couldn’t Add Contact",
+            message: ContactEditModel.saveErrorCategory(error).saveFailureMessage,
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        guard let presenter = topmostPresenter() else {
+            Self.contactsLog.error("add-contact failed alert: NO presenter available")
+            return
+        }
+        presenter.present(alert, animated: true)
     }
 
     // MARK: - State restoration: reopen the saved detail

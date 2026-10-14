@@ -308,6 +308,22 @@ struct ContactEditModelTests {
         #expect(ContactEditModel.saveErrorCategory(high) == .storeRejected("high bound"))
     }
 
+    @Test("NSCocoaErrorDomain XPC connection errors (4097, 4099) map to .contactsUnreachable")
+    func testCocoaXPCConnectionErrorMapping() {
+        // The add-contact failure seen on 2026-10-14: every save failed with
+        // NSCocoaErrorDomain 4097 "Couldn’t communicate with a helper
+        // application." It must not reach the user as that raw text.
+        let interrupted = NSError(domain: "NSCocoaErrorDomain", code: 4097, userInfo: [
+            NSLocalizedDescriptionKey: "Couldn’t communicate with a helper application."
+        ])
+        let invalid = NSError(domain: "NSCocoaErrorDomain", code: 4099, userInfo: [
+            NSLocalizedDescriptionKey: "Couldn’t communicate with a helper application."
+        ])
+        #expect(ContactEditModel.saveErrorCategory(interrupted) == .contactsUnreachable)
+        #expect(ContactEditModel.saveErrorCategory(invalid) == .contactsUnreachable)
+        #expect(!ContactEditModel.SaveErrorCategory.contactsUnreachable.saveFailureMessage.contains("helper"))
+    }
+
     @Test("NSCocoaErrorDomain codes outside the save-failure range fall through to .unknown")
     func testCocoaNonSaveCodeMapping() {
         // A Cocoa error unrelated to persistent-store saves (e.g. a file read

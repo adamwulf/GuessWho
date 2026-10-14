@@ -197,6 +197,15 @@ public struct ContactEditModel: Equatable {
         /// saw, without asserting a cause we can't stand behind. Opening Settings
         /// can't fix it, so this case must NOT offer the Contacts-settings button.
         case storeRejected(String)
+        /// The connection to the system Contacts service failed
+        /// (`NSCocoaErrorDomain` 4097 / 4099, the XPC "interrupted" and
+        /// "invalid" connection errors, whose stock text is "Couldn’t
+        /// communicate with a helper application."). Seen on a running Mac
+        /// app whose every save then failed with "connection to
+        /// ContactsAccountService: Client does not have TCC access". The
+        /// detail is not shown: it names a "helper application", which means
+        /// nothing to the user.
+        case contactsUnreachable
         /// Anything else; carries the underlying error's
         /// `localizedDescription`.
         case unknown(String)
@@ -212,6 +221,8 @@ public struct ContactEditModel: Equatable {
                 return "This contact has been deleted on another device. Tap Cancel to refresh."
             case .storeRejected(let detail):
                 return "This change to the contact couldn’t be saved: \(detail)"
+            case .contactsUnreachable:
+                return Self.contactsUnreachableMessage
             case .unknown(let detail):
                 return detail
             }
@@ -230,10 +241,15 @@ public struct ContactEditModel: Equatable {
                 return "Contact already deleted."
             case .storeRejected(let detail):
                 return "This contact couldn’t be deleted: \(detail)"
+            case .contactsUnreachable:
+                return Self.contactsUnreachableMessage
             case .unknown(let detail):
                 return detail
             }
         }
+
+        private static let contactsUnreachableMessage =
+            "GuessWho couldn’t communicate with Apple Contacts. Quit and reopen GuessWho, then try again."
     }
 
     /// Map an arbitrary `Error` (typically `CNError`, but also the
@@ -290,6 +306,10 @@ public struct ContactEditModel: Equatable {
             // NSPersistentStoreSaveError (134060) … generic Core Data save
             // failures (incl. 134092). The store rejected the write; cause TBD.
             return .storeRejected(description)
+        case 4097, 4099:
+            // NSXPCConnectionInterrupted / NSXPCConnectionInvalid: the
+            // connection to the Contacts service failed, not this write.
+            return .contactsUnreachable
         default:
             return .unknown(description)
         }

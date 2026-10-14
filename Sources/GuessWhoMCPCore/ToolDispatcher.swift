@@ -2762,7 +2762,7 @@ public actor ToolDispatcher {
             return .error(
                 helperId: helperId, messageId: messageId,
                 code: .invalidParams, message: WireErrorMessage.contactFieldRejected)
-        case .storeRejected, .unknown:
+        case .storeRejected, .contactsUnreachable, .unknown:
             return .error(
                 helperId: helperId, messageId: messageId,
                 code: .writeFailed, message: WireErrorMessage.writeFailed)
