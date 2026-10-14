@@ -23,7 +23,9 @@ extension ContactEditModel {
 
     /// The editor's text fields in on-screen order: the order Tab moves
     /// through them. It must list the fields in the same order as the
-    /// editor's rows draw them (`ContactEditorSections` in the app).
+    /// editor's rows draw them (`ContactEditorSections` in the app). It
+    /// holds only the contact's own fields; a host that shows more text
+    /// fields after them puts their stops after this order (see `tabStop`).
     ///
     /// Only text fields are stops. The label menus, toggles, date pickers,
     /// and buttons between them are skipped, the same as Tab in Contacts on
@@ -75,14 +77,18 @@ extension ContactEditModel {
         return order
     }
 
-    /// The field Tab moves to from `field` in `order` (a `tabOrder`): the
-    /// next one, or the previous one when `backward` (Shift-Tab). It wraps
-    /// at both ends, so Tab never leaves the editor. A field that is not in
-    /// the order (nil, or a field whose entry was just removed) moves to the
-    /// first field, or to the last one when going backward. Nil only for an
-    /// empty order.
-    public static func tabStop(from field: Field?, backward: Bool, in order: [Field]) -> Field? {
-        guard let field, let index = order.firstIndex(of: field) else {
+    /// The stop Tab moves to from `stop` in `order`: the next one, or the
+    /// previous one when `backward` (Shift-Tab). It wraps at both ends, so
+    /// Tab never leaves the editor. A stop that is not in the order (nil, or
+    /// a field whose entry was just removed) moves to the first stop, or to
+    /// the last one when going backward. Nil only for an empty order.
+    ///
+    /// `order` is a `tabOrder`, or a host's order that adds stops of its own
+    /// after it: the app's inline editor wraps each `Field` in its own stop
+    /// type and appends the text fields it shows after the contact's fields
+    /// (custom fields and dated notes, which this model does not hold).
+    public static func tabStop<Stop: Equatable>(from stop: Stop?, backward: Bool, in order: [Stop]) -> Stop? {
+        guard let stop, let index = order.firstIndex(of: stop) else {
             return backward ? order.last : order.first
         }
         let step = backward ? order.count - 1 : 1

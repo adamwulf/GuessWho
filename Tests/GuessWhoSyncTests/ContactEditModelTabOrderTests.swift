@@ -170,7 +170,35 @@ struct ContactEditModelTabOrderTests {
 
     @Test("An empty order has no stop")
     func emptyOrderHasNoStop() {
-        #expect(ContactEditModel.tabStop(from: .givenName, backward: false, in: []) == nil)
-        #expect(ContactEditModel.tabStop(from: nil, backward: true, in: []) == nil)
+        let empty: [ContactEditModel.Field] = []
+        #expect(ContactEditModel.tabStop(from: .givenName, backward: false, in: empty) == nil)
+        #expect(ContactEditModel.tabStop(from: nil, backward: true, in: empty) == nil)
+    }
+
+    /// A host's stop: one of the contact's fields, or a text field the host
+    /// shows after them, named by an id (as the app's inline editor names a
+    /// custom field or a dated note).
+    private enum HostStop: Equatable {
+        case field(ContactEditModel.Field)
+        case extra(UUID)
+    }
+
+    @Test("A host's stops after the contact's fields: Tab goes through them and wraps")
+    func hostStopsAfterTheContactFields() {
+        let first = UUID()
+        let second = UUID()
+        let order = ContactEditModel(newContactSeed: Contact())
+            .tabOrder(includingPhoneticName: false)
+            .map(HostStop.field) + [.extra(first), .extra(second)]
+
+        #expect(ContactEditModel.tabStop(from: .field(.note), backward: false, in: order) == .extra(first))
+        #expect(ContactEditModel.tabStop(from: .extra(first), backward: false, in: order) == .extra(second))
+        #expect(ContactEditModel.tabStop(from: .extra(second), backward: false, in: order) == .field(.namePrefix))
+        #expect(ContactEditModel.tabStop(from: .field(.namePrefix), backward: true, in: order) == .extra(second))
+        #expect(ContactEditModel.tabStop(from: .extra(second), backward: true, in: order) == .extra(first))
+        #expect(ContactEditModel.tabStop(from: .extra(first), backward: true, in: order) == .field(.note))
+        // A host stop that is gone (its row was removed) goes to an end.
+        #expect(ContactEditModel.tabStop(from: .extra(UUID()), backward: false, in: order) == .field(.namePrefix))
+        #expect(ContactEditModel.tabStop(from: .extra(UUID()), backward: true, in: order) == .extra(second))
     }
 }
