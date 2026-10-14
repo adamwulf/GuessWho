@@ -67,7 +67,7 @@ struct LabelPicker: View {
     private func editorFocused(_ textField: some View) -> some View {
         if let focus, let field {
             textField
-                .focused(focus, equals: field)
+                .focused(focus, equals: .field(field))
                 .editorTabStop(focus)
         } else {
             textField

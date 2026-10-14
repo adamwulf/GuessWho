@@ -20,7 +20,7 @@ struct ContactEditorSections<Trailing: View>: View {
     /// none of the contact's fields focused, Tab from them goes to the
     /// first field and Shift-Tab to the last, so the key stays in the form.
     let trailing: (ContactEditorFocus) -> Trailing
-    @FocusState private var focus: ContactEditModel.Field?
+    @FocusState private var focus: ContactEditorStop?
     /// Whether the Phonetic Name group is open. Held here, not in its row,
     /// because the tab order needs it: a closed group's fields are not stops.
     @State private var phoneticNameExpanded = false
@@ -56,7 +56,7 @@ struct ContactEditorSections<Trailing: View>: View {
             \.contactEditorTabOrder,
             model.tabOrder(includingPhoneticName: phoneticNameExpanded) { labelField, label in
                 LabelPicker.showsTextField(for: label, options: Self.labelOptions(for: labelField))
-            }
+            }.map(ContactEditorStop.field)
         )
     }
 

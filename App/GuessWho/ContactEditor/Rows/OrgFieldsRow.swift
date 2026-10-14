@@ -16,10 +16,10 @@ struct OrgFieldsRow: View {
             // a highlighted suggestion is accepted instead. Tab works the same
             // way, so `editorTabStop` comes after the autocomplete.
             TextField("Company", text: $model.edited.organizationName)
-                .focused(focus, equals: .organizationName)
+                .focused(focus, equals: .field(.organizationName))
                 // Every organization name already in the contact book —
                 // records and the company strings people carry.
-                .autocomplete(text: $model.edited.organizationName, onSubmit: { focus.wrappedValue = .departmentName }) {
+                .autocomplete(text: $model.edited.organizationName, onSubmit: { focus.wrappedValue = .field(.departmentName) }) {
                     repository?.organizationNameSuggestionCandidates() ?? []
                 }
                 .editorTabStop(focus)
@@ -27,10 +27,10 @@ struct OrgFieldsRow: View {
                 .centeredRowContent()
                 .editorRow(.organizationName)
             TextField("Department", text: $model.edited.departmentName)
-                .focused(focus, equals: .departmentName)
+                .focused(focus, equals: .field(.departmentName))
                 // Departments already used inside the Company named above;
                 // nothing until that field is filled in.
-                .autocomplete(text: $model.edited.departmentName, onSubmit: { focus.wrappedValue = .jobTitle }) {
+                .autocomplete(text: $model.edited.departmentName, onSubmit: { focus.wrappedValue = .field(.jobTitle) }) {
                     repository?.departmentNameSuggestionCandidates(
                         inOrganizationNamed: model.edited.organizationName
                     ) ?? []
@@ -40,7 +40,7 @@ struct OrgFieldsRow: View {
                 .centeredRowContent()
                 .editorRow(.departmentName)
             TextField("Job Title", text: $model.edited.jobTitle)
-                .focused(focus, equals: .jobTitle)
+                .focused(focus, equals: .field(.jobTitle))
                 .editorTabStop(focus)
                 .onChange(of: model.edited.jobTitle) { _, _ in model.isDirty = true }
                 .centeredRowContent()

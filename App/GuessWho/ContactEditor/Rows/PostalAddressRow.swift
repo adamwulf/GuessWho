@@ -64,23 +64,23 @@ struct PostalAddressEditor: View {
                 field: .addressLabel(index)
             )
             TextField("Street", text: streetBinding)
-                .focused(focus, equals: .street(index))
-                .onSubmit { focus.wrappedValue = .city(index) }
+                .focused(focus, equals: .field(.street(index)))
+                .onSubmit { focus.wrappedValue = .field(.city(index)) }
                 .editorTabStop(focus)
             TextField("City", text: binding(\.city))
-                .focused(focus, equals: .city(index))
-                .onSubmit { focus.wrappedValue = .state(index) }
+                .focused(focus, equals: .field(.city(index)))
+                .onSubmit { focus.wrappedValue = .field(.state(index)) }
                 .editorTabStop(focus)
             TextField("State", text: binding(\.state))
-                .focused(focus, equals: .state(index))
-                .onSubmit { focus.wrappedValue = .postalCode(index) }
+                .focused(focus, equals: .field(.state(index)))
+                .onSubmit { focus.wrappedValue = .field(.postalCode(index)) }
                 .editorTabStop(focus)
             TextField("Postal Code", text: binding(\.postalCode))
-                .focused(focus, equals: .postalCode(index))
-                .onSubmit { focus.wrappedValue = .country(index) }
+                .focused(focus, equals: .field(.postalCode(index)))
+                .onSubmit { focus.wrappedValue = .field(.country(index)) }
                 .editorTabStop(focus)
             TextField("Country", text: binding(\.country))
-                .focused(focus, equals: .country(index))
+                .focused(focus, equals: .field(.country(index)))
                 .editorTabStop(focus)
         }
     }

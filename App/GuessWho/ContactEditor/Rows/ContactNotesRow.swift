@@ -9,7 +9,7 @@ struct ContactNotesRow: View {
         TitledSection("Notes") {
             TextField("Notes", text: $model.edited.note, axis: .vertical)
                 .lineLimit(3...)
-                .focused(focus, equals: .note)
+                .focused(focus, equals: .field(.note))
                 .editorTabStop(focus)
                 .onChange(of: model.edited.note) { _, _ in model.isDirty = true }
                 .centeredRowContent()

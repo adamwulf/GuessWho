@@ -39,7 +39,7 @@ struct RelationRow: View {
                         field: .relationLabel(idx)
                     )
                     TextField("Name", text: name)
-                        .focused(focus, equals: .relation(idx))
+                        .focused(focus, equals: .field(.relation(idx)))
                         // A relation resolves to a contact by display name
                         // (see the detail card), so suggest exactly those —
                         // every contact but this one.

@@ -17,7 +17,7 @@ struct IMRow: View {
                         options: LabelOptions.imService
                     )
                     TextField("Username", text: imBinding(\.username, idx: idx))
-                        .focused(focus, equals: .instantMessage(idx))
+                        .focused(focus, equals: .field(.instantMessage(idx)))
                         .editorTabStop(focus)
                 }
                 .centeredRowContent()

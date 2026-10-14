@@ -25,7 +25,7 @@ struct SocialProfileRow: View {
                     // clears the other, so a stale derived URL never survives
                     // a username change.
                     TextField("Username or URL", text: identityBinding(idx: idx))
-                        .focused(focus, equals: .socialProfile(idx))
+                        .focused(focus, equals: .field(.socialProfile(idx)))
                         .editorTabStop(focus)
                 }
                 .centeredRowContent()

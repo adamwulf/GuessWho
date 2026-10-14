@@ -16,8 +16,8 @@ Two lines: one on the field, one on the container.
 // Interaction, Return). `focus` is the contact editor's focus binding
 // (`ContactEditorFocus`, owned by `ContactEditorSections`).
 TextField("Company", text: $model.edited.organizationName)
-    .focused(focus, equals: .organizationName)
-    .autocomplete(text: $model.edited.organizationName, onSubmit: { focus.wrappedValue = .departmentName }) {
+    .focused(focus, equals: .field(.organizationName))
+    .autocomplete(text: $model.edited.organizationName, onSubmit: { focus.wrappedValue = .field(.departmentName) }) {
         repository?.organizationNameSuggestionCandidates() ?? []
     }
     // Contact editor only: Tab / Shift-Tab to the next / previous field.

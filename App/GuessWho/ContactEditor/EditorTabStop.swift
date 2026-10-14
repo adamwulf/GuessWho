@@ -1,15 +1,22 @@
 import SwiftUI
 import GuessWhoSync
 
+/// One stop of the contact editor's Tab order: the value each text field
+/// of the editor binds to `ContactEditorFocus` with.
+enum ContactEditorStop: Hashable {
+    /// A text field of the contact's own fields (`ContactEditModel.Field`).
+    case field(ContactEditModel.Field)
+}
+
 /// The editor-wide focus every text field of the contact editor binds to.
 /// `ContactEditorSections` owns it and hands it to each row.
-typealias ContactEditorFocus = FocusState<ContactEditModel.Field?>.Binding
+typealias ContactEditorFocus = FocusState<ContactEditorStop?>.Binding
 
 extension EnvironmentValues {
-    /// The contact editor's text fields in tab order
-    /// (`ContactEditModel.tabOrder`). `ContactEditorSections` sets it; empty
+    /// The contact editor's stops in tab order (`ContactEditModel.tabOrder`,
+    /// each field as `.field`). `ContactEditorSections` sets it; empty
     /// outside the editor.
-    @Entry var contactEditorTabOrder: [ContactEditModel.Field] = []
+    @Entry var contactEditorTabOrder: [ContactEditorStop] = []
 
     /// Scrolls the list or form that holds the contact editor. Each editor
     /// host sets it with `contactEditorScrolling()`; nil without one.
@@ -47,7 +54,7 @@ extension View {
     /// it into view (`editorTabStop`). Put it on the row itself — the view a
     /// `List` row is made of — not on a view inside one.
     func editorRow(_ field: ContactEditModel.Field) -> some View {
-        id(field)
+        id(ContactEditorStop.field(field))
     }
 
     /// Give the contact editor's text fields a way to scroll this list or
@@ -96,25 +103,26 @@ private struct EditorTabStop: ViewModifier {
             }
     }
 
-    /// The row that holds `field`, as `editorRow` names it. An address is
+    /// The row that holds `stop`, as `editorRow` names it. An address is
     /// one row with five fields, named by its street. A label text field
     /// shares its entry's row, named by the value field; a date's row is
     /// named by its label field, its only stop.
-    private static func row(of field: ContactEditModel.Field) -> ContactEditModel.Field {
+    private static func row(of stop: ContactEditorStop) -> ContactEditorStop {
+        guard case .field(let field) = stop else { return stop }
         switch field {
         case .city(let index), .state(let index), .postalCode(let index), .country(let index),
              .addressLabel(let index):
-            return .street(index)
+            return .field(.street(index))
         case .phoneLabel(let index):
-            return .phone(index)
+            return .field(.phone(index))
         case .emailLabel(let index):
-            return .email(index)
+            return .field(.email(index))
         case .urlLabel(let index):
-            return .url(index)
+            return .field(.url(index))
         case .relationLabel(let index):
-            return .relation(index)
+            return .field(.relation(index))
         default:
-            return field
+            return stop
         }
     }
 }

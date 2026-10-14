@@ -42,7 +42,7 @@ struct LabeledTextSection: View {
                     #if !targetEnvironment(macCatalyst)
                     .textInputAutocapitalization(.never)
                     #endif
-                    .focused(focus, equals: field(idx))
+                    .focused(focus, equals: .field(field(idx)))
                     .editorTabStop(focus)
                 }
                 .centeredRowContent()
