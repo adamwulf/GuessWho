@@ -13,12 +13,16 @@ Two lines: one on the field, one on the container.
 // the field gains focus), so it may depend on other fields that can only
 // change while this one is unfocused. The field's submit action goes in
 // `onSubmit:` — NOT in `.onSubmit`, which the modifier scopes out (see
-// Interaction, Return).
+// Interaction, Return). `focus` is the contact editor's focus binding
+// (`ContactEditorFocus`, owned by `ContactEditorSections`).
 TextField("Company", text: $model.edited.organizationName)
-    .focused($focus, equals: .organization)
-    .autocomplete(text: $model.edited.organizationName, onSubmit: { focus = .department }) {
+    .focused(focus, equals: .organizationName)
+    .autocomplete(text: $model.edited.organizationName, onSubmit: { focus.wrappedValue = .departmentName }) {
         repository?.organizationNameSuggestionCandidates() ?? []
     }
+    // Contact editor only: Tab / Shift-Tab to the next / previous field.
+    // AFTER `.autocomplete`, so a highlighted suggestion gets Tab first.
+    .editorTabStop(focus)
 
 // The container: once, on the Form / List (or any ancestor) holding the
 // fields. It draws the menu in its own overlay, above every row.
@@ -56,7 +60,11 @@ Both editor surfaces host the menu: the new-contact sheet's `Form`
 - ↓ / ↑ move the highlight; ↑ past the first suggestion clears it.
 - Return or Tab accepts the highlighted suggestion and keeps focus in the
   field. With nothing highlighted, Return runs the field's `onSubmit:` and
-  Tab keeps its usual meaning (next field). Return is taken as the field's
+  the modifier passes Tab on. In the contact editor, Tab and Shift-Tab then
+  go to the next and previous field through `editorTabStop`
+  (`ContactEditor/EditorTabStop.swift`), which must be attached AFTER
+  `.autocomplete` so the autocomplete sees Tab first. A field outside the
+  editor gets the system's Tab behavior. Return is taken as the field's
   submit action, not as a key press: a `TextField` turns a hardware Return
   into a submit, so the modifier owns the submit (`onSubmit` + `submitScope`)
   and the caller's action moves into the `onSubmit:` parameter. An

@@ -22,9 +22,13 @@ extension View {
     /// wrapping at the ends.
     ///
     /// Without it, Tab is left to the system's keyboard focus, which does
-    /// not step through a `List` / `Form`: on Mac Catalyst it leaves the
-    /// form for the next control in the window, the list column's search
-    /// field. Taking the key here keeps it in the form.
+    /// not step through a `List` / `Form`. In the inline editor on Mac
+    /// Catalyst (`ContactDetailView` in the detail column) it left the form
+    /// for the next control in the window, the list column's search field,
+    /// and the unsaved edit could be lost. The new-contact sheet
+    /// (`ContactEditView`) is modal, so Tab can't reach the list from it,
+    /// but the system still doesn't step through its fields. Taking the key
+    /// here keeps it in the form in both editors.
     ///
     /// On a field with `.autocomplete`, attach this AFTER that modifier: its
     /// own Tab handler (accept the highlighted suggestion) must see the key
