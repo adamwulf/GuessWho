@@ -624,6 +624,13 @@ extension ContactsListViewController: ScrollsToTop {
     }
 }
 
+extension ContactsListViewController: RowSelectionRecording {
+    func rowSelectionSnapshot() -> RowSelectionSnapshot? {
+        guard isViewLoaded else { return nil }
+        return RowSelectionSnapshot(of: tableView, dataSource: dataSource, owner: self)
+    }
+}
+
 /// Subclasses the diffable data source to expose the section-title hook.
 /// `titleForHeaderInSection` lives on `UITableViewDataSource`, but the diffable
 /// data source's default implementation doesn't forward it — overriding here is

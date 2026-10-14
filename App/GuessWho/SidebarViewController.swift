@@ -1056,6 +1056,13 @@ extension SidebarViewController: UICollectionViewDelegate {
     }
 }
 
+extension SidebarViewController: RowSelectionRecording {
+    func rowSelectionSnapshot() -> RowSelectionSnapshot? {
+        guard isViewLoaded else { return nil }
+        return RowSelectionSnapshot(of: collectionView, dataSource: dataSource, owner: self)
+    }
+}
+
 // MARK: - GroupContextMenuEmailResponder
 
 extension SidebarViewController: GroupContextMenuEmailResponder {

@@ -747,6 +747,13 @@ extension EventsListViewController: ScrollsToTop {
     }
 }
 
+extension EventsListViewController: RowSelectionRecording {
+    func rowSelectionSnapshot() -> RowSelectionSnapshot? {
+        guard isViewLoaded else { return nil }
+        return RowSelectionSnapshot(of: tableView, dataSource: dataSource, owner: self)
+    }
+}
+
 // MARK: - UISearchResultsUpdating
 
 extension EventsListViewController: UISearchResultsUpdating {
