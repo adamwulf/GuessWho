@@ -11,12 +11,27 @@ import GuessWhoSync
 /// the next field of the same row on Return. The host puts
 /// `contactEditorScrolling()` on its `List` / `Form` so Tab can bring a
 /// field below the visible part into view.
-struct ContactEditorSections: View {
+struct ContactEditorSections<Trailing: View>: View {
     @Binding var model: ContactEditModel
+    /// Sections the host shows after the contact's own fields: the inline
+    /// edit's custom fields and dated notes. They save on their own and
+    /// keep their own focus, so their text fields are not stops of the tab
+    /// order. They get the editor focus anyway, for `editorTabStop`: with
+    /// none of the contact's fields focused, Tab from them goes to the
+    /// first field and Shift-Tab to the last, so the key stays in the form.
+    let trailing: (ContactEditorFocus) -> Trailing
     @FocusState private var focus: ContactEditModel.Field?
     /// Whether the Phonetic Name group is open. Held here, not in its row,
     /// because the tab order needs it: a closed group's fields are not stops.
     @State private var phoneticNameExpanded = false
+
+    init(
+        model: Binding<ContactEditModel>,
+        @ViewBuilder trailing: @escaping (ContactEditorFocus) -> Trailing
+    ) {
+        _model = model
+        self.trailing = trailing
+    }
 
     var body: some View {
         // `ContactEditModel.tabOrder` lists the text fields in this same
@@ -35,6 +50,7 @@ struct ContactEditorSections: View {
             IMRow(model: $model, focus: $focus)
             PhoneticNameRow(model: $model, isExpanded: $phoneticNameExpanded, focus: $focus)
             ContactNotesRow(model: $model, focus: $focus)
+            trailing($focus)
         }
         .environment(
             \.contactEditorTabOrder,
@@ -55,5 +71,13 @@ struct ContactEditorSections: View {
         case .relationLabel: LabelOptions.relation
         default: []
         }
+    }
+}
+
+extension ContactEditorSections where Trailing == EmptyView {
+    /// The editor with nothing after the contact's fields (the new-contact
+    /// sheet).
+    init(model: Binding<ContactEditModel>) {
+        self.init(model: model) { _ in EmptyView() }
     }
 }

@@ -29,7 +29,13 @@ extension View {
     /// On a field with `.autocomplete`, attach this AFTER that modifier: its
     /// own Tab handler (accept the highlighted suggestion) must see the key
     /// first, and it passes the key on when nothing is highlighted.
-    func editorTabStop(_ focus: ContactEditorFocus) -> some View {
+    ///
+    /// A text field that is not a stop of the tab order (a custom field or a
+    /// dated note of the inline edit) can use it too: none of the contact's
+    /// fields has focus then, so Tab goes to the first field and Shift-Tab
+    /// to the last. A nil `focus` (the same field outside the editor)
+    /// leaves Tab alone.
+    func editorTabStop(_ focus: ContactEditorFocus?) -> some View {
         modifier(EditorTabStop(focus: focus))
     }
 
@@ -50,7 +56,7 @@ extension View {
 }
 
 private struct EditorTabStop: ViewModifier {
-    let focus: ContactEditorFocus
+    let focus: ContactEditorFocus?
     @Environment(\.contactEditorTabOrder) private var tabOrder
     @Environment(\.contactEditorScrollProxy) private var scrollProxy
 
@@ -61,6 +67,7 @@ private struct EditorTabStop: ViewModifier {
     func body(content: Content) -> some View {
         content
             .onKeyPress(keys: [.tab, Self.backTab]) { press in
+                guard let focus else { return .ignored }
                 let backward = press.key == Self.backTab || press.modifiers.contains(.shift)
                 guard let next = ContactEditModel.tabStop(
                     from: focus.wrappedValue,
