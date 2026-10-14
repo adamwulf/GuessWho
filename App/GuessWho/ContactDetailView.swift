@@ -1148,7 +1148,7 @@ struct ContactDetailView: View {
 
     /// Let the scene ask this editor before another selection replaces the
     /// card, by the same rule as Cancel. While a save or delete runs, Cancel
-    /// is disabled and the changes are already on their way, so the scene
+    /// is disabled and the outcome no longer depends on leaving, so the scene
     /// doesn't ask either. Bindings, not `self`, per
     /// `ContactEditorHandle.attach`.
     private func reportEditorToScene() {
