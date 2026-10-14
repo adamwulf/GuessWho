@@ -389,9 +389,12 @@ app (`app-*.log`) and the Safari extension (`extension-*.log`).
   did not call the extension (see *Enabling it in Mail*).
 - **Console.** FellerBuncher also sends each line to the unified log, with
   subsystem `com.milestonemade.guesswho.mail` (the extension's bundle id) and
-  the label as the category. Info and notice lines go in at the info level,
-  so turn on **Include Info Messages** in Console, or run
-  `log stream --info --predicate 'subsystem == "com.milestonemade.guesswho.mail"'`.
+  category `default` for every line (GuessWhoLogging sets no category). The
+  label is only in the line text (`label=mail.compose`), so filter on it
+  there, for example
+  `log stream --info --predicate 'subsystem == "com.milestonemade.guesswho.mail" AND eventMessage CONTAINS "label=mail.compose"'`.
+  Info and notice lines go in at the info level, so in Console turn on
+  **Include Info Messages**.
 
 ## Privacy
 

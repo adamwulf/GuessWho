@@ -50,9 +50,10 @@ enum MailExtensionStorage {
 /// FellerBuncher) to this process's own file,
 /// `<AppGroup>/Logs/mail-yyyy-MM-dd.log`, next to the app's `app-*.log` and
 /// the Safari extension's `extension-*.log`, so the app's Export Debug Logs
-/// picks them up. FellerBuncher also echoes each line to the unified log
-/// (subsystem `com.milestonemade.guesswho.mail`, this bundle's id; category =
-/// the label).
+/// picks them up. FellerBuncher also echoes each line to the unified log with
+/// subsystem `com.milestonemade.guesswho.mail` (this bundle's id) and category
+/// `default` (GuessWhoLogging sets no category); the label is only in the line
+/// text, e.g. `label=mail.compose`.
 ///
 /// Lines carry fixed messages, counts, states, compose session IDs, and the
 /// extension's version and build — never an address, name, subject,
