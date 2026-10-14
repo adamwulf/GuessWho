@@ -62,8 +62,10 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     private weak var mailNewContactEditor: UIViewController?
     /// Asks before a navigation replaces a detail column whose contact editor
     /// has unsaved changes. Every list, sidebar and wake path that replaces
-    /// the column goes through it (`confirmingDiscard`); a push inside the
-    /// column keeps the editor on its stack, so it doesn't ask.
+    /// the column goes through it (`confirmingDiscard`), and so does the pop
+    /// back from a group or folder that disappears under a pushed members
+    /// list. A push inside the column keeps the editor on its stack, so it
+    /// doesn't ask; the Back button isn't asked about either.
     private lazy var detailGate = DetailReplacementGate(
         editorWithUnsavedChanges: { [weak self] in self?.unsavedContactEditor()?.gwContactEditor },
         present: { [weak self] question in
@@ -1125,8 +1127,10 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         members.didSelectContacts = { [weak self, weak nav] contacts in
             self?.pushCatalystContactDetailStack(contacts: contacts, on: nav, appDelegate: appDelegate)
         }
-        members.scopeDidDisappear = { [weak nav, weak members] in
-            Self.popBack(from: members, on: nav)
+        // Popping back also removes a card opened from this list, which can
+        // be editing.
+        members.scopeDidDisappear = { [weak self, weak nav, weak members] in
+            self?.confirmingDiscard { _ in Self.popBack(from: members, on: nav) }
         }
         return members
     }
