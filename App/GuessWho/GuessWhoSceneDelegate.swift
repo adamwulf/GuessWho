@@ -968,14 +968,19 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         on nav: UINavigationController,
         appDelegate: GuessWhoAppDelegate
     ) -> UIHostingController<some View> {
+        // Once an organization record with this name exists, the page shows
+        // its real, editable card in place, which reports through this handle.
+        let editor = makeContactEditorHandle()
         let detail = PhantomOrganizationDetailView(key: key, displayName: displayName)
             .environment(appDelegate.service)
             .environment(appDelegate.contactsRepository)
             .environment(appDelegate.contactPhotoLoader)
             .environment(appDelegate.favoritesStore)
+            .environment(\.contactEditorHandle, editor)
         let hosting = UIHostingController(
             rootView: injectCatalystPushHandlers(detail, on: nav, appDelegate: appDelegate)
         )
+        hosting.gwContactEditor = editor
         // The SwiftUI navigationTitle bridges to the nav item, but set the title
         // explicitly too so the column header is right before the first layout.
         hosting.title = displayName
@@ -3593,7 +3598,9 @@ private extension UIViewController {
 
     /// The handle a hosted `ContactDetailView` on the Catalyst secondary
     /// column reports its editor through, so the scene can ask before
-    /// replacing the column (`unsavedContactEditor()`). Nil for anything else.
+    /// replacing the column (`unsavedContactEditor()`). A phantom-organization
+    /// page has one too: it becomes the organization's card in place. Nil for
+    /// anything else.
     var gwContactEditor: ContactEditorHandle? {
         get { objc_getAssociatedObject(self, &Self.gwContactEditorKey) as? ContactEditorHandle }
         set {
