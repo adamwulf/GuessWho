@@ -253,8 +253,9 @@ public struct ContactEditModel: Equatable {
     }
 
     /// Map an arbitrary `Error` (typically `CNError`, but also the
-    /// `NSCocoaErrorDomain` save errors the Contacts backing store throws) into
-    /// a category. Matches stable domain strings and documented integer codes
+    /// `NSCocoaErrorDomain` save errors the Contacts backing store throws, and
+    /// the `NSCocoaErrorDomain` XPC errors when the Contacts service can't be
+    /// reached) into a category. Matches stable domain strings and documented integer codes
     /// instead of importing `Contacts`, so this module stays buildable where
     /// `Contacts` is unavailable.
     public static func saveErrorCategory(_ error: Error) -> SaveErrorCategory {
@@ -291,8 +292,10 @@ public struct ContactEditModel: Equatable {
         }
     }
 
-    /// `NSCocoaErrorDomain` codes the Contacts (Core Data backed) store raises
-    /// when `CNSaveRequest.execute()` is rejected. The persistent-store
+    /// `NSCocoaErrorDomain` codes a Contacts save can fail with. Two families:
+    /// the XPC connection errors (4097 / 4099), when the connection to the
+    /// Contacts service fails before the write is looked at — routed to
+    /// `.contactsUnreachable` — and the store's own rejections. The persistent-store
     /// save-failure family (134060–134095, which includes the field-reported
     /// 134092) all mean "the store rejected this write," but the SPECIFIC cause
     /// lives in `NSUnderlyingError`, not the code. So the whole family routes to

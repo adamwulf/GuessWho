@@ -1285,22 +1285,30 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
                 show(created)
             } catch {
                 Self.contactsLog.error("add-contact: create failed: \(error.localizedDescription)")
-                self.presentAddContactFailureAlert(error: error)
+                self.presentAddContactFailureAlert(error: error, isOrganization: seed.contactType == .organization)
             }
         }
     }
 
-    /// User-facing alert for a failed "+" create. Plain language only — the
-    /// developer detail is already in the log; `saveErrorCategory` owns the
-    /// message wording, same as the contact editor's save-failure alert.
+    /// User-facing alert for a failed "+" create (People or Organizations).
+    /// Plain language only — the developer detail is already in the log;
+    /// `saveErrorCategory` owns the message wording, same as the contact
+    /// editor's save-failure alert, including its Contacts-settings button when
+    /// access was denied.
     @MainActor
-    private func presentAddContactFailureAlert(error: Error) {
+    private func presentAddContactFailureAlert(error: Error, isOrganization: Bool) {
+        let category = ContactEditModel.saveErrorCategory(error)
         let alert = UIAlertController(
-            title: "Couldn’t Add Contact",
-            message: ContactEditModel.saveErrorCategory(error).saveFailureMessage,
+            title: isOrganization ? "Couldn’t Add Organization" : "Couldn’t Add Contact",
+            message: category.saveFailureMessage,
             preferredStyle: .alert
         )
-        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        alert.addAction(UIAlertAction(title: "OK", style: .cancel))
+        if category == .authorizationDenied {
+            alert.addAction(UIAlertAction(title: ContactsSettingsLink.buttonTitle, style: .default) { _ in
+                ContactsSettingsLink.open()
+            })
+        }
         guard let presenter = topmostPresenter() else {
             Self.contactsLog.error("add-contact failed alert: NO presenter available")
             return
