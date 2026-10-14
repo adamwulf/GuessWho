@@ -1,7 +1,7 @@
 import Foundation
+import GuessWhoLogging
 import MailKit
 import Observation
-import os
 
 /// One compose window's recipient list, matched against the contact cache.
 ///
@@ -112,8 +112,7 @@ final class RecipientsModel {
         do {
             contents = try contactCache?.read()
         } catch {
-            Logger.mailExtension("compose").error(
-                "contact cache read failed: \(LoggedError.fingerprint(error), privacy: .public)")
+            MailLog.compose.error("contact cache read failed", ["error": LoggedError.fingerprint(error)])
             contents = nil
         }
         // Only a fully readable snapshot has details to show; a newer-format

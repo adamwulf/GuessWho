@@ -1,6 +1,6 @@
 import Foundation
+import GuessWhoLogging
 import MailKit
-import os
 
 /// Looks at each newly downloaded message's sender, flags mail from
 /// highlighted contacts (the flag color follows why they are highlighted, see
@@ -19,7 +19,7 @@ final class MessageActionHandler: NSObject, MEMessageActionHandler, Sendable {
         contactCache: MailExtensionStorage.contactCache,
         journal: MailExtensionStorage.journal)
 
-    private static let log = Logger.mailExtension("message-action")
+    private static let log = MailLog.messageAction
 
     /// Whether mail from a highlighted sender gets a flag. Off for now: the
     /// popover's contact details are being built first. The flag logic below
@@ -60,7 +60,7 @@ final class MessageActionHandler: NSObject, MEMessageActionHandler, Sendable {
             guard let read = try contactCache.read() else { return nil }
             contents = read
         } catch {
-            Self.log.error("contact cache read failed; leaving message unchanged: \(LoggedError.fingerprint(error), privacy: .public)")
+            Self.log.error("contact cache read failed; leaving message unchanged", ["error": LoggedError.fingerprint(error)])
             return nil
         }
         guard contents.isKnown(address: sender) else { return nil }
@@ -70,7 +70,7 @@ final class MessageActionHandler: NSObject, MEMessageActionHandler, Sendable {
         do {
             try record(message, sender: sender, in: journal)
         } catch {
-            Self.log.error("journal append failed; leaving message unchanged: \(LoggedError.fingerprint(error), privacy: .public)")
+            Self.log.error("journal append failed; leaving message unchanged", ["error": LoggedError.fingerprint(error)])
             return nil
         }
 

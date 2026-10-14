@@ -44,17 +44,20 @@ GUESSWHO_APP_GROUP = $(DEVELOPMENT_TEAM).com.milestonemade.guesswho
 
 // Platform: NATIVE macOS. MailKit is unavailable to Mac Catalyst, so this
 // overrides the project-level SDKROOT = iphoneos. MailKit needs macOS 12; the
-// floor matches the project's macOS 14.
+// floor is the package's macOS 15 (Package.swift), which the GuessWhoLogging
+// product requires. The Catalyst host app's iOS 26 floor already means
+// macOS 26, so this costs no Mac the app runs on.
 SDKROOT = macosx
 SUPPORTED_PLATFORMS = macosx
-MACOSX_DEPLOYMENT_TARGET = 14.0
+MACOSX_DEPLOYMENT_TARGET = 15.0
 
-// No Swift packages. Linking the app's package graph (GuessWhoLogging, …)
-// into a macOS target built in the same xcodebuild as the Catalyst app makes
-// archive planning emit duplicate package build commands (see the app's
-// "Build and Embed guesswho-cli" phase), so the extension stays
-// Foundation/AppKit/SwiftUI/MailKit only. The file format it shares with the
-// app is compiled from App/GuessWhoMailShared/ into both targets.
+// Swift packages: GuessWhoLogging only (FellerBuncher file logging to
+// <AppGroup>/Logs/mail-*.log). Linking packages is safe only because this
+// target builds in its own nested xcodebuild (the app's "Build and Embed
+// GuessWhoMailExtension" phase): a macOS target and the Catalyst app that
+// share packages in ONE xcodebuild collide in archive planning. The file
+// format it shares with the app is compiled from App/GuessWhoMailShared/ into
+// both targets.
 
 // Swift
 CLANG_ENABLE_MODULES = YES
