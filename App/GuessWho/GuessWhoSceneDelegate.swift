@@ -60,6 +60,23 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// The Mail Add Contact editor while it is on screen, so another Add
     /// click keeps it instead of stacking a second one.
     private weak var mailNewContactEditor: UIViewController?
+    /// Asks before a navigation replaces a detail column whose contact editor
+    /// has unsaved changes. Every list, sidebar and wake path that replaces
+    /// the column goes through it (`confirmingDiscard`); a push inside the
+    /// column keeps the editor on its stack, so it doesn't ask.
+    private lazy var detailGate = DetailReplacementGate(
+        editorWithUnsavedChanges: { [weak self] in self?.unsavedContactEditor()?.gwContactEditor },
+        present: { [weak self] question in
+            guard let self, let presenter = self.topmostPresenter() else { return false }
+            self.presentAfterAnyDismissal(on: presenter) { presenter.present(question, animated: true) }
+            return true
+        },
+        keepEditing: { [weak self] in self?.restoreEditStartSelection() }
+    )
+    /// The sidebar and list selection when the detail column's editor began
+    /// editing: what Keep Editing puts back, since the click it cancels has
+    /// already moved the highlight.
+    private var editStartSelection: [RowSelectionSnapshot] = []
     #endif
 
     func scene(
@@ -348,6 +365,16 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     }
 
     private func handleSidebarSelection(_ selection: SidebarSelection, appDelegate: GuessWhoAppDelegate) {
+        // Clicking the section already showing keeps the detail column
+        // (`showSection`), so only the other rows ask first.
+        if case .section(let tab) = selection, tab == mountedSection {
+            routeSidebarSelection(selection, appDelegate: appDelegate)
+        } else {
+            confirmingDiscard { $0.routeSidebarSelection(selection, appDelegate: appDelegate) }
+        }
+    }
+
+    private func routeSidebarSelection(_ selection: SidebarSelection, appDelegate: GuessWhoAppDelegate) {
         guard let split else { return }
         switch selection {
         case .section(let tab):
@@ -520,7 +547,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             guard let guide = item.guide else { return }
             list.select(guideID: guide.id)
             pushGuidePlaces(guide: guide, on: nav, appDelegate: appDelegate) { [weak self] place in
-                self?.showPlaceDetail(place: place, appDelegate: appDelegate)
+                self?.confirmingDiscard { $0.showPlaceDetail(place: place, appDelegate: appDelegate) }
             }
 
         case .places:
@@ -557,15 +584,13 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             favoritesStore: appDelegate.favoritesStore
         )
         list.didSelectContact = { [weak self] contact in
-            self?.showContactDetail(contact: contact, appDelegate: appDelegate)
+            self?.confirmingDiscard { $0.showContactDetail(contact: contact, appDelegate: appDelegate) }
         }
         list.didSelectContacts = { [weak self] contacts in
-            self?.showContactDetailStack(contacts: contacts, appDelegate: appDelegate)
+            self?.confirmingDiscard { $0.showContactDetailStack(contacts: contacts, appDelegate: appDelegate) }
         }
         list.didRequestAddContact = { [weak self] in
-            self?.createNewContact(appDelegate: appDelegate) { [weak self] created in
-                self?.showContactDetail(contact: created, appDelegate: appDelegate, startsInEditMode: true)
-            }
+            self?.confirmingDiscard { $0.addContact(seed: Contact(), appDelegate: appDelegate) }
         }
         list.didDeleteContact = { [weak self] id in
             self?.retireDetail(ifShowing: id, tab: .people, appDelegate: appDelegate)
@@ -587,20 +612,17 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             favoritesStore: appDelegate.favoritesStore
         )
         list.didSelectContact = { [weak self] contact in
-            self?.showContactDetail(contact: contact, appDelegate: appDelegate)
+            self?.confirmingDiscard { $0.showContactDetail(contact: contact, appDelegate: appDelegate) }
         }
         list.didSelectContacts = { [weak self] contacts in
-            self?.showContactDetailStack(contacts: contacts, appDelegate: appDelegate)
+            self?.confirmingDiscard { $0.showContactDetailStack(contacts: contacts, appDelegate: appDelegate) }
         }
         list.didSelectPhantomOrganization = { [weak self] phantom in
-            self?.showPhantomOrganizationDetail(phantom: phantom, appDelegate: appDelegate)
+            self?.confirmingDiscard { $0.showPhantomOrganizationDetail(phantom: phantom, appDelegate: appDelegate) }
         }
         list.didRequestAddOrganization = { [weak self] in
-            self?.createNewContact(
-                appDelegate: appDelegate,
-                seed: Contact(contactType: .organization)
-            ) { [weak self] created in
-                self?.showContactDetail(contact: created, appDelegate: appDelegate, startsInEditMode: true)
+            self?.confirmingDiscard {
+                $0.addContact(seed: Contact(contactType: .organization), appDelegate: appDelegate)
             }
         }
         list.didDeleteContact = { [weak self] id in
@@ -622,11 +644,9 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             favoritesStore: appDelegate.favoritesStore
         )
         list.didSelectEvent = { [weak self] event in
-            self?.showEventDetail(
-                eventUUID: event.id.uuidString,
-                eventKitID: event.eventKitID,
-                appDelegate: appDelegate
-            )
+            self?.confirmingDiscard {
+                $0.showEventDetail(eventUUID: event.id.uuidString, eventKitID: event.eventKitID, appDelegate: appDelegate)
+            }
         }
         split.setViewController(UINavigationController(rootViewController: list), for: .supplementary)
         installDetailPlaceholder(in: split, for: .events)
@@ -650,7 +670,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         let nav = UINavigationController(rootViewController: list)
         list.didSelectGuide = { [weak self, weak nav] guide in
             self?.pushGuidePlaces(guide: guide, on: nav, appDelegate: appDelegate) { [weak self] place in
-                self?.showPlaceDetail(place: place, appDelegate: appDelegate)
+                self?.confirmingDiscard { $0.showPlaceDetail(place: place, appDelegate: appDelegate) }
             }
         }
         split.setViewController(nav, for: .supplementary)
@@ -672,7 +692,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         // column with its detail — the People/Events pattern, not the
         // Guides tab's drill-in push.
         list.didSelectPlace = { [weak self] place in
-            self?.showPlaceDetail(place: place, appDelegate: appDelegate)
+            self?.confirmingDiscard { $0.showPlaceDetail(place: place, appDelegate: appDelegate) }
         }
         split.setViewController(UINavigationController(rootViewController: list), for: .supplementary)
         installDetailPlaceholder(in: split, for: .places)
@@ -694,30 +714,28 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         // groups show their members in the secondary column.
         let nav = UINavigationController(rootViewController: list)
         list.didSelectContact = { [weak self] contact in
-            self?.showContactDetail(contact: contact, appDelegate: appDelegate)
+            self?.confirmingDiscard { $0.showContactDetail(contact: contact, appDelegate: appDelegate) }
         }
         list.didSelectEvent = { [weak self] event in
-            self?.showEventDetail(
-                eventUUID: event.id.uuidString,
-                eventKitID: event.eventKitID,
-                appDelegate: appDelegate
-            )
+            self?.confirmingDiscard {
+                $0.showEventDetail(eventUUID: event.id.uuidString, eventKitID: event.eventKitID, appDelegate: appDelegate)
+            }
         }
         list.didSelectGroup = { [weak self] group in
-            self?.showGroupMembers(scope: .group(group), appDelegate: appDelegate)
+            self?.confirmingDiscard { $0.showGroupMembers(scope: .group(group), appDelegate: appDelegate) }
         }
         // A guide drills in exactly as it does from the Guides section: its
         // places list pushes onto this supplementary column, and picking a
         // place there REPLACES the secondary column.
         list.didSelectGuide = { [weak self, weak nav] guide in
             self?.pushGuidePlaces(guide: guide, on: nav, appDelegate: appDelegate) { [weak self] place in
-                self?.showPlaceDetail(place: place, appDelegate: appDelegate)
+                self?.confirmingDiscard { $0.showPlaceDetail(place: place, appDelegate: appDelegate) }
             }
         }
         // A place is a top-level record like a person or an event, so it
         // REPLACES the secondary column — what the Places section already does.
         list.didSelectPlace = { [weak self] place in
-            self?.showPlaceDetail(place: place, appDelegate: appDelegate)
+            self?.confirmingDiscard { $0.showPlaceDetail(place: place, appDelegate: appDelegate) }
         }
         // A department drills into its members list on this supplementary
         // column: member selection then
@@ -746,10 +764,10 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         // secondary column. Contacts drill into that same secondary nav stack.
         let nav = UINavigationController(rootViewController: list)
         list.didSelectGroup = { [weak self] group in
-            self?.showGroupMembers(scope: .group(group), appDelegate: appDelegate)
+            self?.confirmingDiscard { $0.showGroupMembers(scope: .group(group), appDelegate: appDelegate) }
         }
         list.didSelectFolder = { [weak self] folderID in
-            self?.showGroupMembers(scope: .folder(id: folderID), appDelegate: appDelegate)
+            self?.confirmingDiscard { $0.showGroupMembers(scope: .folder(id: folderID), appDelegate: appDelegate) }
         }
         split.setViewController(nav, for: .supplementary)
         installDetailPlaceholder(in: split, for: .groups)
@@ -768,10 +786,13 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             scope: scope, on: nav, appDelegate: appDelegate
         )
         members.scopeDidDisappear = { [weak self, weak nav] in
-            guard let self, let nav, let split = self.split,
-                  split.viewController(for: .secondary) === nav else { return }
-            self.installDetailPlaceholder(in: split, for: self.mountedSection ?? .groups)
-            self.syncSelectionToTop(nil)
+            // A contact opened from this list can be on the column, editing.
+            self?.confirmingDiscard { scene in
+                guard let nav, let split = scene.split,
+                      split.viewController(for: .secondary) === nav else { return }
+                scene.installDetailPlaceholder(in: split, for: scene.mountedSection ?? .groups)
+                scene.syncSelectionToTop(nil)
+            }
         }
         nav.viewControllers = [members]
         nav.delegate = self
@@ -802,12 +823,22 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             favoritesStore: appDelegate.favoritesStore
         )
         members.didSelectContact = { [weak self] contact in
-            self?.showContactDetail(contact: contact, appDelegate: appDelegate)
+            self?.confirmingDiscard { $0.showContactDetail(contact: contact, appDelegate: appDelegate) }
         }
         members.didSelectContacts = { [weak self] contacts in
-            self?.showContactDetailStack(contacts: contacts, appDelegate: appDelegate)
+            self?.confirmingDiscard { $0.showContactDetailStack(contacts: contacts, appDelegate: appDelegate) }
         }
         nav.pushViewController(members, animated: true)
+    }
+
+    /// The "+" of the People and Organizations lists: create a blank record
+    /// (`createNewContact`), then open it in the detail column already
+    /// editing. Callers ask first (`confirmingDiscard`), before the record
+    /// exists, so Keep Editing creates nothing.
+    private func addContact(seed: Contact, appDelegate: GuessWhoAppDelegate) {
+        createNewContact(appDelegate: appDelegate, seed: seed) { [weak self] created in
+            self?.showContactDetail(contact: created, appDelegate: appDelegate, startsInEditMode: true)
+        }
     }
 
     @discardableResult
@@ -824,14 +855,17 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         // List VCs vend a `Contact`; re-key it to the opaque `ContactID` the
         // detail roots on — the app never threads a raw `localID` through
         // navigation.
+        let editor = makeContactEditorHandle()
         let detail = ContactDetailView(id: contact.contactID, startsInEditMode: startsInEditMode)
             .environment(appDelegate.service)
             .environment(appDelegate.contactsRepository)
             .environment(appDelegate.contactPhotoLoader)
             .environment(appDelegate.favoritesStore)
+            .environment(\.contactEditorHandle, editor)
         let hosting = UIHostingController(
             rootView: injectCatalystPushHandlers(detail, on: nav, appDelegate: appDelegate)
         )
+        hosting.gwContactEditor = editor
         nav.viewControllers = [hosting]
         // Observe pops so backing out of an in-detail drill-down re-syncs the
         // restore selection to whatever detail is left on top.
@@ -982,14 +1016,17 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         appDelegate: GuessWhoAppDelegate
     ) {
         guard let nav else { return }
+        let editor = makeContactEditorHandle()
         let detail = ContactDetailView(id: ref.id)
             .environment(appDelegate.service)
             .environment(appDelegate.contactsRepository)
             .environment(appDelegate.contactPhotoLoader)
             .environment(appDelegate.favoritesStore)
+            .environment(\.contactEditorHandle, editor)
         let hosting = UIHostingController(
             rootView: injectCatalystPushHandlers(detail, on: nav, appDelegate: appDelegate)
         )
+        hosting.gwContactEditor = editor
         nav.pushViewController(hosting, animated: true)
         // Restore-to the DEEPEST detail the user drilled into (B scope: reopen
         // what they were looking at, re-rooted — not the full breadcrumb). Stamp
@@ -1163,10 +1200,32 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// restorable selection clears. Dropping a drill-down history is
     /// deliberate: popping back through a deleted record would land on a
     /// stale card.
+    ///
+    /// Unsaved edits to the deleted record itself go without a question:
+    /// the user just confirmed the delete, and the edits have no record left
+    /// to be saved to. Another record's editor on the column (one opened
+    /// from the deleted card) asks first, like any other navigation.
     private func retireDetail(ifShowing id: ContactID, tab: SidebarTab, appDelegate: GuessWhoAppDelegate) {
+        guard detailStack(showing: id) != nil else { return }
+        if let editing = unsavedContactEditor(), editing.gwShownContactIDs.contains(id) {
+            retireShownDetail(ifShowing: id, tab: tab, appDelegate: appDelegate)
+        } else {
+            confirmingDiscard { $0.retireShownDetail(ifShowing: id, tab: tab, appDelegate: appDelegate) }
+        }
+    }
+
+    /// The detail column's stack, when a card on it shows `id`.
+    private func detailStack(showing id: ContactID) -> UINavigationController? {
         guard let split,
               let nav = split.viewController(for: .secondary) as? UINavigationController,
-              nav.viewControllers.contains(where: { $0.gwShownContactIDs.contains(id) }) else { return }
+              nav.viewControllers.contains(where: { $0.gwShownContactIDs.contains(id) }) else { return nil }
+        return nav
+    }
+
+    /// `retireDetail`'s work, once it may go ahead. Checks the column again:
+    /// it may have changed while the user was asked.
+    private func retireShownDetail(ifShowing id: ContactID, tab: SidebarTab, appDelegate: GuessWhoAppDelegate) {
+        guard let split, let nav = detailStack(showing: id) else { return }
         if nav.viewControllers.count == 1,
            let root = nav.viewControllers.first,
            root.gwShownContactIDs.count > 1 {
@@ -1191,6 +1250,60 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             message: "Pick a section from the sidebar."
         )
         split.setViewController(UINavigationController(rootViewController: detail), for: .secondary)
+    }
+
+    // MARK: - Unsaved edits in the detail column
+
+    /// Run `navigation`, which replaces or clears the detail column, unless
+    /// the contact editor there has unsaved changes — then only once the user
+    /// chooses Discard (`DetailReplacementGate`). `navigation` gets the scene,
+    /// so the call sites need no second weak capture.
+    private func confirmingDiscard(_ navigation: @escaping (GuessWhoSceneDelegate) -> Void) {
+        detailGate.perform { [weak self] in
+            guard let self else { return }
+            navigation(self)
+        }
+    }
+
+    /// The card in the detail column whose editor has unsaved changes, if
+    /// any. Walks the whole stack: an edited card can sit above others (a
+    /// linked contact opened from a card, then edited).
+    private func unsavedContactEditor() -> UIViewController? {
+        guard let split, let nav = split.viewController(for: .secondary) as? UINavigationController else {
+            return nil
+        }
+        return nav.viewControllers.first { $0.gwContactEditor?.hasUnsavedChanges == true }
+    }
+
+    /// A handle for one contact card on the detail column; the card reports
+    /// its editor through it (`ContactEditorHandle`).
+    private func makeContactEditorHandle() -> ContactEditorHandle {
+        ContactEditorHandle { [weak self] in self?.recordEditStartSelection() }
+    }
+
+    /// Note the sidebar and list selection as editing begins, for Keep
+    /// Editing to put back.
+    private func recordEditStartSelection() {
+        editStartSelection = [sidebar?.rowSelectionSnapshot(), supplementaryList()?.rowSelectionSnapshot()]
+            .compactMap { $0 }
+    }
+
+    /// Keep Editing: put back the selection noted when editing began. A list
+    /// that came on screen since (a guide's places, a department's members)
+    /// had nothing selected then, so its click is undone too.
+    private func restoreEditStartSelection() {
+        for snapshot in editStartSelection {
+            snapshot.restore()
+        }
+        if let list = supplementaryList(), !editStartSelection.contains(where: { $0.owner === list }) {
+            list.rowSelectionSnapshot()?.deselectAll()
+        }
+    }
+
+    /// The list on top of the supplementary column.
+    private func supplementaryList() -> RowSelectionRecording? {
+        guard let split else { return nil }
+        return supplementaryNavigationController(in: split)?.topViewController as? RowSelectionRecording
     }
     #endif
 
@@ -1351,6 +1464,13 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
                     return
                 }
                 #if targetEnvironment(macCatalyst)
+                // This lands late when it waited for the contacts cache. A card
+                // the user is editing by then stays: a restore is no reason to
+                // ask them about their changes.
+                guard self.unsavedContactEditor() == nil else {
+                    Self.lifecycleLog.notice("restore: detail column has unsaved edits — left as is")
+                    return
+                }
                 self.showContactDetail(contact: contact, appDelegate: appDelegate)
                 #else
                 self.pushContactDetail(contact: contact, on: nav, appDelegate: appDelegate)
@@ -2033,18 +2153,21 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     #if targetEnvironment(macCatalyst)
     /// Select `contact`'s row in the People list and show its detail in the
     /// secondary column — the same end state as clicking that row. Where the
-    /// Mail wakes land.
+    /// Mail wakes land; like a click, it asks first when the detail column
+    /// has unsaved edits.
     private func showContactInPeople(
         _ contact: Contact,
         split: UISplitViewController,
         appDelegate: GuessWhoAppDelegate
     ) {
-        // Selecting the sidebar row highlights it and mounts the People
-        // list unless it is already showing.
-        sidebar?.select(.people)
-        (supplementaryNavigationController(in: split)?.viewControllers.first
-            as? ContactsListViewController)?.select(contactID: contact.contactID)
-        showContactDetail(contact: contact, appDelegate: appDelegate)
+        confirmingDiscard { scene in
+            // Selecting the sidebar row highlights it and mounts the People
+            // list unless it is already showing.
+            scene.sidebar?.select(.people)
+            (scene.supplementaryNavigationController(in: split)?.viewControllers.first
+                as? ContactsListViewController)?.select(contactID: contact.contactID)
+            scene.showContactDetail(contact: contact, appDelegate: appDelegate)
+        }
     }
     #endif
 
@@ -3466,6 +3589,17 @@ private final class ShownContactIDsBox {
 private extension UIViewController {
     private static var gwRestorationSelectionKey: UInt8 = 0
     private static var gwShownContactIDsKey: UInt8 = 0
+    private static var gwContactEditorKey: UInt8 = 0
+
+    /// The handle a hosted `ContactDetailView` on the Catalyst secondary
+    /// column reports its editor through, so the scene can ask before
+    /// replacing the column (`unsavedContactEditor()`). Nil for anything else.
+    var gwContactEditor: ContactEditorHandle? {
+        get { objc_getAssociatedObject(self, &Self.gwContactEditorKey) as? ContactEditorHandle }
+        set {
+            objc_setAssociatedObject(self, &Self.gwContactEditorKey, newValue, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+        }
+    }
 
     /// The contact records this view controller shows: one for a hosted
     /// `ContactDetailView`, several for a `ContactDetailStackView`, none for
