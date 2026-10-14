@@ -8,10 +8,11 @@ import GuessWhoSync
 /// It owns the one focus state that every text field of every row binds
 /// to, the host's trailing sections included, so Tab and Shift-Tab move
 /// through the whole form in on-screen order (`editorTabStop`), not only
-/// within one row. The rows keep moving focus to
-/// the next field of the same row on Return. The host puts
-/// `contactEditorScrolling()` on its `List` / `Form` so Tab can bring a
-/// field below the visible part into view.
+/// within one row. Tab from a control that is not a text field stays in
+/// the form too (see `body`). The rows keep moving focus to the next field
+/// of the same row on Return. The host puts `contactEditorScrolling()` on
+/// its `List` / `Form` so Tab can bring a field below the visible part
+/// into view.
 struct ContactEditorSections<Trailing: View>: View {
     @Binding var model: ContactEditModel
     /// The stops of the text fields in `trailing`, in on-screen order. They
@@ -19,9 +20,10 @@ struct ContactEditorSections<Trailing: View>: View {
     /// from Notes through them and then wraps to the first field.
     let trailingStops: [ContactEditorStop]
     /// Sections the host shows after the contact's own fields: the inline
-    /// edit's custom fields and dated notes. They save on their own, outside
-    /// the model. Each of their text fields binds the editor focus with its
-    /// stop from `trailingStops` (`editorTabStop(_:focus:)`).
+    /// edit's custom fields and dated notes, which save on their own,
+    /// outside the model, and its Delete Contact button. Each of their text
+    /// fields binds the editor focus with its stop from `trailingStops`
+    /// (`editorTabStop(_:focus:)`).
     let trailing: (ContactEditorFocus) -> Trailing
     @FocusState private var focus: ContactEditorStop?
     /// Whether the Phonetic Name group is open. Held here, not in its row,
@@ -57,6 +59,18 @@ struct ContactEditorSections<Trailing: View>: View {
             ContactNotesRow(model: $model, focus: $focus)
             trailing($focus)
         }
+        // Tab and Shift-Tab from a control that is not a text field (the
+        // Organization toggle, a label menu, a date picker, an add or delete
+        // button, the Phonetic Name disclosure). No text field takes the key
+        // then, so the system's focus got it and could leave the form (to
+        // the list column or its search field). A modifier on a `Group`
+        // reaches each of its views, and one on a `Section` each row, so
+        // every row of the form gets this handler. A text field's own
+        // `editorTabStop` takes the key first, so this runs only for the
+        // other controls. With no stop focused, Tab goes to the first stop
+        // and Shift-Tab to the last (`ContactEditModel.tabStop`): this
+        // handler can't tell where in the form the control is.
+        .editorTabStop($focus)
         .environment(
             \.contactEditorTabOrder,
             model.tabOrder(includingPhoneticName: phoneticNameExpanded) { labelField, label in

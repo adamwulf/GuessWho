@@ -54,6 +54,10 @@ extension View {
     /// On a field with `.autocomplete`, attach this AFTER that modifier: its
     /// own Tab handler (accept the highlighted suggestion) must see the key
     /// first, and it passes the key on when nothing is highlighted.
+    ///
+    /// `ContactEditorSections` also puts it on every row of the form, for
+    /// Tab from a control that is not a text field: no stop has focus then,
+    /// so Tab goes to the first stop and Shift-Tab to the last.
     func editorTabStop(_ focus: ContactEditorFocus) -> some View {
         modifier(EditorTabStop(focus: focus))
     }

@@ -832,23 +832,24 @@ struct ContactDetailView: View {
         // The custom fields and dated notes ride inside the editor so their
         // text fields bind the editor's focus too (they keep their own focus
         // states, which decide when they save): they are stops of the tab
-        // order, after Notes.
+        // order, after Notes. Delete Contact rides inside too, so Tab from
+        // the button stays in the form.
         ContactEditorSections(model: binding, trailingStops: trailingEditorStops) { editorFocus in
             editableSidecarFieldsSection(editorFocus: editorFocus)
             editableNotesSection(editorFocus: editorFocus)
-        }
-        Section {
-            Button(role: .destructive) {
-                showDeleteConfirm = true
-            } label: {
-                HStack {
-                    Spacer()
-                    Text("Delete Contact")
-                    Spacer()
+            Section {
+                Button(role: .destructive) {
+                    showDeleteConfirm = true
+                } label: {
+                    HStack {
+                        Spacer()
+                        Text("Delete Contact")
+                        Spacer()
+                    }
                 }
+                .disabled(isSavingEdit)
+                .centeredRowContent()
             }
-            .disabled(isSavingEdit)
-            .centeredRowContent()
         }
     }
 
