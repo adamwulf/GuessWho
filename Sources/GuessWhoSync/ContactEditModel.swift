@@ -294,8 +294,10 @@ public struct ContactEditModel: Equatable {
 
     /// `NSCocoaErrorDomain` codes a Contacts save can fail with. Two families:
     /// the XPC connection errors (4097 / 4099), when the connection to the
-    /// Contacts service fails before the write is looked at — routed to
-    /// `.contactsUnreachable` — and the store's own rejections. The persistent-store
+    /// Contacts service fails — routed to `.contactsUnreachable` — and the
+    /// store's own rejections. A 4099 request was never delivered; a 4097
+    /// request was in flight when the service stopped, so its write may or may
+    /// not have been applied (never retry it automatically). The persistent-store
     /// save-failure family (134060–134095, which includes the field-reported
     /// 134092) all mean "the store rejected this write," but the SPECIFIC cause
     /// lives in `NSUnderlyingError`, not the code. So the whole family routes to
@@ -311,7 +313,9 @@ public struct ContactEditModel: Equatable {
             return .storeRejected(description)
         case 4097, 4099:
             // NSXPCConnectionInterrupted / NSXPCConnectionInvalid: the
-            // connection to the Contacts service failed, not this write.
+            // connection to the Contacts service failed (4099: never
+            // delivered; 4097: interrupted in flight, so the write may or may
+            // not have been applied).
             return .contactsUnreachable
         default:
             return .unknown(description)
