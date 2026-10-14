@@ -50,20 +50,15 @@ extension ContactEditModel {
         return order
     }
 
-    /// The field Tab moves to from `field`: the next one in `tabOrder`, or
-    /// the previous one when `backward` (Shift-Tab). It wraps at both ends,
-    /// so Tab never leaves the editor. A field that is not in the order
-    /// (nil, or a field whose entry was just removed) moves to the first
-    /// field, or to the last one when going backward.
-    public func tabStop(
-        from field: Field?,
-        backward: Bool,
-        includingPhoneticName: Bool
-    ) -> Field {
-        // Never empty: the name fields are always in it.
-        let order = tabOrder(includingPhoneticName: includingPhoneticName)
+    /// The field Tab moves to from `field` in `order` (a `tabOrder`): the
+    /// next one, or the previous one when `backward` (Shift-Tab). It wraps
+    /// at both ends, so Tab never leaves the editor. A field that is not in
+    /// the order (nil, or a field whose entry was just removed) moves to the
+    /// first field, or to the last one when going backward. Nil only for an
+    /// empty order.
+    public static func tabStop(from field: Field?, backward: Bool, in order: [Field]) -> Field? {
         guard let field, let index = order.firstIndex(of: field) else {
-            return backward ? order[order.count - 1] : order[0]
+            return backward ? order.last : order.first
         }
         let step = backward ? order.count - 1 : 1
         return order[(index + step) % order.count]

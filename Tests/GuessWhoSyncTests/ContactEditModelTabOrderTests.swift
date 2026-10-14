@@ -80,27 +80,33 @@ struct ContactEditModelTabOrderTests {
 
     @Test("Tab moves to the next field and Shift-Tab to the previous one")
     func tabAndShiftTabStep() {
-        let model = ContactEditModel(newContactSeed: Contact())
-        #expect(model.tabStop(from: .givenName, backward: false, includingPhoneticName: false) == .middleName)
-        #expect(model.tabStop(from: .givenName, backward: true, includingPhoneticName: false) == .namePrefix)
-        #expect(model.tabStop(from: .nickname, backward: false, includingPhoneticName: false) == .organizationName)
+        let order = ContactEditModel(newContactSeed: Contact()).tabOrder(includingPhoneticName: false)
+        #expect(ContactEditModel.tabStop(from: .givenName, backward: false, in: order) == .middleName)
+        #expect(ContactEditModel.tabStop(from: .givenName, backward: true, in: order) == .namePrefix)
+        #expect(ContactEditModel.tabStop(from: .nickname, backward: false, in: order) == .organizationName)
     }
 
     @Test("Tab wraps at both ends, so it never leaves the editor")
     func wrapsAtBothEnds() {
-        let model = ContactEditModel(newContactSeed: Contact())
-        #expect(model.tabStop(from: .note, backward: false, includingPhoneticName: false) == .namePrefix)
-        #expect(model.tabStop(from: .namePrefix, backward: true, includingPhoneticName: false) == .note)
+        let order = ContactEditModel(newContactSeed: Contact()).tabOrder(includingPhoneticName: false)
+        #expect(ContactEditModel.tabStop(from: .note, backward: false, in: order) == .namePrefix)
+        #expect(ContactEditModel.tabStop(from: .namePrefix, backward: true, in: order) == .note)
     }
 
     @Test("A field that is not in the order goes to the first field, or the last going backward")
     func unknownFieldGoesToAnEnd() {
-        let model = ContactEditModel(newContactSeed: Contact())
+        let order = ContactEditModel(newContactSeed: Contact()).tabOrder(includingPhoneticName: false)
         // No phone numbers, so `.phone(0)` has no row.
-        #expect(model.tabStop(from: .phone(0), backward: false, includingPhoneticName: false) == .namePrefix)
-        #expect(model.tabStop(from: .phone(0), backward: true, includingPhoneticName: false) == .note)
-        #expect(model.tabStop(from: nil, backward: false, includingPhoneticName: false) == .namePrefix)
+        #expect(ContactEditModel.tabStop(from: .phone(0), backward: false, in: order) == .namePrefix)
+        #expect(ContactEditModel.tabStop(from: .phone(0), backward: true, in: order) == .note)
+        #expect(ContactEditModel.tabStop(from: nil, backward: false, in: order) == .namePrefix)
         // A collapsed phonetic group: its fields are not in the order.
-        #expect(model.tabStop(from: .phoneticFamilyName, backward: false, includingPhoneticName: false) == .namePrefix)
+        #expect(ContactEditModel.tabStop(from: .phoneticFamilyName, backward: false, in: order) == .namePrefix)
+    }
+
+    @Test("An empty order has no stop")
+    func emptyOrderHasNoStop() {
+        #expect(ContactEditModel.tabStop(from: .givenName, backward: false, in: []) == nil)
+        #expect(ContactEditModel.tabStop(from: nil, backward: true, in: []) == nil)
     }
 }
