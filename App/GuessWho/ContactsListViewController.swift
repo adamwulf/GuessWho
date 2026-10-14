@@ -402,6 +402,9 @@ final class ContactsListViewController: UIViewController {
             object: nil,
             queue: .main
         ) { [weak self] note in
+            // Read the flag here, outside the main-actor closure: Notification
+            // isn't Sendable, so the closure captures only the Bool.
+            let contactDataChanged = (note.userInfo?[ContactsRepositoryDidReloadKey.contactDataChanged] as? Bool) ?? true
             // OperationQueue.main delivers on the main thread, but Swift can't
             // statically prove the closure is @MainActor — assert it so the
             // diffable apply runs in the right isolation context.
@@ -412,7 +415,7 @@ final class ContactsListViewController: UIViewController {
                 self?.refreshSortMenu()
                 self?.refreshFilterMenu()
                 self?.applySnapshot(animated: true)
-                if (note.userInfo?[ContactsRepositoryDidReloadKey.contactDataChanged] as? Bool) ?? true {
+                if contactDataChanged {
                     Task { @MainActor [weak self] in self?.reconfigureAllRows() }
                 }
             }
