@@ -830,7 +830,9 @@ struct ContactDetailView: View {
             set: { editModel = $0 }
         )
         // The custom fields and dated notes ride inside the editor so their
-        // text fields get its focus: Tab from them stays in the form.
+        // text fields get the editor's focus binding for `editorTabStop`
+        // (they keep their own focus states): Tab from them stays in the
+        // form.
         ContactEditorSections(model: binding) { editorFocus in
             editableSidecarFieldsSection(editorFocus: editorFocus)
             editableNotesSection(editorFocus: editorFocus)

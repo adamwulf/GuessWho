@@ -83,9 +83,11 @@ private struct EditorTabStop: ViewModifier {
                 // `List` builds a row only when it comes on screen: a field
                 // with no row yet can't take focus. So scroll its row into
                 // view first, with no animation, and move focus on a later
-                // main-actor turn, once the List has had the chance to build
-                // the row (the same pattern as
-                // `ScrollToHighlightedEmailModifier`).
+                // main-actor turn (the same pattern as
+                // `ScrollToHighlightedEmailModifier`). This is a best-effort
+                // deferral: one Task hop is not guaranteed to run after the
+                // List's layout pass has built the row. The hand check
+                // verifies it (Tab past the bottom edge, and the wraps).
                 scrollProxy?.scrollTo(Self.row(of: next))
                 Task { @MainActor in
                     focus.wrappedValue = next
