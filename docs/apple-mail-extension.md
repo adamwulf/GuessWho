@@ -387,10 +387,13 @@ app (`app-*.log`) and the Safari extension (`extension-*.log`).
   never its path). Version and build come from `SharedVersion.xcconfig`:
   every local build reports 0.1 and 1, and only Xcode Cloud sets real
   numbers, so they can't tell local builds apart. The executable date can:
-  a local app build sets it when it embeds and signs the extension. Mail
-  still talks to an old extension process if, after the install and a Mail
-  relaunch, no new `mail extension started` line appears, or the newest one
-  has a PID or executable date from before the install. A compose window logs `compose session began` and
+  a local app build sets it when it embeds and signs the extension, so
+  compare `executableModified` (UTC) with the time of the build you are
+  testing, as *Enabling it in Mail* step 3 and the hand check do. Mail still
+  talks to the old extension process if, after the install and a Mail
+  relaunch, no new `mail extension started` line appears, or the newest
+  line still has the `pid` of a process from before the install. A compose
+  window logs `compose session began` and
   `compose session ended` with its session ID, and a toolbar click logs
   `popover requested` with the session ID, the row count, and the status
   (`ready` or `contactsUnavailable`). Each received message logs
