@@ -45,7 +45,12 @@ formats, or the code that writes or drains them.
   `ENABLE_DEBUG_DYLIB=NO`. Without that setting, a Debug build splits the
   code into a stub plus `GuessWhoMailExtension.debug.dylib`, nested code
   that the embed script would have to sign first; with it, the appex holds
-  one self-contained binary.
+  one self-contained binary. For every non-Debug configuration the nested
+  build also gets `DEPLOYMENT_POSTPROCESSING=YES`, the post-processing an
+  archive gives its own products: Xcode writes the dSYM, then strips the
+  binary (`strip -D -x -T`, as for the LinkedIn appex). The phase copies
+  that dSYM into `DWARF_DSYM_FOLDER_PATH`, so an archive's `dSYMs/` holds
+  `GuessWhoMailExtension.appex.dSYM`.
 - **Embedded only in the Mac Catalyst app**, under
   `GuessWho.app/Contents/PlugIns/`. The phase exits early unless
   `IS_MACCATALYST` is `YES`, so iOS builds neither build nor ship it. It
