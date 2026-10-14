@@ -3,6 +3,7 @@ import CoreGraphics
 import CryptoKit
 import Testing
 @testable import GuessWhoSync
+@_spi(ConflictReconcile) import GuessWhoSync
 import GuessWhoSyncTesting
 
 @Suite("Normalized photo crop")
@@ -62,8 +63,8 @@ struct ContactPhotoCropPersistenceTests {
             data: Data([1]), contentType: "image/jpeg", photoCrop: cropA)
         let blobB: String = try second.setBlobField(at: key, field: ContactsRepository.profilePhotoFieldName,
             data: Data([2]), contentType: "image/jpeg", photoCrop: cropB)
-        let a = try #require(firstStore.read(key))
-        let b = try #require(secondStore.read(key))
+        let a = try #require(try firstStore.read(key))
+        let b = try #require(try secondStore.read(key))
         let ab = try merge(a, b).get()
         let ba = try merge(b, a).get()
         #expect(ab.fields.count == 1)
@@ -73,8 +74,8 @@ struct ContactPhotoCropPersistenceTests {
         try secondStore.writeBlob(Data([1]), blobId: blobA, for: key)
         try firstStore.write(ab, at: key)
         try secondStore.write(ba, at: key)
-        let readA = try #require(first.profilePhoto(at: key))
-        let readB = try #require(second.profilePhoto(at: key))
+        let readA = try #require(try first.profilePhoto(at: key))
+        let readB = try #require(try second.profilePhoto(at: key))
         #expect(readA.pointer == readB.pointer)
         #expect(readA.photo.data == readB.photo.data)
         #expect(readA.photo.crop == (readA.photo.data == Data([1]) ? cropA : cropB))
