@@ -66,6 +66,18 @@ struct ContactEditModelTabOrderTests {
             postalAddresses: [LabeledPostalAddress(label: "custom", value: PostalAddress())],
             urlAddresses: [LabeledValue(label: "custom", value: "https://example.com")],
             dates: [LabeledDate(label: "custom", value: DateComponents(month: 1, day: 2))],
+            socialProfiles: [
+                LabeledSocialProfile(
+                    label: "custom",
+                    value: SocialProfile(urlString: "", username: "a", userIdentifier: "", service: "Twitter")
+                )
+            ],
+            instantMessageAddresses: [
+                LabeledInstantMessageAddress(
+                    label: "custom",
+                    value: InstantMessageAddress(username: "a", service: "Skype")
+                )
+            ],
             contactRelations: [LabeledContactRelation(label: "custom", value: ContactRelation(name: "B"))]
         )
         let model = ContactEditModel(original: contact)
@@ -75,7 +87,9 @@ struct ContactEditModelTabOrderTests {
             return label == "custom"
         }
 
-        // Every labeled entry is asked about, Social and IM are not.
+        // Every labeled entry is asked about. Social and IM are not, even
+        // with a "custom" label: their picker sets the service, and it has
+        // no label text field.
         #expect(asked == [
             .phoneLabel(0), .phoneLabel(1), .emailLabel(0), .urlLabel(0),
             .addressLabel(0), .dateLabel(0), .relationLabel(0),
@@ -88,6 +102,8 @@ struct ContactEditModelTabOrderTests {
             // A date's only stop is its label field.
             .dateLabel(0),
             .relationLabel(0), .relation(0),
+            .socialProfile(0),
+            .instantMessage(0),
             .note,
         ])
     }
