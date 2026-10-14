@@ -59,7 +59,9 @@ struct PostalAddressEditor: View {
                     get: { entry.label },
                     set: { entry = LabeledPostalAddress(label: $0, value: entry.value) }
                 ),
-                options: LabelOptions.address
+                options: LabelOptions.address,
+                focus: focus,
+                field: .addressLabel(index)
             )
             TextField("Street", text: streetBinding)
                 .focused(focus, equals: .street(index))

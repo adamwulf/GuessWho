@@ -29,7 +29,7 @@ struct ContactEditorSections: View {
             URLRow(model: $model, focus: $focus)
             PostalAddressRow(model: $model, focus: $focus)
             BirthdayRow(model: $model)
-            DateRow(model: $model)
+            DateRow(model: $model, focus: $focus)
             RelationRow(model: $model, focus: $focus)
             SocialProfileRow(model: $model, focus: $focus)
             IMRow(model: $model, focus: $focus)
@@ -38,7 +38,22 @@ struct ContactEditorSections: View {
         }
         .environment(
             \.contactEditorTabOrder,
-            model.tabOrder(includingPhoneticName: phoneticNameExpanded)
+            model.tabOrder(includingPhoneticName: phoneticNameExpanded) { labelField, label in
+                LabelPicker.showsTextField(for: label, options: Self.labelOptions(for: labelField))
+            }
         )
+    }
+
+    /// The options the row of `labelField` gives its `LabelPicker`.
+    private static func labelOptions(for labelField: ContactEditModel.Field) -> [String] {
+        switch labelField {
+        case .phoneLabel: LabelOptions.phone
+        case .emailLabel: LabelOptions.email
+        case .urlLabel: LabelOptions.url
+        case .addressLabel: LabelOptions.address
+        case .dateLabel: LabelOptions.date
+        case .relationLabel: LabelOptions.relation
+        default: []
+        }
     }
 }

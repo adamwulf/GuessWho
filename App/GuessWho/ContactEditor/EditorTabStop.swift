@@ -79,11 +79,22 @@ private struct EditorTabStop: ViewModifier {
     }
 
     /// The row that holds `field`, as `editorRow` names it. An address is
-    /// one row with five fields, named by its first one.
+    /// one row with five fields, named by its street. A label text field
+    /// shares its entry's row, named by the value field; a date's row is
+    /// named by its label field, its only stop.
     private static func row(of field: ContactEditModel.Field) -> ContactEditModel.Field {
         switch field {
-        case .city(let index), .state(let index), .postalCode(let index), .country(let index):
+        case .city(let index), .state(let index), .postalCode(let index), .country(let index),
+             .addressLabel(let index):
             return .street(index)
+        case .phoneLabel(let index):
+            return .phone(index)
+        case .emailLabel(let index):
+            return .email(index)
+        case .urlLabel(let index):
+            return .url(index)
+        case .relationLabel(let index):
+            return .relation(index)
         default:
             return field
         }

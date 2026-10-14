@@ -13,6 +13,9 @@ struct LabeledTextSection: View {
     let focus: ContactEditorFocus
     /// The editor field for the entry at an index (e.g. `ContactEditModel.Field.phone`).
     let field: (Int) -> ContactEditModel.Field
+    /// The editor field for the entry's label text field (e.g.
+    /// `ContactEditModel.Field.phoneLabel`), shown for an Other or typed label.
+    let labelField: (Int) -> ContactEditModel.Field
     /// Applied to every edit before it is stored, so a row can rewrite
     /// pasted text (e.g. email strips a display name). Must return its
     /// input unchanged for text it doesn't rewrite.
@@ -27,7 +30,9 @@ struct LabeledTextSection: View {
                             get: { items[idx].label },
                             set: { items[idx] = LabeledValue(label: $0, value: items[idx].value) }
                         ),
-                        options: labelOptions
+                        options: labelOptions,
+                        focus: focus,
+                        field: labelField(idx)
                     )
                     TextField(placeholder, text: Binding(
                         get: { items[idx].value },

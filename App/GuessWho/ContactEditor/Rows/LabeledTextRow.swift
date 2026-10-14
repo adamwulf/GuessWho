@@ -15,7 +15,8 @@ struct PhoneRow: View {
             labelOptions: LabelOptions.phone,
             keyboardType: .phonePad,
             focus: focus,
-            field: ContactEditModel.Field.phone
+            field: ContactEditModel.Field.phone,
+            labelField: ContactEditModel.Field.phoneLabel
         )
     }
 }
@@ -35,6 +36,7 @@ struct EmailRow: View {
             keyboardType: .emailAddress,
             focus: focus,
             field: ContactEditModel.Field.email,
+            labelField: ContactEditModel.Field.emailLabel,
             normalizeValue: EmailAddressFieldInput.normalized
         )
     }
@@ -57,7 +59,8 @@ struct URLRow: View {
             labelOptions: LabelOptions.url,
             keyboardType: .URL,
             focus: focus,
-            field: ContactEditModel.Field.url
+            field: ContactEditModel.Field.url,
+            labelField: ContactEditModel.Field.urlLabel
         )
     }
 }

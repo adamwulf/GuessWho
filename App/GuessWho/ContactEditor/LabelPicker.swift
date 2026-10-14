@@ -1,5 +1,6 @@
 import SwiftUI
 import Contacts
+import GuessWhoSync
 
 /// Cross-platform Menu-based label picker. Displays the localized form
 /// of each option in the picker UI (via `CNLabeledValue.localizedString(forLabel:)`)
@@ -15,6 +16,11 @@ import Contacts
 struct LabelPicker: View {
     @Binding var label: String
     let options: [String]
+    /// The contact editor's focus, and the field (`.phoneLabel(0)`) the
+    /// inline label text field is in its tab order. Nil for a picker that
+    /// never shows that text field (Social, IM).
+    var focus: ContactEditorFocus? = nil
+    var field: ContactEditModel.Field? = nil
     @State private var showCustomSheet = false
     @State private var customDraft: String = ""
 
@@ -26,23 +32,45 @@ struct LabelPicker: View {
         }
     }
 
-    private var usesInlineCustomLabel: Bool {
+    /// Whether a picker over `options` shows `label` as a text field instead
+    /// of a menu: the label is Other, or one the user typed. The editor's tab
+    /// order asks this too, so the text field is a stop only while it shows.
+    static func showsTextField(for label: String, options: [String]) -> Bool {
         options.contains(CNLabelOther)
             && (label == CNLabelOther || !options.contains(label))
     }
 
+    private var usesInlineCustomLabel: Bool {
+        Self.showsTextField(for: label, options: options)
+    }
+
     private var inlineCustomLabel: some View {
         HStack(spacing: 4) {
-            TextField("other", text: Binding(
-                get: { label == CNLabelOther ? displayName(for: CNLabelOther) : label },
-                set: { label = $0 }
-            ))
-            .textFieldStyle(.plain)
-            .foregroundStyle(.secondary)
-            .font(.subheadline)
-            .frame(minWidth: 72, idealWidth: 90, maxWidth: 130)
+            editorFocused(
+                TextField("other", text: Binding(
+                    get: { label == CNLabelOther ? displayName(for: CNLabelOther) : label },
+                    set: { label = $0 }
+                ))
+                .textFieldStyle(.plain)
+                .foregroundStyle(.secondary)
+                .font(.subheadline)
+                .frame(minWidth: 72, idealWidth: 90, maxWidth: 130)
+            )
 
             labelMenu(includeCustomOption: false, iconOnly: true)
+        }
+    }
+
+    /// The label text field as a stop of the contact editor's tab order,
+    /// when this picker is part of the editor.
+    @ViewBuilder
+    private func editorFocused(_ textField: some View) -> some View {
+        if let focus, let field {
+            textField
+                .focused(focus, equals: field)
+                .editorTabStop(focus)
+        } else {
+            textField
         }
     }
 

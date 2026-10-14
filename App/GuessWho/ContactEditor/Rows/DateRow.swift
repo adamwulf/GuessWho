@@ -3,6 +3,7 @@ import GuessWhoSync
 
 struct DateRow: View {
     @Binding var model: ContactEditModel
+    let focus: ContactEditorFocus
 
     var body: some View {
         TitledSection("Dates") {
@@ -14,9 +15,12 @@ struct DateRow: View {
                             model.edited.dates[idx] = $0
                             model.isDirty = true
                         }
-                    )
+                    ),
+                    index: idx,
+                    focus: focus
                 )
                 .centeredRowContent()
+                .editorRow(.dateLabel(idx))
             }
             .onDelete { offsets in
                 model.edited.dates.remove(atOffsets: offsets)
@@ -48,6 +52,10 @@ struct DateRow: View {
 /// unchanged.
 private struct DateRowEntry: View {
     @Binding var entry: LabeledDate
+    /// This date's position in the contact's date list, which names its
+    /// label field in the editor's tab order (`.dateLabel`).
+    let index: Int
+    let focus: ContactEditorFocus
 
     var body: some View {
         VStack(alignment: .leading) {
@@ -57,7 +65,9 @@ private struct DateRowEntry: View {
                         get: { entry.label },
                         set: { entry = LabeledDate(label: $0, value: entry.value) }
                     ),
-                    options: LabelOptions.date
+                    options: LabelOptions.date,
+                    focus: focus,
+                    field: .dateLabel(index)
                 )
                 DatePicker(
                     "Date",

@@ -34,7 +34,9 @@ struct RelationRow: View {
                                 model.isDirty = true
                             }
                         ),
-                        options: LabelOptions.relation
+                        options: LabelOptions.relation,
+                        focus: focus,
+                        field: .relationLabel(idx)
                     )
                     TextField("Name", text: name)
                         .focused(focus, equals: .relation(idx))
