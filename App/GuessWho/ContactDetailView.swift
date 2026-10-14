@@ -287,6 +287,9 @@ struct ContactDetailView: View {
     @State private var editMode: EditMode = .inactive
     @State private var showDeleteConfirm = false
     @State private var showDiscardEditConfirm = false
+    // Set by the Mac's detail column, which asks this editor before another
+    // selection replaces the card (`ContactEditorHandle`). nil elsewhere.
+    @Environment(\.contactEditorHandle) private var editorHandle
 
     // Focus identity covers the bottom new-note editor and any row being edited.
     // Hoisted here so one nav-bar checkmark can commit whichever edit is active
@@ -1137,27 +1140,53 @@ struct ContactDetailView: View {
             // toolbar EditButton — matching Apple Contacts.app, where reordering
             // is always-on while editing.
             editMode = .active
+            reportEditorToScene()
         } catch {
             editFetchErrorMessage = error.localizedDescription
         }
     }
 
+    /// Let the scene ask this editor before another selection replaces the
+    /// card, by the same rule as Cancel. While a save or delete runs, Cancel
+    /// is disabled and the changes are already on their way, so the scene
+    /// doesn't ask either. Bindings, not `self`, per
+    /// `ContactEditorHandle.attach`.
+    private func reportEditorToScene() {
+        let model = $editModel, mode = $editMode, isSaving = $isSavingEdit
+        editorHandle?.attach(
+            hasUnsavedChanges: { !isSaving.wrappedValue && Self.hasUnsavedChanges(model.wrappedValue) },
+            discard: { Self.cancelEdit(model: model, editMode: mode) }
+        )
+    }
+
     /// Cancel from the toolbar X or Escape: confirm first when the user has
-    /// unsaved field changes, else leave edit mode straight away. `edited`
-    /// against `original` (not `isDirty`, which stays set after a change is
-    /// typed and reverted) so a no-op edit cancels without a prompt — the
-    /// same gate the new-contact sheet uses.
+    /// unsaved field changes, else leave edit mode straight away.
     private func requestCancelEdit() {
-        if let model = editModel, model.edited != model.original {
+        if Self.hasUnsavedChanges(editModel) {
             showDiscardEditConfirm = true
         } else {
             cancelEdit()
         }
     }
 
+    /// Whether leaving the editor would lose typed changes. `edited` against
+    /// `original` (not `isDirty`, which stays set after a change is typed and
+    /// reverted) so a no-op edit cancels without a prompt — the same gate the
+    /// new-contact sheet uses.
+    private static func hasUnsavedChanges(_ model: ContactEditModel?) -> Bool {
+        guard let model else { return false }
+        return model.edited != model.original
+    }
+
     private func cancelEdit() {
-        editModel = nil
-        editMode = .inactive
+        Self.cancelEdit(model: $editModel, editMode: $editMode)
+    }
+
+    /// Leave edit mode without saving: Cancel's action, and the scene's
+    /// discard (`reportEditorToScene`).
+    private static func cancelEdit(model: Binding<ContactEditModel?>, editMode: Binding<EditMode>) {
+        model.wrappedValue = nil
+        editMode.wrappedValue = .inactive
     }
 
     private func performInlineSave() async {
