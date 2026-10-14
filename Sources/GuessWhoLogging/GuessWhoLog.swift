@@ -15,10 +15,11 @@ import FellerBuncher
 /// `<AppGroup>/Logs/<process>-yyyy-MM-dd.log` (date in UTC) and rolls at the day
 /// boundary, with FellerBuncher pruning files older than its 7-day retention.
 ///
-/// Both the GuessWho app and its Safari Web Extension call `bootstrap(...)` with
-/// their own `processName` so each process writes its own daily file
-/// (`<AppGroup>/Logs/app-yyyy-MM-dd.log`,
-/// `<AppGroup>/Logs/extension-yyyy-MM-dd.log`) — no cross-process file locking.
+/// The GuessWho app, its Safari Web Extension, and its Mail extension each call
+/// `bootstrap(...)` with their own `processName` so each process writes its own
+/// daily file (`<AppGroup>/Logs/app-yyyy-MM-dd.log`,
+/// `<AppGroup>/Logs/extension-yyyy-MM-dd.log`,
+/// `<AppGroup>/Logs/mail-yyyy-MM-dd.log`) — no cross-process file locking.
 public enum GuessWhoLog {
 
     /// swift-log channel for the one-shot bootstrap-failure breadcrumb. Routed
@@ -35,8 +36,8 @@ public enum GuessWhoLog {
     /// request is safe.
     ///
     /// - Parameters:
-    ///   - processName: distinguishes the per-process file. Use `"app"` and
-    ///     `"extension"`.
+    ///   - processName: distinguishes the per-process file. Use `"app"`,
+    ///     `"extension"` (Safari), and `"mail"` (Mail).
     ///   - appGroupID: the resolved App Group id (caller-provided; the package
     ///     stays id-agnostic).
     ///   - baseOverride: tests inject a temp base dir here so they never touch

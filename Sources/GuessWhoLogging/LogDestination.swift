@@ -3,19 +3,20 @@ import Logging
 
 /// Resolves the shared directory log files are written into.
 ///
-/// The "one shared place" both the GuessWho app and its Safari Web Extension
-/// can reach is the **App Group container** (`<AppGroup>/Logs/`). The caller
-/// passes the App Group id so this package stays id-agnostic — the id is
-/// resolved per platform/target by the app & extension from their Info.plist.
+/// The "one shared place" the GuessWho app and its Safari and Mail extensions
+/// can all reach is the **App Group container** (`<AppGroup>/Logs/`). The
+/// caller passes the App Group id so this package stays id-agnostic — the id
+/// is resolved per platform/target by the app & extensions from their
+/// Info.plist.
 ///
 /// If the App Group container is unavailable at runtime (e.g. the entitlement
 /// isn't granted), we fall back to the process's Caches directory so logging
 /// never crashes. The fallback is announced once via swift-log — buffered and
 /// replayed by FellerBuncher's pre-config capture when this fires during
-/// bootstrap — and is therefore diagnosable. In the fallback state the
-/// extension's dated `extension-*.log` lands in the appex Caches and the app's
-/// exporter (which zips the App Group `Logs/`) won't see it — acceptable
-/// degradation.
+/// bootstrap — and is therefore diagnosable. In the fallback state an
+/// extension's dated `extension-*.log` or `mail-*.log` lands in the appex
+/// Caches and the app's exporter (which zips the App Group `Logs/`) won't see
+/// it — acceptable degradation.
 enum LogDestination {
 
     /// swift-log channel for the fallback breadcrumbs. Routed through swift-log
