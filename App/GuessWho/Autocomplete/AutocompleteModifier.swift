@@ -23,8 +23,8 @@ extension View {
     ///   second cancels the edit.
     /// - Tapping a suggestion accepts it. Losing focus closes the menu.
     ///
-    /// The field's system autocorrection — and with it spell-checking and
-    /// predictive text — is turned off, so the menu is its only suggester.
+    /// The field's system autocorrection — and with it spell-checking — is
+    /// turned off, so autocorrect can't rewrite a picked suggestion.
     ///
     /// `onSubmit` stands in for `.onSubmit` on the field. A `TextField` turns
     /// the Return key into its submit action, and that is where a highlighted
@@ -43,7 +43,7 @@ extension View {
     ///
     /// The menu is drawn by the nearest ancestor `.autocompleteMenuHost()`
     /// (put one on the enclosing `Form` / `List`). Without a host the field
-    /// is an ordinary text field.
+    /// shows no menu (autocorrection stays off).
     func autocomplete(
         text: Binding<String>,
         onSubmit: (() -> Void)? = nil,
@@ -87,11 +87,12 @@ struct AutocompleteModifier: ViewModifier {
     func body(content: Content) -> some View {
         content
             .focused($isFocused)
-            // Our menu is the field's only suggester. System autocorrect
-            // would rewrite a picked name, and its spell-check underlines and
-            // predictions compete with the menu. Spell-checking follows
-            // autocorrection (`UITextSpellCheckingType.default`), so this one
-            // modifier turns off all three.
+            // Our menu is the field's suggester: system autocorrect would
+            // rewrite a picked name. Spell-checking follows autocorrection
+            // (`UITextSpellCheckingType.default`), so this also drops the
+            // spell-check underlines. Inline predictions
+            // (`inlinePredictionType`) have no SwiftUI modifier and are not
+            // documented to follow autocorrection.
             .autocorrectionDisabled()
             .onGeometryChange(for: CGRect.self) { proxy in
                 proxy.frame(in: .global)
