@@ -830,10 +830,10 @@ struct ContactDetailView: View {
             set: { editModel = $0 }
         )
         // The custom fields and dated notes ride inside the editor so their
-        // text fields get the editor's focus binding for `editorTabStop`
-        // (they keep their own focus states): Tab from them stays in the
-        // form.
-        ContactEditorSections(model: binding) { editorFocus in
+        // text fields bind the editor's focus too (they keep their own focus
+        // states, which decide when they save): they are stops of the tab
+        // order, after Notes.
+        ContactEditorSections(model: binding, trailingStops: trailingEditorStops) { editorFocus in
             editableSidecarFieldsSection(editorFocus: editorFocus)
             editableNotesSection(editorFocus: editorFocus)
         }
@@ -852,6 +852,21 @@ struct ContactDetailView: View {
         }
     }
 
+    /// The text fields of the inline editor's custom fields and dated notes,
+    /// in the order `editableSidecarFieldsSection` and `editableNotesSection`
+    /// show them: each custom field's value, then a note open for editing
+    /// (in note order), then the new note. They follow the contact's own
+    /// fields in the editor's tab order. A closed note (shown as text) and
+    /// the Add Note button are not text fields, so they are not stops.
+    private var trailingEditorStops: [ContactEditorStop] {
+        var stops = (fieldsStore?.fields ?? []).map { ContactEditorStop.customField($0.id) }
+        stops += noteItems.filter { $0.id == editingNoteID }.map { .datedNote($0.id) }
+        if showingNewNoteEditor {
+            stops.append(.newDatedNote)
+        }
+        return stops
+    }
+
     /// Notes shown while editing the contact. Mirrors the read-mode
     /// `notesSection` (same `noteRow`: inline-editable, swipe-delete, context
     /// menu) plus the same inline new-note `TextField`, and adds an "Add Dated Note"
@@ -860,8 +875,9 @@ struct ContactDetailView: View {
     /// renders (even with zero notes) so the Add Dated Note button is always
     /// reachable. Note writes go straight through `notesStore` — immediate,
     /// independent of the CNContact `editModel`, exactly like the editable
-    /// custom fields above. `editorFocus` is the contact editor's focus, so
-    /// Tab from a note's text field stays in the form (`editorTabStop`).
+    /// custom fields above. `editorFocus` is the contact editor's focus: the
+    /// text field of an open note and of the new note are stops of its tab
+    /// order (`trailingEditorStops`).
     @ViewBuilder
     private func editableNotesSection(editorFocus: ContactEditorFocus) -> some View {
         let notes = noteItems
@@ -875,6 +891,7 @@ struct ContactDetailView: View {
                     .centeredRowContent(
                         horizontalOffset: ContactDetailLayout.deleteOnlyEditRowOffset
                     )
+                    .editorRow(.datedNote(note.id))
             }
             .onDelete { offsets in
                 for i in offsets { deleteNote(notes[i].id) }
@@ -898,8 +915,8 @@ struct ContactDetailView: View {
     /// (field name) is read-only; the VALUE is editable. Edits/deletes save
     /// immediately via `fieldsStore` (separate from the CNContact edit model).
     /// No add (out of scope). Hidden when the contact has no custom fields.
-    /// `editorFocus` is the contact editor's focus, so Tab from a value field
-    /// stays in the form (`editorTabStop`).
+    /// `editorFocus` is the contact editor's focus: each value field is a
+    /// stop of its tab order (`trailingEditorStops`).
     @ViewBuilder
     private func editableSidecarFieldsSection(editorFocus: ContactEditorFocus) -> some View {
         let fields = fieldsStore?.fields ?? []
@@ -910,6 +927,7 @@ struct ContactDetailView: View {
                         name: field.field,
                         initialValue: Self.fieldDisplayValue(field),
                         isMultiline: field.type == .multilineNote,
+                        editorStop: .customField(field.id),
                         editorFocus: editorFocus,
                         onCommit: { value in
                             Task { await fieldsStore?.editField(field.id, value: value) }
@@ -918,6 +936,7 @@ struct ContactDetailView: View {
                     .centeredRowContent(
                         horizontalOffset: ContactDetailLayout.deleteOnlyEditRowOffset
                     )
+                    .editorRow(.customField(field.id))
                 }
                 .onDelete { offsets in
                     for i in offsets {
@@ -2737,15 +2756,21 @@ struct ContactDetailView: View {
     /// and the contact-edit `editableNotesSection`. The picker binding maps
     /// nil (untouched) to "now" for display; commit stamps the actual save
     /// time unless the user picked a date. `editorFocus` is the contact
-    /// editor's focus in contact-edit mode, so Tab from the text field stays
-    /// in the form (`editorTabStop`); nil in read mode.
+    /// editor's focus in contact-edit mode, where the text field is a stop
+    /// of its tab order (`.newDatedNote`); nil in read mode, which leaves
+    /// the text field and its row as they are.
     @ViewBuilder
     private func newNoteEditorRows(editorFocus: ContactEditorFocus? = nil) -> some View {
-        TextField("Add a dated note", text: $newNoteText, axis: .vertical)
+        let textField = TextField("Add a dated note", text: $newNoteText, axis: .vertical)
             .lineLimit(3...)
             .focused($noteFocus, equals: .newNote)
-            .editorTabStop(editorFocus)
+            .editorTabStop(.newDatedNote, focus: editorFocus)
             .centeredRowContent()
+        if editorFocus != nil {
+            textField.editorRow(.newDatedNote)
+        } else {
+            textField
+        }
         DatePicker(
             "Date",
             selection: Binding(
@@ -2757,7 +2782,8 @@ struct ContactDetailView: View {
         .centeredRowContent()
     }
 
-    /// `editorFocus`: as for `newNoteEditorRows`.
+    /// `editorFocus`: as for `newNoteEditorRows`; the open note's text field
+    /// is the stop `.datedNote(note.id)`, and the caller names the row.
     @ViewBuilder
     private func noteRow(_ note: ContactNote, editorFocus: ContactEditorFocus? = nil) -> some View {
         if editingNoteID == note.id {
@@ -2766,7 +2792,7 @@ struct ContactDetailView: View {
                     TextField("", text: $draftBody, axis: .vertical)
                         .lineLimit(3...)
                         .focused($noteFocus, equals: .noteRow(note.id))
-                        .editorTabStop(editorFocus)
+                        .editorTabStop(.datedNote(note.id), focus: editorFocus)
                     DatePicker(
                         "Date",
                         selection: $draftNoteDate,
@@ -4512,8 +4538,9 @@ private struct EditableSidecarFieldRow: View {
     /// Multi-line fields let Return insert newlines; single-line fields submit on
     /// Return and never contain a `\n` (though they may visually wrap).
     let isMultiline: Bool
-    /// The contact editor's focus, so Tab from the value field stays in the
-    /// form (`editorTabStop`).
+    /// The value field's stop in the contact editor's tab order
+    /// (`.customField` with this field's id), and the editor's focus.
+    let editorStop: ContactEditorStop
     let editorFocus: ContactEditorFocus
     let onCommit: (String) -> Void
 
@@ -4524,12 +4551,14 @@ private struct EditableSidecarFieldRow: View {
         name: String,
         initialValue: String,
         isMultiline: Bool,
+        editorStop: ContactEditorStop,
         editorFocus: ContactEditorFocus,
         onCommit: @escaping (String) -> Void
     ) {
         self.name = name
         self.initialValue = initialValue
         self.isMultiline = isMultiline
+        self.editorStop = editorStop
         self.editorFocus = editorFocus
         self.onCommit = onCommit
         _draft = State(initialValue: initialValue)
@@ -4553,8 +4582,10 @@ private struct EditableSidecarFieldRow: View {
             }
             .focused($focused)
             .onSubmit(commit)
-            // Leaving by Tab commits like any other focus loss (below).
-            .editorTabStop(editorFocus)
+            // A stop of the editor's tab order. Tab moves focus and inserts
+            // no tab character, even in a multi-line field. Leaving by Tab
+            // commits like any other focus loss (below).
+            .editorTabStop(editorStop, focus: editorFocus)
         }
         .onChange(of: focused) { _, isFocused in
             if !isFocused { commit() }

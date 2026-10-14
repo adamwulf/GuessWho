@@ -6,19 +6,22 @@ import GuessWhoSync
 /// `ContactDetailView`, which the "+" add flow also opens.
 ///
 /// It owns the one focus state that every text field of every row binds
-/// to, so Tab and Shift-Tab move through the whole form in on-screen order
-/// (`editorTabStop`), not only within one row. The rows keep moving focus to
+/// to, the host's trailing sections included, so Tab and Shift-Tab move
+/// through the whole form in on-screen order (`editorTabStop`), not only
+/// within one row. The rows keep moving focus to
 /// the next field of the same row on Return. The host puts
 /// `contactEditorScrolling()` on its `List` / `Form` so Tab can bring a
 /// field below the visible part into view.
 struct ContactEditorSections<Trailing: View>: View {
     @Binding var model: ContactEditModel
+    /// The stops of the text fields in `trailing`, in on-screen order. They
+    /// come after the contact's own fields in the tab order, so Tab goes on
+    /// from Notes through them and then wraps to the first field.
+    let trailingStops: [ContactEditorStop]
     /// Sections the host shows after the contact's own fields: the inline
-    /// edit's custom fields and dated notes. They save on their own and
-    /// keep their own focus, so their text fields are not stops of the tab
-    /// order. They get the editor focus anyway, for `editorTabStop`: with
-    /// none of the contact's fields focused, Tab from them goes to the
-    /// first field and Shift-Tab to the last, so the key stays in the form.
+    /// edit's custom fields and dated notes. They save on their own, outside
+    /// the model. Each of their text fields binds the editor focus with its
+    /// stop from `trailingStops` (`editorTabStop(_:focus:)`).
     let trailing: (ContactEditorFocus) -> Trailing
     @FocusState private var focus: ContactEditorStop?
     /// Whether the Phonetic Name group is open. Held here, not in its row,
@@ -27,15 +30,17 @@ struct ContactEditorSections<Trailing: View>: View {
 
     init(
         model: Binding<ContactEditModel>,
+        trailingStops: [ContactEditorStop],
         @ViewBuilder trailing: @escaping (ContactEditorFocus) -> Trailing
     ) {
         _model = model
+        self.trailingStops = trailingStops
         self.trailing = trailing
     }
 
     var body: some View {
         // `ContactEditModel.tabOrder` lists the text fields in this same
-        // order; change both together.
+        // order; change both together. The trailing sections' stops follow.
         Group {
             NameFieldsRow(model: $model, focus: $focus)
             OrgFieldsRow(model: $model, focus: $focus)
@@ -56,7 +61,7 @@ struct ContactEditorSections<Trailing: View>: View {
             \.contactEditorTabOrder,
             model.tabOrder(includingPhoneticName: phoneticNameExpanded) { labelField, label in
                 LabelPicker.showsTextField(for: label, options: Self.labelOptions(for: labelField))
-            }.map(ContactEditorStop.field)
+            }.map(ContactEditorStop.field) + trailingStops
         )
     }
 
@@ -78,6 +83,6 @@ extension ContactEditorSections where Trailing == EmptyView {
     /// The editor with nothing after the contact's fields (the new-contact
     /// sheet).
     init(model: Binding<ContactEditModel>) {
-        self.init(model: model) { _ in EmptyView() }
+        self.init(model: model, trailingStops: []) { _ in EmptyView() }
     }
 }
