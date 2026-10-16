@@ -989,8 +989,8 @@ struct ContactDetailView: View {
         // sidecar edits (custom fields, notes), which commit live as they're
         // made. The exception is a "+" card never ended with Done: Cancel
         // deletes its record, with any photo or note added to it once
-        // "Discard changes?" is confirmed (`NewContactCleanup`), unless a
-        // card in another window shows it. Escape triggers Cancel via
+        // "Discard changes?" is confirmed (`NewContactCleanup`), unless
+        // another card shows it. Escape triggers Cancel via
         // .cancelAction; an autocompleting field (Company, Department,
         // Related) takes the first Escape to close its menu and leaves the
         // next one to this shortcut, so unsaved work is guarded by a
