@@ -278,6 +278,17 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         restorationState = state
     }
 
+    /// Done kept the record of a "+" card, which was not restorable until
+    /// now: a quit before Done would have reopened a blank record as a
+    /// normal card. Stamp the card so a later Back re-syncs to it, and make
+    /// it the scene's selection only while it is the card on screen.
+    private func noteNewContactKept(_ selection: RestorationState.Selection, on card: UIViewController) {
+        card.gwRestorationSelection = selection
+        guard card.viewIfLoaded?.window != nil,
+              card.navigationController?.topViewController === card else { return }
+        noteSelectionShown(selection, stampedOn: card)
+    }
+
     /// Set the current section's selection to whatever detail (if any) the given
     /// top view controller represents. A list root / placeholder carries no
     /// stamped selection, so this CLEARS it — the fix for a detail the user
@@ -889,7 +900,8 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
 
     /// `newContactCleanup` is the "+" flow's (`createNewContact`): the card
     /// gets it, it watches the card's hosting controller, and its Cancel
-    /// closes the card back to the section placeholder.
+    /// closes the card back to the section placeholder. The card is not a
+    /// restorable selection until Done keeps its record.
     @discardableResult
     private func showContactDetail(
         contact: Contact,
@@ -925,6 +937,10 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             newContactCleanup.isShownElsewhere = { [id = contact.contactID] in
                 Self.anyDetailColumnShows(id, repository: repository)
             }
+            newContactCleanup.didKeep = { [weak self, weak hosting, id = contact.contactID] in
+                guard let self, let hosting else { return }
+                self.noteNewContactKept(.contact(id.restorationToken), on: hosting)
+            }
         }
         nav.viewControllers = [hosting]
         // Observe pops so backing out of an in-detail drill-down re-syncs the
@@ -936,7 +952,12 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         // contacts, etc.) pushes onto this same `nav` via the injected env
         // closures.
         split.setViewController(nav, for: .secondary)
-        noteSelectionShown(.contact(contact.contactID.restorationToken), stampedOn: hosting)
+        if newContactCleanup == nil {
+            noteSelectionShown(.contact(contact.contactID.restorationToken), stampedOn: hosting)
+        } else {
+            // Not restorable until Done keeps the record (`didKeep`).
+            syncSelectionToTop(hosting)
+        }
         hosting.gwShownContactIDs = [contact.contactID]
         return nav
     }
@@ -2053,7 +2074,8 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
 
     /// `newContactCleanup` is the "+" flow's (`createNewContact`): the card
     /// gets it, it watches the pushed hosting controller, and its Cancel pops
-    /// the card.
+    /// the card. The card is not a restorable selection until Done keeps its
+    /// record.
     private func pushContactDetail(
         id: ContactID,
         on nav: UINavigationController?,
@@ -2078,12 +2100,21 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
                 guard let nav, let hosting, nav.topViewController === hosting else { return }
                 nav.popViewController(animated: true)
             }
+            newContactCleanup.didKeep = { [weak self, weak hosting] in
+                guard let self, let hosting else { return }
+                self.noteNewContactKept(.contact(id.restorationToken), on: hosting)
+            }
         }
         nav.pushViewController(hosting, animated: true)
         // Restore-to this contact (deepest detail = what the user is looking at).
         // Edit mode is intentionally NOT restored — reopen shows the card, not an
-        // editing session. Stamped so a later Back re-syncs the selection.
-        noteSelectionShown(.contact(id.restorationToken), stampedOn: hosting)
+        // editing session. Stamped so a later Back re-syncs the selection. A
+        // "+" card waits for Done to keep its record (`didKeep`).
+        if newContactCleanup == nil {
+            noteSelectionShown(.contact(id.restorationToken), stampedOn: hosting)
+        } else {
+            syncSelectionToTop(hosting)
+        }
     }
 
     private func pushContactDetailStack(
