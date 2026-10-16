@@ -890,7 +890,19 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// (`createNewContact`), then open it in the detail column already
     /// editing. Callers ask first (`confirmingDiscard`), before the record
     /// exists, so Keep Editing creates nothing.
+    ///
+    /// When that question discarded a "+" card, the card would stay on the
+    /// column, read-only, for a record that goes once the card does — until
+    /// the new card replaces it, or for good if the create fails. So the
+    /// column returns to the section placeholder first, and the old record
+    /// goes with its card.
     private func addContact(seed: Contact, appDelegate: GuessWhoAppDelegate) {
+        if let split,
+           let root = (split.viewController(for: .secondary) as? UINavigationController)?.viewControllers.first,
+           NewContactCleanup.watching(root)?.isDiscarded == true {
+            installDetailPlaceholder(in: split, for: mountedSection ?? .people)
+            syncSelectionToTop(nil)
+        }
         createNewContact(appDelegate: appDelegate, seed: seed) { [weak self] created, cleanup in
             self?.showContactDetail(
                 contact: created, appDelegate: appDelegate, startsInEditMode: true, newContactCleanup: cleanup
@@ -1329,7 +1341,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         syncSelectionToTop(nil)
     }
 
-    /// Cancel on a "+" card never saved: its record is being deleted
+    /// Cancel on a "+" card never saved: its record goes with the card
     /// (`NewContactCleanup.cancel`), so the column returns to the section
     /// placeholder. The list's rows are deselected too: "+" leaves the row
     /// that was open before highlighted, and that row no longer matches the
@@ -1487,7 +1499,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// `.organization` seed so the record lands in the Organizations list.
     ///
     /// `show` also gets the record's `NewContactCleanup`, which deletes it if
-    /// the editor ends without a save with Done. `show` hands it to the card
+    /// the editor ends without Done. `show` hands it to the card
     /// (`ContactDetailView.newContactCleanup`), has it watch the card's
     /// hosting controller, and sets how Cancel closes the card.
     ///
