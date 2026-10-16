@@ -1481,8 +1481,10 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// `seed` defaults to a blank person; the Organizations "+" passes a blank
     /// `.organization` seed so the record lands in the Organizations list.
     ///
-    /// `show` also gets the record's `NewContactCleanup`, which deletes it if
-    /// the editor ends without Done. `show` hands it to the card
+    /// `show` also gets the record's `NewContactCleanup`, which deletes it
+    /// when the card goes away without Done — after Cancel or Discard, or
+    /// with no question while it is still blank — unless a card in any
+    /// window still shows it. `show` hands it to the card
     /// (`ContactDetailView.newContactCleanup`), has it watch the card's
     /// hosting controller, and sets how Cancel closes the card.
     ///

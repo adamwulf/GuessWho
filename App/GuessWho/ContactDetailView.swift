@@ -160,7 +160,8 @@ struct ContactDetailView: View {
     var startsInEditMode: Bool = false
 
     /// Set by the "+" add flow only: the blank record it created for this
-    /// card, which is deleted if the editor ends without Done
+    /// card, which goes with the card if the editor ends without Done —
+    /// after Cancel or Discard, or with no question while it is still blank
     /// (`NewContactCleanup`). nil on every other card.
     var newContactCleanup: NewContactCleanup? = nil
 
@@ -983,11 +984,13 @@ struct ContactDetailView: View {
         // any pending CNContact-model edits and dismisses — it does NOT undo
         // sidecar edits (custom fields, notes), which commit live as they're
         // made. The exception is a "+" card never ended with Done: Cancel
-        // deletes its record, with any photo or note added to it
-        // (`NewContactCleanup`). Escape triggers Cancel via .cancelAction; an
-        // autocompleting field (Company, Department, Related) takes the first
-        // Escape to close its menu and leaves the next one to this shortcut,
-        // so unsaved work is guarded by a "Discard changes?" confirmation.
+        // deletes its record, with any photo or note added to it once
+        // "Discard changes?" is confirmed (`NewContactCleanup`), unless a
+        // card in another window shows it. Escape triggers Cancel via
+        // .cancelAction; an autocompleting field (Company, Department,
+        // Related) takes the first Escape to close its menu and leaves the
+        // next one to this shortcut, so unsaved work is guarded by a
+        // "Discard changes?" confirmation.
         ToolbarItem(placement: .cancellationAction) {
             Button(role: .cancel) {
                 requestCancelEdit()
