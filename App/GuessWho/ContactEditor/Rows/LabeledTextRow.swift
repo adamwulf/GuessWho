@@ -3,6 +3,7 @@ import GuessWhoSync
 
 struct PhoneRow: View {
     @Binding var model: ContactEditModel
+    let focus: ContactEditorFocus
     var body: some View {
         LabeledTextSection(
             title: "Phone",
@@ -12,13 +13,17 @@ struct PhoneRow: View {
                 model.isDirty = true
             }),
             labelOptions: LabelOptions.phone,
-            keyboardType: .phonePad
+            keyboardType: .phonePad,
+            focus: focus,
+            field: ContactEditModel.Field.phone,
+            labelField: ContactEditModel.Field.phoneLabel
         )
     }
 }
 
 struct EmailRow: View {
     @Binding var model: ContactEditModel
+    let focus: ContactEditorFocus
     var body: some View {
         LabeledTextSection(
             title: "Email",
@@ -29,6 +34,9 @@ struct EmailRow: View {
             }),
             labelOptions: LabelOptions.email,
             keyboardType: .emailAddress,
+            focus: focus,
+            field: ContactEditModel.Field.email,
+            labelField: ContactEditModel.Field.emailLabel,
             normalizeValue: EmailAddressFieldInput.normalized
         )
     }
@@ -36,6 +44,7 @@ struct EmailRow: View {
 
 struct URLRow: View {
     @Binding var model: ContactEditModel
+    let focus: ContactEditorFocus
     var body: some View {
         LabeledTextSection(
             title: "URL",
@@ -48,7 +57,10 @@ struct URLRow: View {
                 }
             ),
             labelOptions: LabelOptions.url,
-            keyboardType: .URL
+            keyboardType: .URL,
+            focus: focus,
+            field: ContactEditModel.Field.url,
+            labelField: ContactEditModel.Field.urlLabel
         )
     }
 }

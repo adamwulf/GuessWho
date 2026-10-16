@@ -585,6 +585,13 @@ extension GuidePlacesListViewController: ScrollsToTop {
     }
 }
 
+extension GuidePlacesListViewController: RowSelectionRecording {
+    func rowSelectionSnapshot() -> RowSelectionSnapshot? {
+        guard isViewLoaded else { return nil }
+        return RowSelectionSnapshot(of: tableView, dataSource: dataSource, owner: self)
+    }
+}
+
 // MARK: - Drag & drop reorder
 
 extension GuidePlacesListViewController: UITableViewDragDelegate, UITableViewDropDelegate {

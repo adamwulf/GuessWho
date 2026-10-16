@@ -494,6 +494,13 @@ extension DepartmentMembersListViewController: ScrollsToTop {
     }
 }
 
+extension DepartmentMembersListViewController: RowSelectionRecording {
+    func rowSelectionSnapshot() -> RowSelectionSnapshot? {
+        guard isViewLoaded else { return nil }
+        return RowSelectionSnapshot(of: tableView, dataSource: dataSource, owner: self)
+    }
+}
+
 private extension DepartmentMembersListViewController {
     /// The department's user-facing name, used as the navigation title.
     static func title(for department: String) -> String {

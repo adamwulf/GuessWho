@@ -159,6 +159,12 @@ struct ContactDetailView: View {
     /// existing contacts share one form (no separate new-contact sheet).
     var startsInEditMode: Bool = false
 
+    /// Set by the "+" add flow only: the blank record it created for this
+    /// card, which goes with the card if the editor ends without Done —
+    /// after Cancel or Discard, or with no question while it is still blank
+    /// (`NewContactCleanup`). nil on every other card.
+    var newContactCleanup: NewContactCleanup? = nil
+
     /// The full selection when this card is the front sheet of a stacked
     /// multi-contact detail. An empty array is the normal single-contact path.
     /// Multi-selection keeps this card's content while adapting its toolbar:
@@ -287,6 +293,9 @@ struct ContactDetailView: View {
     @State private var editMode: EditMode = .inactive
     @State private var showDeleteConfirm = false
     @State private var showDiscardEditConfirm = false
+    // Set by the Mac's detail column, which asks this editor before another
+    // selection replaces the card (`ContactEditorHandle`). nil elsewhere.
+    @Environment(\.contactEditorHandle) private var editorHandle
 
     // Focus identity covers the bottom new-note editor and any row being edited.
     // Hoisted here so one nav-bar checkmark can commit whichever edit is active
@@ -448,6 +457,9 @@ struct ContactDetailView: View {
         // body's modifier chain within the type-checker's budget.
         .sheet(item: $photoCropRequest) { request in
             ContactPhotoCropEditor(image: request.image, initialCrop: request.crop) { crop in
+                // Before the write: one that fails partway can still leave a
+                // photo, and an unsure "+" record is kept.
+                newContactCleanup?.recordDidGetUserData()
                 if request.isReplacement {
                     try await repository.setContactPhoto(for: request.contactID, imageData: request.data, crop: crop)
                 } else {
@@ -528,8 +540,12 @@ struct ContactDetailView: View {
         .onDisappear {
             // Backstop for the edge-swipe-back gesture: the system pop bypasses
             // our custom back button, so commit here too. A no-op if
-            // commitActiveEdit() already ran from a button tap.
-            commitActiveEdit()
+            // commitActiveEdit() already ran from a button tap. Not on a "+"
+            // card the user discarded: its record is going, and a draft would
+            // only land on a deleted record.
+            if newContactCleanup?.isDiscarded != true {
+                commitActiveEdit()
+            }
             coarseMailActivityReloadTask?.cancel()
             coarseHighlightedEmailReloadTask?.cancel()
         }
@@ -790,6 +806,9 @@ struct ContactDetailView: View {
             target: highlightScrollTarget,
             onScroll: { highlightScrollIDs = [] }
         ))
+        // Lets Tab in the inline editor bring a field below the visible part
+        // into view.
+        .contactEditorScrolling()
         // Inject the owned editMode binding so EditButton drives this view's own
         // .editMode state, not an ambient one we can't tear down. Reset to
         // .inactive on every contact-edit exit path.
@@ -816,43 +835,55 @@ struct ContactDetailView: View {
     }
 
     /// Editor section stack shown when `isEditingContact` is true, reusing the
-    /// sheet editor's row components. The binding falls back to a throwaway
-    /// empty model — never hit (the call site is gated on `editModel != nil`),
-    /// but the nil-coalesce keeps the binding total without a runtime trap.
+    /// sheet editor's rows (`ContactEditorSections`). The binding falls back to
+    /// a throwaway empty model — never hit (the call site is gated on
+    /// `editModel != nil`), but the nil-coalesce keeps the binding total
+    /// without a runtime trap.
     @ViewBuilder
     private var editingSections: some View {
         let binding = Binding<ContactEditModel>(
             get: { editModel ?? ContactEditModel(original: contact ?? Contact()) },
             set: { editModel = $0 }
         )
-        NameFieldsRow(model: binding)
-        OrgFieldsRow(model: binding)
-        PhoneRow(model: binding)
-        EmailRow(model: binding)
-        URLRow(model: binding)
-        PostalAddressRow(model: binding)
-        BirthdayRow(model: binding)
-        DateRow(model: binding)
-        RelationRow(model: binding)
-        SocialProfileRow(model: binding)
-        IMRow(model: binding)
-        PhoneticNameRow(model: binding)
-        ContactNotesRow(model: binding)
-        editableSidecarFieldsSection
-        editableNotesSection
-        Section {
-            Button(role: .destructive) {
-                showDeleteConfirm = true
-            } label: {
-                HStack {
-                    Spacer()
-                    Text("Delete Contact")
-                    Spacer()
+        // The custom fields and dated notes ride inside the editor so their
+        // text fields bind the editor's focus too: they are stops of the tab
+        // order, after Notes. They keep their own focus states. A custom
+        // field commits when it loses focus; a note keeps its draft until
+        // Done or Cmd-Return (or opening another note), and its focus only
+        // picks which note those commit. Delete Contact rides inside too, so
+        // Tab from the button stays in the form.
+        ContactEditorSections(model: binding, trailingStops: trailingEditorStops) { editorFocus in
+            editableSidecarFieldsSection(editorFocus: editorFocus)
+            editableNotesSection(editorFocus: editorFocus)
+            Section {
+                Button(role: .destructive) {
+                    showDeleteConfirm = true
+                } label: {
+                    HStack {
+                        Spacer()
+                        Text("Delete Contact")
+                        Spacer()
+                    }
                 }
+                .disabled(isSavingEdit)
+                .centeredRowContent()
             }
-            .disabled(isSavingEdit)
-            .centeredRowContent()
         }
+    }
+
+    /// The text fields of the inline editor's custom fields and dated notes,
+    /// in the order `editableSidecarFieldsSection` and `editableNotesSection`
+    /// show them: each custom field's value, then a note open for editing
+    /// (in note order), then the new note. They follow the contact's own
+    /// fields in the editor's tab order. A closed note (shown as text) and
+    /// the Add Note button are not text fields, so they are not stops.
+    private var trailingEditorStops: [ContactEditorStop] {
+        var stops = (fieldsStore?.fields ?? []).map { ContactEditorStop.customField($0.id) }
+        stops += noteItems.filter { $0.id == editingNoteID }.map { .datedNote($0.id) }
+        if showingNewNoteEditor {
+            stops.append(.newDatedNote)
+        }
+        return stops
     }
 
     /// Notes shown while editing the contact. Mirrors the read-mode
@@ -863,13 +894,15 @@ struct ContactDetailView: View {
     /// renders (even with zero notes) so the Add Dated Note button is always
     /// reachable. Note writes go straight through `notesStore` — immediate,
     /// independent of the CNContact `editModel`, exactly like the editable
-    /// custom fields above.
+    /// custom fields above. `editorFocus` is the contact editor's focus: the
+    /// text field of an open note and of the new note are stops of its tab
+    /// order (`trailingEditorStops`).
     @ViewBuilder
-    private var editableNotesSection: some View {
+    private func editableNotesSection(editorFocus: ContactEditorFocus) -> some View {
         let notes = noteItems
         TitledSection("Dated Notes") {
             ForEach(notes, id: \.id) { note in
-                noteRow(note)
+                noteRow(note, editorFocus: editorFocus)
                     // Delete-only rows in the active edit-mode list: apply the
                     // same offset the sibling editableSidecarFieldsSection uses
                     // so the note rows line up with the custom-field rows on
@@ -877,13 +910,14 @@ struct ContactDetailView: View {
                     .centeredRowContent(
                         horizontalOffset: ContactDetailLayout.deleteOnlyEditRowOffset
                     )
+                    .editorRow(.datedNote(note.id))
             }
             .onDelete { offsets in
                 for i in offsets { deleteNote(notes[i].id) }
             }
 
             if showingNewNoteEditor {
-                newNoteEditorRows
+                newNoteEditorRows(editorFocus: editorFocus)
             }
 
             Button {
@@ -900,8 +934,10 @@ struct ContactDetailView: View {
     /// (field name) is read-only; the VALUE is editable. Edits/deletes save
     /// immediately via `fieldsStore` (separate from the CNContact edit model).
     /// No add (out of scope). Hidden when the contact has no custom fields.
+    /// `editorFocus` is the contact editor's focus: each value field is a
+    /// stop of its tab order (`trailingEditorStops`).
     @ViewBuilder
-    private var editableSidecarFieldsSection: some View {
+    private func editableSidecarFieldsSection(editorFocus: ContactEditorFocus) -> some View {
         let fields = fieldsStore?.fields ?? []
         if !fields.isEmpty {
             TitledSection("Custom Fields") {
@@ -910,6 +946,8 @@ struct ContactDetailView: View {
                         name: field.field,
                         initialValue: Self.fieldDisplayValue(field),
                         isMultiline: field.type == .multilineNote,
+                        editorStop: .customField(field.id),
+                        editorFocus: editorFocus,
                         onCommit: { value in
                             Task { await fieldsStore?.editField(field.id, value: value) }
                         }
@@ -917,6 +955,7 @@ struct ContactDetailView: View {
                     .centeredRowContent(
                         horizontalOffset: ContactDetailLayout.deleteOnlyEditRowOffset
                     )
+                    .editorRow(.customField(field.id))
                 }
                 .onDelete { offsets in
                     for i in offsets {
@@ -948,10 +987,14 @@ struct ContactDetailView: View {
         // A red X "Cancel" mirrors the accent checkmark "Done". Cancel discards
         // any pending CNContact-model edits and dismisses — it does NOT undo
         // sidecar edits (custom fields, notes), which commit live as they're
-        // made. Escape triggers Cancel via .cancelAction; an autocompleting
-        // field (Company, Department, Related) takes the first Escape to
-        // close its menu and leaves the next one to this shortcut, so
-        // unsaved work is guarded by a "Discard changes?" confirmation.
+        // made. The exception is a "+" card never ended with Done: Cancel
+        // deletes its record, with any photo or note added to it once
+        // "Discard changes?" is confirmed (`NewContactCleanup`), unless
+        // another card shows it. Escape triggers Cancel via
+        // .cancelAction; an autocompleting field (Company, Department,
+        // Related) takes the first Escape to close its menu and leaves the
+        // next one to this shortcut, so unsaved work is guarded by a
+        // "Discard changes?" confirmation.
         ToolbarItem(placement: .cancellationAction) {
             Button(role: .cancel) {
                 requestCancelEdit()
@@ -982,7 +1025,7 @@ struct ContactDetailView: View {
                     if editModel?.isDirty == true {
                         await performInlineSave()   // saves + dismisses
                     } else {
-                        cancelEdit()                // nothing to save; just dismiss
+                        finishEditWithNothingToSave()
                     }
                 }
             } label: {
@@ -1114,35 +1157,87 @@ struct ContactDetailView: View {
             // toolbar EditButton — matching Apple Contacts.app, where reordering
             // is always-on while editing.
             editMode = .active
+            reportEditorToScene()
         } catch {
             editFetchErrorMessage = error.localizedDescription
         }
     }
 
+    /// Let the scene ask this editor before another selection replaces the
+    /// card, by the same rule as Cancel. While a save or delete runs, Cancel
+    /// is disabled and the outcome no longer depends on leaving, so the scene
+    /// doesn't ask either. Discard drops the changes as Cancel does and, on a
+    /// "+" card never saved, marks the record to go with the card; the
+    /// scene's navigation then replaces the card, so the card isn't closed
+    /// here. Bindings and the
+    /// cleanup, not `self`, per `ContactEditorHandle.attach`.
+    private func reportEditorToScene() {
+        let model = $editModel, mode = $editMode, isSaving = $isSavingEdit
+        let cleanup = newContactCleanup
+        editorHandle?.attach(
+            hasUnsavedChanges: {
+                !isSaving.wrappedValue && Self.hasUnsavedChanges(model.wrappedValue, cleanup: cleanup)
+            },
+            discard: {
+                Self.leaveEditMode(model: model, editMode: mode)
+                cleanup?.discard()
+            }
+        )
+    }
+
     /// Cancel from the toolbar X or Escape: confirm first when the user has
-    /// unsaved field changes, else leave edit mode straight away. `edited`
-    /// against `original` (not `isDirty`, which stays set after a change is
-    /// typed and reverted) so a no-op edit cancels without a prompt — the
-    /// same gate the new-contact sheet uses.
+    /// unsaved field changes, else leave edit mode straight away.
     private func requestCancelEdit() {
-        if let model = editModel, model.edited != model.original {
+        if Self.hasUnsavedChanges(editModel, cleanup: newContactCleanup) {
             showDiscardEditConfirm = true
         } else {
             cancelEdit()
         }
     }
 
+    /// Whether leaving the editor would lose typed changes. `edited` against
+    /// `original` (not `isDirty`, which stays set after a change is typed and
+    /// reverted) so a no-op edit cancels without a prompt — the same gate the
+    /// new-contact sheet uses. On a "+" card never saved, leaving also
+    /// deletes what the user added to the record (a photo, a dated note, a
+    /// note still being typed), so those count too
+    /// (`NewContactCleanup.hasUnsavedAdditions`).
+    private static func hasUnsavedChanges(_ model: ContactEditModel?, cleanup: NewContactCleanup?) -> Bool {
+        if cleanup?.hasUnsavedAdditions == true { return true }
+        guard let model else { return false }
+        return model.edited != model.original
+    }
+
+    /// Cancel's action, after any "Discard changes?": leave edit mode without
+    /// saving. On a "+" card never saved, the card closes and its record goes
+    /// with it (`NewContactCleanup.cancel`).
     private func cancelEdit() {
-        editModel = nil
-        editMode = .inactive
+        Self.leaveEditMode(model: $editModel, editMode: $editMode)
+        newContactCleanup?.cancel()
+    }
+
+    /// Done with nothing to save: leave edit mode, keeping the record — a "+"
+    /// record included, since the user chose Done.
+    private func finishEditWithNothingToSave() {
+        Self.leaveEditMode(model: $editModel, editMode: $editMode)
+        newContactCleanup?.keep()
+    }
+
+    /// Leave edit mode without saving: Cancel, Done with nothing to save, and
+    /// the scene's discard (`reportEditorToScene`).
+    private static func leaveEditMode(model: Binding<ContactEditModel?>, editMode: Binding<EditMode>) {
+        model.wrappedValue = nil
+        editMode.wrappedValue = .inactive
     }
 
     private func performInlineSave() async {
         guard let model = editModel else { return }
         isSavingEdit = true
         defer { isSavingEdit = false }
+        newContactCleanup?.writeDidBegin()
         do {
             try await repository.saveContact(model.edited, for: id)
+            newContactCleanup?.saveDidEnd(succeeded: true)
             editModel = nil
             editMode = .inactive
             // No reconcile here: editing CONTACT fields is not a GuessWho-sidecar
@@ -1160,6 +1255,7 @@ struct ContactDetailView: View {
             // it's a no-op except on a never-viewed-yet-saved path.
             await stampModified()
         } catch {
+            newContactCleanup?.saveDidEnd(succeeded: false)
             editSaveError = ContactEditModel.saveErrorCategory(error)
         }
     }
@@ -1167,8 +1263,13 @@ struct ContactDetailView: View {
     private func performInlineDelete() async {
         isSavingEdit = true
         defer { isSavingEdit = false }
+        newContactCleanup?.writeDidBegin()
         do {
-            guard try await repository.deleteContact(id: id) else { return }
+            let deleted = try await repository.deleteContact(id: id)
+            // `false`: the id no longer resolves, so the record is gone
+            // either way and a "+" record needs no delete of its own.
+            newContactCleanup?.deleteDidEnd(succeeded: true)
+            guard deleted else { return }
             editModel = nil
             editMode = .inactive
             await loadContact()
@@ -1180,6 +1281,7 @@ struct ContactDetailView: View {
             // recordDoesNotExist means the contact is already gone — exactly
             // what the user asked for. Treat as success.
             if category == .recordDoesNotExist {
+                newContactCleanup?.deleteDidEnd(succeeded: true)
                 editModel = nil
                 editMode = .inactive
                 repository.removeContact(id: id)
@@ -1188,6 +1290,7 @@ struct ContactDetailView: View {
                     dismiss()
                 }
             } else {
+                newContactCleanup?.deleteDidEnd(succeeded: false)
                 editDeleteError = category
             }
         }
@@ -1281,6 +1384,7 @@ struct ContactDetailView: View {
     private func resetPhotoCrop() async {
         do {
             guard let photo = try await repository.contactPhotoData(for: id, kind: .fullSize) else { return }
+            newContactCleanup?.recordDidGetUserData()
             try await repository.setContactPhotoCrop(for: id, crop: nil, originalData: photo.data)
             photoLoader.invalidate(id)
             await loadHeaderPhoto()
@@ -1317,6 +1421,7 @@ struct ContactDetailView: View {
     /// image cache (coarse — see `ContactPhotoLoader.invalidate`), reload the
     /// contact so `imageDataAvailable` is current, then refresh the header.
     private func writePhoto(_ imageData: Data?) async throws {
+        newContactCleanup?.recordDidGetUserData()
         try await repository.setContactPhoto(for: id, imageData: imageData)
         photoLoader.invalidate(loadedContactID ?? id)
         await loadContact(preferFresh: true)
@@ -2537,7 +2642,7 @@ struct ContactDetailView: View {
                 }
 
                 if showingNewNoteEditor {
-                    newNoteEditorRows
+                    newNoteEditorRows()
                 }
             }
         }
@@ -2735,13 +2840,31 @@ struct ContactDetailView: View {
     /// user can back-date the note. Shared by the read-mode `notesSection`
     /// and the contact-edit `editableNotesSection`. The picker binding maps
     /// nil (untouched) to "now" for display; commit stamps the actual save
-    /// time unless the user picked a date.
+    /// time unless the user picked a date. `editorFocus` is the contact
+    /// editor's focus in contact-edit mode, where the text field is a stop
+    /// of its tab order (`.newDatedNote`); nil in read mode, which leaves
+    /// the text field and its row as they are.
     @ViewBuilder
-    private var newNoteEditorRows: some View {
-        TextField("Add a dated note", text: $newNoteText, axis: .vertical)
+    private func newNoteEditorRows(editorFocus: ContactEditorFocus? = nil) -> some View {
+        let textField = TextField("Add a dated note", text: $newNoteText, axis: .vertical)
             .lineLimit(3...)
             .focused($noteFocus, equals: .newNote)
+            .editorTabStop(.newDatedNote, focus: editorFocus)
+            // On a "+" card, a note being typed counts while it has text,
+            // not only once it is added: the card can go away before
+            // `.onDisappear` commits the draft, and the record must still be
+            // there to take it. Clearing the draft stops it counting.
+            .onChange(of: newNoteText) { _, text in
+                newContactCleanup?.noteDraftDidChange(
+                    hasText: !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                )
+            }
             .centeredRowContent()
+        if editorFocus != nil {
+            textField.editorRow(.newDatedNote)
+        } else {
+            textField
+        }
         DatePicker(
             "Date",
             selection: Binding(
@@ -2753,14 +2876,17 @@ struct ContactDetailView: View {
         .centeredRowContent()
     }
 
+    /// `editorFocus`: as for `newNoteEditorRows`; the open note's text field
+    /// is the stop `.datedNote(note.id)`, and the caller names the row.
     @ViewBuilder
-    private func noteRow(_ note: ContactNote) -> some View {
+    private func noteRow(_ note: ContactNote, editorFocus: ContactEditorFocus? = nil) -> some View {
         if editingNoteID == note.id {
             ActivityRowLayout(systemImage: "text.rectangle") {
                 VStack(alignment: .leading, spacing: 8) {
                     TextField("", text: $draftBody, axis: .vertical)
                         .lineLimit(3...)
                         .focused($noteFocus, equals: .noteRow(note.id))
+                        .editorTabStop(.datedNote(note.id), focus: editorFocus)
                     DatePicker(
                         "Date",
                         selection: $draftNoteDate,
@@ -3620,6 +3746,7 @@ struct ContactDetailView: View {
         let body = newNoteText
         let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty, let notesStore {
+            newContactCleanup?.recordDidGetUserData()
             // A nil date means the picker was never touched — stamp "now" at
             // save time (the store's default), not editor-open time.
             let date = newNoteDate
@@ -4506,15 +4633,28 @@ private struct EditableSidecarFieldRow: View {
     /// Multi-line fields let Return insert newlines; single-line fields submit on
     /// Return and never contain a `\n` (though they may visually wrap).
     let isMultiline: Bool
+    /// The value field's stop in the contact editor's tab order
+    /// (`.customField` with this field's id), and the editor's focus.
+    let editorStop: ContactEditorStop
+    let editorFocus: ContactEditorFocus
     let onCommit: (String) -> Void
 
     @State private var draft: String
     @FocusState private var focused: Bool
 
-    init(name: String, initialValue: String, isMultiline: Bool, onCommit: @escaping (String) -> Void) {
+    init(
+        name: String,
+        initialValue: String,
+        isMultiline: Bool,
+        editorStop: ContactEditorStop,
+        editorFocus: ContactEditorFocus,
+        onCommit: @escaping (String) -> Void
+    ) {
         self.name = name
         self.initialValue = initialValue
         self.isMultiline = isMultiline
+        self.editorStop = editorStop
+        self.editorFocus = editorFocus
         self.onCommit = onCommit
         _draft = State(initialValue: initialValue)
     }
@@ -4537,6 +4677,10 @@ private struct EditableSidecarFieldRow: View {
             }
             .focused($focused)
             .onSubmit(commit)
+            // A stop of the editor's tab order. Tab moves focus and inserts
+            // no tab character, even in a multi-line field. Leaving by Tab
+            // commits like any other focus loss (below).
+            .editorTabStop(editorStop, focus: editorFocus)
         }
         .onChange(of: focused) { _, isFocused in
             if !isFocused { commit() }

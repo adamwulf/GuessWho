@@ -68,7 +68,10 @@ it's almost certainly wrong. Rephrase in terms of the user's mental model
 - `App/GuessWhoMailExtension/` — the Apple Mail extension: a NATIVE macOS
   MailKit `.appex` embedded only in the Catalyst app. Highlights mail from
   favorite people, journals metadata for mail from known people, and adds a
-  recipient-details popover to compose windows. No Swift packages.
+  recipient-details popover to compose windows. Like `guesswho-cli`, its
+  target lives in `App/guesswho-cli.xcodeproj` and a nested `xcodebuild`
+  (the app's "Build and Embed GuessWhoMailExtension" phase) builds, embeds,
+  and signs it. Links only GuessWhoLogging (logs to `mail-*.log`).
 - `App/GuessWhoMailShared/` — the Foundation-only file formats the Mail
   extension shares with the app through the App Group (contact cache,
   incoming-message journal, address/Message-ID handling), compiled into both

@@ -8,7 +8,8 @@ import GuessWhoSync
 /// attendee, the LinkedIn import's no-match case, and "Add Contact" for a
 /// Mail compose recipient — where there's no detail view to flip into yet.
 ///
-/// Row implementations live under `Rows/`. Shared utilities (LabelPicker,
+/// The rows are `ContactEditorSections`, shared with the inline edit; row
+/// implementations live under `Rows/`. Shared utilities (LabelPicker,
 /// LabelOptions, LabeledTextSection, PlatformKeyboardType) live next to
 /// this file.
 ///
@@ -59,21 +60,11 @@ struct ContactEditView: View {
     var body: some View {
         NavigationStack {
             Form {
-                NameFieldsRow(model: $model)
-                OrgFieldsRow(model: $model)
-                PhoneRow(model: $model)
-                EmailRow(model: $model)
-                URLRow(model: $model)
-                PostalAddressRow(model: $model)
-                BirthdayRow(model: $model)
-                DateRow(model: $model)
-                RelationRow(model: $model)
-                SocialProfileRow(model: $model)
-                IMRow(model: $model)
-                PhoneticNameRow(model: $model)
-                ContactNotesRow(model: $model)
+                ContactEditorSections(model: $model)
             }
             .formStyle(.grouped)
+            // Lets Tab bring a field below the visible part into view.
+            .contactEditorScrolling()
             // Draws the suggestion menu for the autocompleting rows (Company,
             // Department, Related) above the form's rows.
             .autocompleteMenuHost()

@@ -553,6 +553,13 @@ extension OrganizationsListViewController: ScrollsToTop {
     }
 }
 
+extension OrganizationsListViewController: RowSelectionRecording {
+    func rowSelectionSnapshot() -> RowSelectionSnapshot? {
+        guard isViewLoaded else { return nil }
+        return RowSelectionSnapshot(of: tableView, dataSource: dataSource, owner: self)
+    }
+}
+
 /// Diffable data source subclass that forwards A–Z section headers
 /// and the index scrubber. Same rationale as
 /// `ContactsListViewController.SectionedDataSource`.

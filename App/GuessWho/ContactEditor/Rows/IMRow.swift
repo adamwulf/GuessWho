@@ -3,6 +3,7 @@ import GuessWhoSync
 
 struct IMRow: View {
     @Binding var model: ContactEditModel
+    let focus: ContactEditorFocus
     var body: some View {
         TitledSection("Instant Message") {
             ForEach(model.edited.instantMessageAddresses.indices, id: \.self) { idx in
@@ -16,8 +17,11 @@ struct IMRow: View {
                         options: LabelOptions.imService
                     )
                     TextField("Username", text: imBinding(\.username, idx: idx))
+                        .focused(focus, equals: .field(.instantMessage(idx)))
+                        .editorTabStop(focus)
                 }
                 .centeredRowContent()
+                .editorRow(.instantMessage(idx))
             }
             .onDelete { offsets in
                 model.edited.instantMessageAddresses.remove(atOffsets: offsets)

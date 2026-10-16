@@ -18,7 +18,7 @@ formats, or the code that writes or drains them.
 
 | Piece | Where | Role |
 | ----- | ----- | ---- |
-| Extension target | `App/GuessWhoMailExtension/` | Native macOS app extension (`com.apple.email.extension`). Principal class `MailExtension` vends process-wide handlers. |
+| Extension target | `App/GuessWhoMailExtension/` (target in `App/guesswho-cli.xcodeproj`) | Native macOS app extension (`com.apple.email.extension`). Principal class `MailExtension` starts file logging and vends process-wide handlers. |
 | Message actions | `MessageActionHandler.swift` | `MEMessageActionHandler`: highlight + journal on each received message. |
 | Compose popover | `ComposeSessionHandler.swift`, `RecipientsModel.swift`, `RecipientsView.swift`, `RecipientsViewController.swift` | `MEComposeSessionHandler` + a SwiftUI list hosted in an `MEExtensionViewController`. |
 | Shared format | `App/GuessWhoMailShared/` | Foundation-only code compiled into both the extension and the app: address normalization, cache and journal formats and stores, Message-ID handling, and App Group lookup. |
@@ -30,17 +30,39 @@ formats, or the code that writes or drains them.
 
 - **Native macOS, not Catalyst.** MailKit is unavailable to Mac Catalyst, so
   `GuessWhoMailExtension` builds with `SDKROOT = macosx`
-  (`App/Config/GuessWhoMailExtension-Shared.xcconfig`), macOS 14 floor,
-  Swift 6.
+  (`App/Config/GuessWhoMailExtension-Shared.xcconfig`), macOS 15 floor (the
+  package's macOS floor), Swift 6.
+- **Built by a nested `xcodebuild`, like `guesswho-cli`.** The target lives in
+  `App/guesswho-cli.xcodeproj` (shared scheme `GuessWhoMailExtension`), not
+  in the app project. A native macOS target that links Swift packages in the
+  same `xcodebuild` as the Catalyst app collides in archive planning
+  ("Multiple commands produce …/UninstalledProducts/macosx/…"; Debug builds
+  hide it), so the app target's **Build and Embed GuessWhoMailExtension** Run
+  Script phase, right after **Build and Embed guesswho-cli**, builds the
+  extension's scheme in a nested `xcodebuild` with a sanitized environment,
+  in the same isolated derived data path as the helper
+  (`$(TARGET_TEMP_DIR)/guesswho-cli-build`), with signing disabled and
+  `ENABLE_DEBUG_DYLIB=NO`. Without that setting, a Debug build splits the
+  code into a stub plus `GuessWhoMailExtension.debug.dylib`, nested code
+  that the embed script would have to sign first; with it, the appex holds
+  one self-contained binary. For every non-Debug configuration the nested
+  build also gets `DEPLOYMENT_POSTPROCESSING=YES`, the post-processing an
+  archive gives its own products: Xcode writes the dSYM, then strips the
+  binary (`strip -D -x -T`, as for the LinkedIn appex). The phase copies
+  that dSYM into `DWARF_DSYM_FOLDER_PATH`, so an archive's `dSYMs/` holds
+  `GuessWhoMailExtension.appex.dSYM`.
 - **Embedded only in the Mac Catalyst app**, under
-  `GuessWho.app/Contents/PlugIns/`. Both the *Embed Foundation Extensions*
-  build file and the app's target dependency carry
-  `platformFilter = maccatalyst`, so iOS builds neither build nor ship it.
-- **No Swift packages.** A macOS target that links the app's package graph in
-  the same `xcodebuild` as the Catalyst app collides in archive planning (the
-  reason `guesswho-cli` is built by a nested `xcodebuild`). The extension uses
-  only Foundation, AppKit, SwiftUI, and MailKit, and logs through `os.Logger`
-  (subsystem `com.milestonemade.guesswho.mail`) instead of GuessWhoLogging.
+  `GuessWho.app/Contents/PlugIns/`. The phase exits early unless
+  `IS_MACCATALYST` is `YES`, so iOS builds neither build nor ship it. It
+  copies the built appex into `Contents/PlugIns/` before Xcode signs the app,
+  so the app's signature seals the embedded appex.
+- **Links GuessWhoLogging.** It is the only package product the extension
+  links. The nested build links it statically into the appex binary. If a
+  later Xcode builds a package product as a dynamic `…_PackageProduct`
+  framework, the phase copies the macOS variant into the appex's own
+  `Contents/Frameworks/` (its only rpath) and signs it before the appex; the
+  app's `Contents/Frameworks/` holds Catalyst variants, which a native macOS
+  binary can't load.
 - **Identity.** Bundle id `com.milestonemade.guesswho.mail` in both
   configurations; display name "GuessWho" (Release) or "GuessWho Debug"
   (Debug). Because Debug and Release share the bundle id, PlugInKit registers
@@ -52,6 +74,18 @@ formats, or the code that writes or drains them.
   (`MEExtensionCapabilities`: `MEComposeSessionHandler`,
   `MEMessageActionHandler`), with the compose button's icon (`ToolbarIcon` in
   the extension's asset catalog) and tooltip under `MEComposeSession`.
+- **Signed by the embed script, not by Xcode.** The phase signs the embedded
+  appex with the app's signing identity and
+  `GuessWhoMailExtension.entitlements`, after replacing
+  `$(GUESSWHO_APP_GROUP)` with the app target's value (see *App Group and the
+  `Mail/` directory*). With a real identity it signs with the hardened
+  runtime, and with a secure timestamp for every configuration except Debug.
+  Debug adds `com.apple.security.get-task-allow` (Xcode added it when it
+  signed the extension), and every other configuration removes it. An
+  ad-hoc identity (`-`) signs without the hardened runtime, and no identity
+  leaves the appex unsigned, as for `guesswho-cli`. Because no provisioning
+  profile is involved, an App Store export must re-sign the appex with a
+  profile for `com.milestonemade.guesswho.mail`.
 - **MailKit calls "main-actor" protocols off the main thread.** `MEExtension`
   and `MEComposeSessionHandler` are declared `@MainActor`, yet crash reports
   show MailKit creating the principal object (`MailExtension.init`) and
@@ -143,9 +177,12 @@ formats, or the code that writes or drains them.
 
 Both files live in `<App Group container>/Mail/`. The App Group is the app's
 Mac Catalyst group, `<TeamID>.com.milestonemade.guesswho` — Debug and Release
-share it; it is **not** the CLI/MCP group. The extension's entitlement and its
-`GuessWhoAppGroup` Info.plist value both expand from `GUESSWHO_APP_GROUP` in
-its xcconfig, so they can't drift.
+share it; it is **not** the CLI/MCP group. The extension's `GuessWhoAppGroup`
+Info.plist value expands from `GUESSWHO_APP_GROUP` in its own xcconfig. Its
+embedded entitlement expands from the app target's `GUESSWHO_APP_GROUP`
+(the `[sdk=macosx*]` value in `GuessWho-Debug.xcconfig` /
+`GuessWho-Release.xcconfig`), and the embed script fails the build when the
+two differ, so they can't drift.
 
 `MailHandoffContainer` resolves the directory **only** from the running
 bundle's `GuessWhoAppGroup` Info.plist value; there is no hardcoded fallback.
@@ -321,6 +358,59 @@ The published snapshot includes every email-bearing contact so Mail can recogniz
 
 The drainer claims up to ten batches of 50 entries per pass and renews both active and deferred ownership while processing. It builds the contact-address index only after finding work, rebuilds that index if the contact revision changes, uses the same `MailAddressNormalizer` as the extension cache, and records one message against every matching contact. Writes for each contact are awaited sequentially because the first incoming activity can transparently mint the private GuessWho identity URL on its Contacts card; `MailActivity` then de-duplicates redelivery by Message-ID and advances Last Interaction only forward. Stored entries are acknowledged. An unmatched sender is acknowledged only when the current contact revision has been successfully published, proving the extension cache and repository agree that the address is gone, or when the journal entry is at least seven days old; otherwise it is released for retry. Failed entries stay claimed while later batches drain, then are released together and retried after five minutes, so one poison entry cannot pin the backlog or cause a tight loop while a newer cache format is preserved. Claim, renewal, and release failures also schedule retries; a later pass first retries any release that previously failed. Loading or failed repository state never acknowledges an entry. Shutdown best-effort releases live claims, and fencing prevents this process from settling ownership another app copy acquired.
 
+## Logs
+
+The extension writes its log with GuessWhoLogging (FellerBuncher), like the
+app (`app-*.log`) and the Safari extension (`extension-*.log`).
+
+- **Where.** `<App Group container>/Logs/mail-yyyy-MM-dd.log` — on this Mac
+  `~/Library/Group Containers/<TeamID>.com.milestonemade.guesswho/Logs/`.
+  The date is in UTC, a new file starts each day, and FellerBuncher deletes
+  files older than 7 days. Debug and Release share the folder. The app's
+  **Export Debug Logs** zips the whole `Logs/` folder, so the export includes
+  these files.
+- **Start.** `MailExtension.init`, the principal object Mail creates in every
+  extension process before it asks for a handler, calls
+  `MailLog.bootstrap()`. That runs
+  `GuessWhoLog.bootstrap(processName: "mail", appGroupID:)` once per process
+  with the `GuessWhoAppGroup` Info.plist value
+  (`MailHandoffContainer.appGroupIdentifier()`), and each `MailLog` logger
+  calls it again before it is made, so no logger is made before the file
+  destination. Without that key there is no shared container, so there is no
+  log file (and no cache or journal).
+- **Labels.** `mail.extension` (process start), `mail.compose` (compose
+  popover and the GuessWho / Add Contact links), `mail.message-action`
+  (received messages). The minimum level is info.
+- **Breadcrumbs.** Each process start logs `mail extension started` with the
+  extension's `version` and `build`, the process ID (`pid`), and the
+  modification date of the extension's executable (`executableModified`,
+  never its path). Version and build come from `SharedVersion.xcconfig`:
+  every local build reports 0.1 and 1, and only Xcode Cloud sets real
+  numbers, so they can't tell local builds apart. The executable date can:
+  a local app build sets it when it embeds and signs the extension, so
+  compare `executableModified` (UTC) with the time of the build you are
+  testing, as *Enabling it in Mail* step 3 and the hand check do. Mail still
+  talks to the old extension process if, after the install and a Mail
+  relaunch, no new `mail extension started` line appears, or the newest
+  line still has the `pid` of a process from before the install. A compose
+  window logs `compose session began` and
+  `compose session ended` with its session ID, and a toolbar click logs
+  `popover requested` with the session ID, the row count, and the status
+  (`ready` or `contactsUnavailable`). Each received message logs
+  `decided message action` with an outcome: `not received`,
+  `unknown sender`, `journaled`, or `not journaled` (a failure line, or
+  `no contact cache published yet`, says why). If a "no popover" report has
+  no `compose session began` or `popover requested` line for that time, Mail
+  did not call the extension (see *Enabling it in Mail*).
+- **Console.** FellerBuncher also sends each line to the unified log, with
+  subsystem `com.milestonemade.guesswho.mail` (the extension's bundle id) and
+  category `default` for every line (GuessWhoLogging sets no category). The
+  label is only in the line text (`label=mail.compose`), so filter on it
+  there, for example
+  `log stream --info --predicate 'subsystem == "com.milestonemade.guesswho.mail" AND eventMessage CONTAINS "label=mail.compose"'`.
+  Info and notice lines go in at the info level, so in Console turn on
+  **Include Info Messages**.
+
 ## Privacy
 
 - The extension reads the From address, Subject, received date, and
@@ -335,9 +425,12 @@ The drainer claims up to ten batches of 50 entries per pass and renews both acti
   user clicks **Add Contact**, and only in the wake URL it gives Launch
   Services. Nothing is written to the App Group, and the app saves nothing
   until the user saves the editor.
-- Its log lines carry fixed messages and, for failures, only the error's
+- Its log lines carry fixed messages, counts, states, the compose session ID,
+  the extension's version, build, process ID, and executable modification
+  date, and, for failures, only the error's
   type, `NSError` domain, and code (`LoggedError.fingerprint`) — never an
-  error description, file path, coding path, address, or subject.
+  error description, file path, coding path, address, name, subject, or
+  Message-ID.
 - Any cache or journal failure leaves the message exactly as Mail delivered
   it.
 
@@ -353,11 +446,21 @@ Apple has never documented Mail’s `message:` URL scheme. Mail has long answere
 2. In Mail, open **Settings → Extensions** and turn on **GuessWho** (or
    **GuessWho Debug**). If Mail lists the extension's capabilities
    separately, enable both compose and message actions.
+3. **After installing a new build, quit Mail with Cmd-Q and open it again.**
+   A Mail that was already running can keep using the old extension process
+   and not connect to the new build. Turning the extension off and on in
+   **Settings → Extensions** does not restart the extension process (the
+   process ID stays the same). When Mail next uses the extension, a new
+   `mail extension started` line in `mail-*.log` shows the new process ID
+   and an `executableModified` date from your latest build (local builds
+   all report version 0.1, build 1; see *Logs*).
 
 ## Human runtime checks
 
 Automated tests cover the shared formats, the wake URLs, display-name reading, the new-contact name split, cache projection, address matching, cache publication rules, preservation after a favorite-group read failure, and release of failed mail writes for retry. After enabling the extension, verify the OS-hosted MailKit behavior end to end:
 
+- After installing the build under test, quit Mail with Cmd-Q and open it again (toggling the extension in Mail's Settings does not restart the extension process). Once Mail uses the extension, today's `mail-*.log` in the App Group `Logs/` folder has a new `mail extension started` line with a new `pid` and an `executableModified` date from this build (local builds all report version 0.1, build 1, so those numbers don't identify the build).
+- Opening a compose window and clicking the toolbar button adds `compose session began` and `popover requested` (with the row count and status) to `mail-*.log`; closing the window adds `compose session ended`. A received message adds `decided message action` with its outcome.
 - Flagging is switched off (`flagsHighlightedSenders`), so no message is flagged; skip this check and the next until it is turned back on. When on: mail from a favorite contact, a favorite group member, a favorite organization member, or a member of a favorite department arrives flagged (blue for a contact, green for a group, orange for an organization or department). Clearing the flag in Mail's Flag menu should work and is unverified. After changing a favorite group in Contacts.app, activate GuessWho before checking the new Mail highlight because this app excludes group-only changes from its Contacts history request.
 - Mail from a known, non-favorite sender arrives unflagged and produces one journal entry; mail from an unknown sender produces none.
 - The matching contact page shows the message under **Recent Email**, advances Last Interaction, and offers **Open in Mail** only for a safe Message-ID link.
@@ -372,4 +475,4 @@ Automated tests cover the shared formats, the wake URLs, display-name reading, t
 - With GuessWho quit, clicking **Add Contact** launches it (the URL arrives in `scene(_:willConnectTo:)`), and the editor still appears filled in with the name and address once contacts load. With GuessWho quit, clicking **Add Contact** for an address that already belongs to a contact launches it and opens that contact.
 - While the popover says "Contact details aren't available right now.", no row has an **Add Contact** button.
 - Opening a generated message link may or may not select the message — both are acceptable.
-- The Mail extension log shows no unexpected errors and never includes addresses or subjects.
+- `mail-*.log` shows no unexpected errors and never includes addresses, names, subjects, Message-IDs, or file paths.

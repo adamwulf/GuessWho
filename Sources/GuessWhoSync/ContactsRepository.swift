@@ -1556,6 +1556,58 @@ public final class ContactsRepository: NSObject {
         return contact(localID: created.localID) ?? cached
     }
 
+    /// Whether the record `id` holds nothing a person put there: its Contacts
+    /// fields are blank (its identity URL aside), it has no photo, it is in no
+    /// group, nothing favorites or links it, and its GuessWho data is only
+    /// what the app writes by itself — the identity on the record, and the
+    /// created, modified and viewed timestamps that `createContact` and
+    /// `stampViewed` write. Notes, custom fields, a photo or its crop,
+    /// highlighted emails, mail activity, and any other cell, even a removed
+    /// one, count as something a person put there.
+    ///
+    /// For the app's "+" add flow, which deletes the blank record it created
+    /// when the user leaves it without a word. So every read is fresh — the
+    /// Contacts record, its photo bytes, its groups, its GuessWho data — and
+    /// any read that fails throws, as does storage that is unavailable for a
+    /// record with an identity: the caller must then keep the record. A
+    /// record that no longer resolves returns false: there is nothing to
+    /// delete.
+    ///
+    /// The link read (`GuessWhoSync.links(at:)`) walks the whole link corpus,
+    /// so one unreadable link file anywhere makes this throw, and every "+"
+    /// record is kept for as long as that lasts. By design: unsure is not
+    /// blank.
+    public func isBlankAndUntouched(_ id: ContactID) async throws -> Bool {
+        guard let localID = contact(id: id)?.localID,
+              let fresh = try await contactsStore.fetch(localID: localID) else { return false }
+        var visible = fresh
+        visible.urlAddresses = fresh.userVisibleURLAddresses
+        guard visible == Contact(localID: fresh.localID, contactType: fresh.contactType),
+              try await contactsStore.loadThumbnailImageData(localID: localID) == nil,
+              try await contactsStore.loadImageData(localID: localID) == nil,
+              try await contactsStore.fetchGroupMemberships(contactLocalID: localID).isEmpty
+        else { return false }
+        // No identity yet: nothing in GuessWho can be keyed on the record.
+        guard let key = SidecarKey.forContact(fresh) else { return true }
+        guard let sync, let favorites else { throw SidecarUnavailableError() }
+        if let envelope = try sync.sidecar(at: key) {
+            guard envelope.cellsDroppedOnDecode == 0,
+                  envelope.fields.keys.allSatisfy(Self.automaticNewContactCellKeys.contains)
+            else { return false }
+        }
+        guard try await sync.links(at: key).isEmpty else { return false }
+        // A contact favorite, or a department favorite of this organization.
+        return try !favorites.loadAll().contains { $0.id == key.id || $0.id.hasPrefix(key.id + "/") }
+    }
+
+    /// The contact cells the app writes without anyone asking: the creation
+    /// stamps (`createContact`) and the viewed stamp (`stampViewed`).
+    private static let automaticNewContactCellKeys: Set<String> = [
+        ContactTimestamps.createdAtKey,
+        ContactTimestamps.lastModifiedKey,
+        ContactTimestamps.lastViewedKey,
+    ]
+
     /// Sets (or clears, with `nil`) the contact's photo bytes on its Contacts
     /// record, addressed by the app-facing `ContactID`. Image bytes go through
     /// the store's dedicated photo-write path (not `save`), then the one record

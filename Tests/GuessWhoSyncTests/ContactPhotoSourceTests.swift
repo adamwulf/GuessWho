@@ -108,7 +108,8 @@ struct ContactPhotoSourceTests {
     @Test func pendingOriginalArrivalInvalidatesPhotoConsumers() async throws {
         let (repo, contacts, files, sync, id, defaults) = try await fixture()
         try await repo.setContactPhoto(for: id, imageData: Data([1, 2]))
-        let key = try #require(SidecarKey.forContact(try #require(repo.contact(id: id))))
+        let contact = try #require(repo.contact(id: id))
+        let key = try #require(SidecarKey.forContact(contact))
         let center = NotificationCenter()
         let reader = ContactsRepository(contacts: contacts, sync: sync, notificationCenter: center, photoSourceDefaults: defaults)
         await reader.reload()

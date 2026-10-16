@@ -1,5 +1,4 @@
 import AppKit
-import os
 
 /// Opens the GuessWho app from the compose popover: to show a contact, or to
 /// add a recipient the contact cache doesn't know.
@@ -19,11 +18,11 @@ enum GuessWhoAppLink {
     @MainActor
     static func open(contactID: String) {
         guard let url = MailContactLink.url(scheme: scheme, contactID: contactID) else {
-            Logger.mailExtension("compose").error("open contact: not a GuessWho ID")
+            MailLog.compose.error("open contact: not a GuessWho ID")
             return
         }
         if !NSWorkspace.shared.open(url) {
-            Logger.mailExtension("compose").error("open contact: Launch Services refused the link")
+            MailLog.compose.error("open contact: Launch Services refused the link")
         }
     }
 
@@ -33,11 +32,11 @@ enum GuessWhoAppLink {
     @MainActor
     static func openNewContact(email: String, name: String?) {
         guard let url = MailNewContactLink.url(scheme: scheme, email: email, name: name) else {
-            Logger.mailExtension("compose").error("add contact: not an email address")
+            MailLog.compose.error("add contact: not an email address")
             return
         }
         if !NSWorkspace.shared.open(url) {
-            Logger.mailExtension("compose").error("add contact: Launch Services refused the link")
+            MailLog.compose.error("add contact: Launch Services refused the link")
         }
     }
 }

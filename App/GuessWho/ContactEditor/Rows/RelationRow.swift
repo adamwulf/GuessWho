@@ -3,6 +3,7 @@ import GuessWhoSync
 
 struct RelationRow: View {
     @Binding var model: ContactEditModel
+    let focus: ContactEditorFocus
     // Optional: the new-contact sheet can be presented without a repository
     // in its environment, and the field must still work — just without
     // suggestions.
@@ -33,9 +34,12 @@ struct RelationRow: View {
                                 model.isDirty = true
                             }
                         ),
-                        options: LabelOptions.relation
+                        options: LabelOptions.relation,
+                        focus: focus,
+                        field: .relationLabel(idx)
                     )
                     TextField("Name", text: name)
+                        .focused(focus, equals: .field(.relation(idx)))
                         // A relation resolves to a contact by display name
                         // (see the detail card), so suggest exactly those —
                         // every contact but this one.
@@ -44,8 +48,12 @@ struct RelationRow: View {
                                 excluding: model.original.contactID
                             ) ?? []
                         }
+                        // After the autocomplete, which takes Tab first to
+                        // accept a highlighted suggestion.
+                        .editorTabStop(focus)
                 }
                 .centeredRowContent()
+                .editorRow(.relation(idx))
             }
             .onDelete { offsets in
                 model.edited.contactRelations.remove(atOffsets: offsets)

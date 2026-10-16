@@ -896,6 +896,13 @@ extension GroupsListViewController: ScrollsToTop {
     }
 }
 
+extension GroupsListViewController: RowSelectionRecording {
+    func rowSelectionSnapshot() -> RowSelectionSnapshot? {
+        guard isViewLoaded else { return nil }
+        return RowSelectionSnapshot(of: tableView, dataSource: dataSource, owner: self)
+    }
+}
+
 // MARK: - Top Level drop target
 
 private final class TopLevelDropTargetView: UIView {

@@ -3,6 +3,7 @@ import GuessWhoSync
 
 struct PostalAddressRow: View {
     @Binding var model: ContactEditModel
+    let focus: ContactEditorFocus
     var body: some View {
         TitledSection("Address") {
             ForEach(model.edited.postalAddresses.indices, id: \.self) { idx in
@@ -13,9 +14,12 @@ struct PostalAddressRow: View {
                             model.edited.postalAddresses[idx] = $0
                             model.isDirty = true
                         }
-                    )
+                    ),
+                    index: idx,
+                    focus: focus
                 )
                 .centeredRowContent()
+                .editorRow(.street(idx))
             }
             .onDelete { offsets in
                 model.edited.postalAddresses.remove(atOffsets: offsets)
@@ -43,11 +47,10 @@ struct PostalAddressRow: View {
 
 struct PostalAddressEditor: View {
     @Binding var entry: LabeledPostalAddress
-    @FocusState private var focus: PostalField?
-
-    private enum PostalField: Hashable {
-        case street, city, state, postal, country
-    }
+    /// This address's position in the contact's address list, which names
+    /// its fields in the editor's tab order (`ContactEditModel.Field.street`).
+    let index: Int
+    let focus: ContactEditorFocus
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -56,22 +59,29 @@ struct PostalAddressEditor: View {
                     get: { entry.label },
                     set: { entry = LabeledPostalAddress(label: $0, value: entry.value) }
                 ),
-                options: LabelOptions.address
+                options: LabelOptions.address,
+                focus: focus,
+                field: .addressLabel(index)
             )
             TextField("Street", text: streetBinding)
-                .focused($focus, equals: .street)
-                .onSubmit { focus = .city }
+                .focused(focus, equals: .field(.street(index)))
+                .onSubmit { focus.wrappedValue = .field(.city(index)) }
+                .editorTabStop(focus)
             TextField("City", text: binding(\.city))
-                .focused($focus, equals: .city)
-                .onSubmit { focus = .state }
+                .focused(focus, equals: .field(.city(index)))
+                .onSubmit { focus.wrappedValue = .field(.state(index)) }
+                .editorTabStop(focus)
             TextField("State", text: binding(\.state))
-                .focused($focus, equals: .state)
-                .onSubmit { focus = .postal }
+                .focused(focus, equals: .field(.state(index)))
+                .onSubmit { focus.wrappedValue = .field(.postalCode(index)) }
+                .editorTabStop(focus)
             TextField("Postal Code", text: binding(\.postalCode))
-                .focused($focus, equals: .postal)
-                .onSubmit { focus = .country }
+                .focused(focus, equals: .field(.postalCode(index)))
+                .onSubmit { focus.wrappedValue = .field(.country(index)) }
+                .editorTabStop(focus)
             TextField("Country", text: binding(\.country))
-                .focused($focus, equals: .country)
+                .focused(focus, equals: .field(.country(index)))
+                .editorTabStop(focus)
         }
     }
 

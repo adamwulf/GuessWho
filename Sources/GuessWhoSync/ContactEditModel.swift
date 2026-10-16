@@ -197,6 +197,15 @@ public struct ContactEditModel: Equatable {
         /// saw, without asserting a cause we can't stand behind. Opening Settings
         /// can't fix it, so this case must NOT offer the Contacts-settings button.
         case storeRejected(String)
+        /// The connection to the system Contacts service failed
+        /// (`NSCocoaErrorDomain` 4097 / 4099, the XPC "interrupted" and
+        /// "invalid" connection errors, whose stock text is "Couldn’t
+        /// communicate with a helper application."). Seen on a running Mac
+        /// app whose every save then failed with "connection to
+        /// ContactsAccountService: Client does not have TCC access". The
+        /// detail is not shown: it names a "helper application", which means
+        /// nothing to the user.
+        case contactsUnreachable
         /// Anything else; carries the underlying error's
         /// `localizedDescription`.
         case unknown(String)
@@ -212,6 +221,8 @@ public struct ContactEditModel: Equatable {
                 return "This contact has been deleted on another device. Tap Cancel to refresh."
             case .storeRejected(let detail):
                 return "This change to the contact couldn’t be saved: \(detail)"
+            case .contactsUnreachable:
+                return Self.contactsUnreachableMessage
             case .unknown(let detail):
                 return detail
             }
@@ -230,15 +241,21 @@ public struct ContactEditModel: Equatable {
                 return "Contact already deleted."
             case .storeRejected(let detail):
                 return "This contact couldn’t be deleted: \(detail)"
+            case .contactsUnreachable:
+                return Self.contactsUnreachableMessage
             case .unknown(let detail):
                 return detail
             }
         }
+
+        private static let contactsUnreachableMessage =
+            "GuessWho couldn’t communicate with Apple Contacts. Quit and reopen GuessWho, then try again."
     }
 
     /// Map an arbitrary `Error` (typically `CNError`, but also the
-    /// `NSCocoaErrorDomain` save errors the Contacts backing store throws) into
-    /// a category. Matches stable domain strings and documented integer codes
+    /// `NSCocoaErrorDomain` save errors the Contacts backing store throws, and
+    /// the `NSCocoaErrorDomain` XPC errors when the Contacts service can't be
+    /// reached) into a category. Matches stable domain strings and documented integer codes
     /// instead of importing `Contacts`, so this module stays buildable where
     /// `Contacts` is unavailable.
     public static func saveErrorCategory(_ error: Error) -> SaveErrorCategory {
@@ -275,8 +292,12 @@ public struct ContactEditModel: Equatable {
         }
     }
 
-    /// `NSCocoaErrorDomain` codes the Contacts (Core Data backed) store raises
-    /// when `CNSaveRequest.execute()` is rejected. The persistent-store
+    /// `NSCocoaErrorDomain` codes a Contacts save can fail with. Two families:
+    /// the XPC connection errors (4097 / 4099), when the connection to the
+    /// Contacts service fails — routed to `.contactsUnreachable` — and the
+    /// store's own rejections. A 4099 request was never delivered; a 4097
+    /// request was in flight when the service stopped, so its write may or may
+    /// not have been applied (never retry it automatically). The persistent-store
     /// save-failure family (134060–134095, which includes the field-reported
     /// 134092) all mean "the store rejected this write," but the SPECIFIC cause
     /// lives in `NSUnderlyingError`, not the code. So the whole family routes to
@@ -290,6 +311,12 @@ public struct ContactEditModel: Equatable {
             // NSPersistentStoreSaveError (134060) … generic Core Data save
             // failures (incl. 134092). The store rejected the write; cause TBD.
             return .storeRejected(description)
+        case 4097, 4099:
+            // NSXPCConnectionInterrupted / NSXPCConnectionInvalid: the
+            // connection to the Contacts service failed (4099: never
+            // delivered; 4097: interrupted in flight, so the write may or may
+            // not have been applied).
+            return .contactsUnreachable
         default:
             return .unknown(description)
         }

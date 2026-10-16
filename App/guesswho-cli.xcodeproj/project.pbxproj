@@ -9,10 +9,12 @@
 /* Begin PBXBuildFile section */
 		F400000000000000000000D5 /* GuessWhoMCPWire in Frameworks */ = {isa = PBXBuildFile; productRef = F400000000000000000000D4 /* GuessWhoMCPWire */; };
 		F400000000000000000000E1 /* GuessWhoCLICore in Frameworks */ = {isa = PBXBuildFile; productRef = F400000000000000000000E0 /* GuessWhoCLICore */; };
+		F600000000000000000000D5 /* GuessWhoLogging in Frameworks */ = {isa = PBXBuildFile; productRef = F600000000000000000000D4 /* GuessWhoLogging */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		F400000000000000000000C0 /* guesswho-cli */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = "guesswho-cli"; sourceTree = BUILT_PRODUCTS_DIR; };
+		F600000000000000000000C0 /* GuessWhoMailExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = GuessWhoMailExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -22,6 +24,13 @@
 				Info.plist,
 			);
 			target = F400000000000000000000B1 /* guesswho-cli */;
+		};
+		F600000000000000000000A4 /* Exceptions for "GuessWhoMailExtension" folder in "GuessWhoMailExtension" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = F600000000000000000000B1 /* GuessWhoMailExtension */;
 		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
@@ -39,6 +48,19 @@
 			path = Config;
 			sourceTree = "<group>";
 		};
+		F600000000000000000000A3 /* GuessWhoMailExtension */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				F600000000000000000000A4 /* Exceptions for "GuessWhoMailExtension" folder in "GuessWhoMailExtension" target */,
+			);
+			path = GuessWhoMailExtension;
+			sourceTree = "<group>";
+		};
+		F600000000000000000000A5 /* GuessWhoMailShared */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = GuessWhoMailShared;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -51,6 +73,14 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		F600000000000000000000B4 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				F600000000000000000000D5 /* GuessWhoLogging in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -58,6 +88,8 @@
 			isa = PBXGroup;
 			children = (
 				F400000000000000000000A3 /* guesswho-cli */,
+				F600000000000000000000A3 /* GuessWhoMailExtension */,
+				F600000000000000000000A5 /* GuessWhoMailShared */,
 				F400000000000000000000A7 /* Config */,
 				F400000000000000000000A5 /* Products */,
 			);
@@ -67,6 +99,7 @@
 			isa = PBXGroup;
 			children = (
 				F400000000000000000000C0 /* guesswho-cli */,
+				F600000000000000000000C0 /* GuessWhoMailExtension.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -98,6 +131,30 @@
 			productReference = F400000000000000000000C0 /* guesswho-cli */;
 			productType = "com.apple.product-type.tool";
 		};
+		F600000000000000000000B1 /* GuessWhoMailExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = F600000000000000000000C2 /* Build configuration list for PBXNativeTarget "GuessWhoMailExtension" */;
+			buildPhases = (
+				F600000000000000000000B2 /* Sources */,
+				F600000000000000000000B4 /* Frameworks */,
+				F600000000000000000000B3 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				F600000000000000000000A3 /* GuessWhoMailExtension */,
+				F600000000000000000000A5 /* GuessWhoMailShared */,
+			);
+			name = GuessWhoMailExtension;
+			packageProductDependencies = (
+				F600000000000000000000D4 /* GuessWhoLogging */,
+			);
+			productName = GuessWhoMailExtension;
+			productReference = F600000000000000000000C0 /* GuessWhoMailExtension.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -109,6 +166,9 @@
 				LastUpgradeCheck = 2630;
 				TargetAttributes = {
 					F400000000000000000000B1 = {
+						CreatedOnToolsVersion = 26.3;
+					};
+					F600000000000000000000B1 = {
 						CreatedOnToolsVersion = 26.3;
 					};
 				};
@@ -131,9 +191,20 @@
 			projectRoot = "";
 			targets = (
 				F400000000000000000000B1 /* guesswho-cli */,
+				F600000000000000000000B1 /* GuessWhoMailExtension */,
 			);
 		};
 /* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		F600000000000000000000B3 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
 		F400000000000000000000B0 /* Generate BuildSettings.swift */ = {
@@ -163,6 +234,13 @@
 
 /* Begin PBXSourcesBuildPhase section */
 		F400000000000000000000B2 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		F600000000000000000000B2 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -204,6 +282,22 @@
 			};
 			name = Release;
 		};
+		F600000000000000000000C21 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReferenceAnchor = F400000000000000000000A7 /* Config */;
+			baseConfigurationReferenceRelativePath = "GuessWhoMailExtension-Debug.xcconfig";
+			buildSettings = {
+			};
+			name = Debug;
+		};
+		F600000000000000000000C22 /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReferenceAnchor = F400000000000000000000A7 /* Config */;
+			baseConfigurationReferenceRelativePath = "GuessWhoMailExtension-Release.xcconfig";
+			buildSettings = {
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -225,6 +319,15 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
+		F600000000000000000000C2 /* Build configuration list for PBXNativeTarget "GuessWhoMailExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				F600000000000000000000C21 /* Debug */,
+				F600000000000000000000C22 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
@@ -242,6 +345,10 @@
 		F400000000000000000000E0 /* GuessWhoCLICore */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = GuessWhoCLICore;
+		};
+		F600000000000000000000D4 /* GuessWhoLogging */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = GuessWhoLogging;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
