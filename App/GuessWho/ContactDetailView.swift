@@ -1158,8 +1158,9 @@ struct ContactDetailView: View {
     /// card, by the same rule as Cancel. While a save or delete runs, Cancel
     /// is disabled and the outcome no longer depends on leaving, so the scene
     /// doesn't ask either. Discard drops the changes as Cancel does and, on a
-    /// "+" card never saved, deletes the record; the scene's navigation then
-    /// replaces the card, so the card isn't closed here. Bindings and the
+    /// "+" card never saved, marks the record to go with the card; the
+    /// scene's navigation then replaces the card, so the card isn't closed
+    /// here. Bindings and the
     /// cleanup, not `self`, per `ContactEditorHandle.attach`.
     private func reportEditorToScene() {
         let model = $editModel, mode = $editMode, isSaving = $isSavingEdit
@@ -1198,8 +1199,8 @@ struct ContactDetailView: View {
     }
 
     /// Cancel's action, after any "Discard changes?": leave edit mode without
-    /// saving. On a "+" card never saved, the record is deleted and the card
-    /// closes (`NewContactCleanup.cancel`).
+    /// saving. On a "+" card never saved, the card closes and its record goes
+    /// with it (`NewContactCleanup.cancel`).
     private func cancelEdit() {
         Self.leaveEditMode(model: $editModel, editMode: $editMode)
         newContactCleanup?.cancel()
