@@ -43,6 +43,28 @@ struct NewContactCleanupTests {
     }
 
     @Test
+    func discardedStaysTrueOnceTheCardIsGone_untilTheRecordIsKeptOrEdited() async {
+        let gone = CleanupProbe()
+        let cancelled = gone.makeCleanup()
+        cancelled.cancel()
+        cancelled.cardDidEnd()
+        await cancelled.settled()
+        #expect(cancelled.isDiscarded)
+
+        let doneAfterDiscard = CleanupProbe().makeCleanup()
+        doneAfterDiscard.discard()
+        doneAfterDiscard.keep()
+        #expect(!doneAfterDiscard.isDiscarded)
+
+        let editedAfterDiscard = CleanupProbe().makeCleanup()
+        editedAfterDiscard.discard()
+        editedAfterDiscard.writeDidBegin()
+        #expect(!editedAfterDiscard.isDiscarded)
+
+        #expect(!CleanupProbe().makeCleanup().isDiscarded)
+    }
+
+    @Test
     func discardTakesTheUserAdditionsWithTheRecord() async {
         let probe = CleanupProbe()
         probe.isBlank = false

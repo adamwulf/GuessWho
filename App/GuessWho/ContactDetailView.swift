@@ -540,8 +540,12 @@ struct ContactDetailView: View {
         .onDisappear {
             // Backstop for the edge-swipe-back gesture: the system pop bypasses
             // our custom back button, so commit here too. A no-op if
-            // commitActiveEdit() already ran from a button tap.
-            commitActiveEdit()
+            // commitActiveEdit() already ran from a button tap. Not on a "+"
+            // card the user discarded: its record is going, and a draft would
+            // only land on a deleted record.
+            if newContactCleanup?.isDiscarded != true {
+                commitActiveEdit()
+            }
             coarseMailActivityReloadTask?.cancel()
             coarseHighlightedEmailReloadTask?.cancel()
         }

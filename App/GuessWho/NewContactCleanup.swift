@@ -115,9 +115,12 @@ final class NewContactCleanup {
         phase == .unsaved && !discarded && (addedUserData || noteDraftHasText)
     }
 
-    /// The user chose Cancel or Discard Changes and the card is still there.
+    /// The user chose Cancel or Discard Changes and hasn't saved or kept the
+    /// record since — whether the card is still there or already gone. The
+    /// card then skips committing a half-typed note as it goes, and the next
+    /// "+" takes such a card off the column first.
     var isDiscarded: Bool {
-        phase == .unsaved && discarded
+        discarded && phase != .kept
     }
 
     /// Cancel in the card: close it; the record goes with it. Does nothing
