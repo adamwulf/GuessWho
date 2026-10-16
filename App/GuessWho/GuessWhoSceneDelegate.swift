@@ -847,10 +847,13 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// A list click on `contact`: show its card in the detail column, asking
     /// first about unsaved edits there. A click on the record the column's
     /// "+" card is adding (its row is in the list as soon as it exists)
-    /// keeps that card, edits and all: it already shows the record.
+    /// keeps that card, edits and all: it already shows the record. The
+    /// click's highlight then matches the card, so it becomes the selection
+    /// a later Keep Editing puts back.
     private func selectContact(_ contact: Contact, appDelegate: GuessWhoAppDelegate) {
         if columnIsAddingContact(contact.contactID, repository: appDelegate.contactsRepository) {
             Self.contactsLog.notice("add-contact: row of the record being added clicked — keeping its card")
+            recordEditStartSelection()
             return
         }
         confirmingDiscard { $0.showContactDetail(contact: contact, appDelegate: appDelegate) }
