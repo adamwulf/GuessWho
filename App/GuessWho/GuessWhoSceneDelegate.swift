@@ -838,16 +838,22 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// editing. Callers ask first (`confirmingDiscard`), before the record
     /// exists, so Keep Editing creates nothing.
     private func addContact(seed: Contact, appDelegate: GuessWhoAppDelegate) {
-        createNewContact(appDelegate: appDelegate, seed: seed) { [weak self] created in
-            self?.showContactDetail(contact: created, appDelegate: appDelegate, startsInEditMode: true)
+        createNewContact(appDelegate: appDelegate, seed: seed) { [weak self] created, cleanup in
+            self?.showContactDetail(
+                contact: created, appDelegate: appDelegate, startsInEditMode: true, newContactCleanup: cleanup
+            )
         }
     }
 
+    /// `newContactCleanup` is the "+" flow's (`createNewContact`): the card
+    /// gets it, it watches the card's hosting controller, and its Cancel
+    /// closes the card back to the section placeholder.
     @discardableResult
     private func showContactDetail(
         contact: Contact,
         appDelegate: GuessWhoAppDelegate,
-        startsInEditMode: Bool = false
+        startsInEditMode: Bool = false,
+        newContactCleanup: NewContactCleanup? = nil
     ) -> UINavigationController? {
         guard let split else { return nil }
         // No `.id(...)` needed: `setViewController(_:for: .secondary)` replaces
@@ -858,16 +864,22 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         // detail roots on — the app never threads a raw `localID` through
         // navigation.
         let editor = makeContactEditorHandle()
-        let detail = ContactDetailView(id: contact.contactID, startsInEditMode: startsInEditMode)
-            .environment(appDelegate.service)
-            .environment(appDelegate.contactsRepository)
-            .environment(appDelegate.contactPhotoLoader)
-            .environment(appDelegate.favoritesStore)
-            .environment(\.contactEditorHandle, editor)
+        let detail = ContactDetailView(
+            id: contact.contactID, startsInEditMode: startsInEditMode, newContactCleanup: newContactCleanup
+        )
+        .environment(appDelegate.service)
+        .environment(appDelegate.contactsRepository)
+        .environment(appDelegate.contactPhotoLoader)
+        .environment(appDelegate.favoritesStore)
+        .environment(\.contactEditorHandle, editor)
         let hosting = UIHostingController(
             rootView: injectCatalystPushHandlers(detail, on: nav, appDelegate: appDelegate)
         )
         hosting.gwContactEditor = editor
+        if let newContactCleanup {
+            newContactCleanup.watch(hosting)
+            newContactCleanup.close = { [weak self, weak hosting] in self?.closeNewContactCard(hosting) }
+        }
         nav.viewControllers = [hosting]
         // Observe pops so backing out of an in-detail drill-down re-syncs the
         // restore selection to whatever detail is left on top.
@@ -1250,6 +1262,22 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         syncSelectionToTop(nil)
     }
 
+    /// Cancel on a "+" card never saved: its record is being deleted
+    /// (`NewContactCleanup.cancel`), so the column returns to the section
+    /// placeholder. The list's rows are deselected too: "+" leaves the row
+    /// that was open before highlighted, and that row no longer matches the
+    /// column. Nothing happens unless `card` is still the column's root, and
+    /// nothing asks: its editor has just been cancelled, and the user
+    /// cancelled on it, so no other card is above it.
+    private func closeNewContactCard(_ card: UIViewController?) {
+        guard let split, let card,
+              let nav = split.viewController(for: .secondary) as? UINavigationController,
+              nav.viewControllers.first === card else { return }
+        installDetailPlaceholder(in: split, for: mountedSection ?? .people)
+        supplementaryList()?.rowSelectionSnapshot()?.deselectAll()
+        syncSelectionToTop(nil)
+    }
+
     /// Neutral placeholder shown only at scene-connection time, before the
     /// sidebar's `selectInitialTab()` invokes `didSelect` and a tab-specific
     /// placeholder takes over.
@@ -1391,6 +1419,11 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// `seed` defaults to a blank person; the Organizations "+" passes a blank
     /// `.organization` seed so the record lands in the Organizations list.
     ///
+    /// `show` also gets the record's `NewContactCleanup`, which deletes it if
+    /// the editor ends without a save with Done. `show` hands it to the card
+    /// (`ContactDetailView.newContactCleanup`), has it watch the card's
+    /// hosting controller, and sets how Cancel closes the card.
+    ///
     /// Shell-agnostic: the caller's `show` closure decides how to present —
     /// Catalyst's lists REPLACE the secondary column via `showContactDetail`,
     /// the iPhone tab shell PUSHES via `pushContactDetail`. That's why this
@@ -1398,13 +1431,14 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     private func createNewContact(
         appDelegate: GuessWhoAppDelegate,
         seed: Contact = Contact(),
-        show: @escaping @MainActor (Contact) -> Void
+        show: @escaping @MainActor (Contact, NewContactCleanup) -> Void
     ) {
         Task { @MainActor in
             do {
-                let created = try await appDelegate.contactsRepository.createContact(seed)
+                let repository = appDelegate.contactsRepository
+                let created = try await repository.createContact(seed)
                 Self.contactsLog.notice("add-contact: created blank \(seed.contactType.rawValue) record")
-                show(created)
+                show(created, NewContactCleanup(id: created.contactID, repository: repository))
             } catch {
                 Self.contactsLog.error("add-contact: create failed: \(error.localizedDescription)")
                 self.presentAddContactFailureAlert(error: error, isOrganization: seed.contactType == .organization)
@@ -1673,12 +1707,13 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             )
         }
         list.didRequestAddContact = { [weak self, weak list] in
-            self?.createNewContact(appDelegate: appDelegate) { [weak self, weak list] created in
+            self?.createNewContact(appDelegate: appDelegate) { [weak self, weak list] created, cleanup in
                 self?.pushContactDetail(
                     id: created.contactID,
                     on: list?.navigationController,
                     appDelegate: appDelegate,
-                    startsInEditMode: true
+                    startsInEditMode: true,
+                    newContactCleanup: cleanup
                 )
             }
         }
@@ -1716,12 +1751,13 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             self?.createNewContact(
                 appDelegate: appDelegate,
                 seed: Contact(contactType: .organization)
-            ) { [weak self, weak list] created in
+            ) { [weak self, weak list] created, cleanup in
                 self?.pushContactDetail(
                     id: created.contactID,
                     on: list?.navigationController,
                     appDelegate: appDelegate,
-                    startsInEditMode: true
+                    startsInEditMode: true,
+                    newContactCleanup: cleanup
                 )
             }
         }
@@ -1969,15 +2005,19 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         pushContactDetail(id: ref.id, on: nav, appDelegate: appDelegate)
     }
 
+    /// `newContactCleanup` is the "+" flow's (`createNewContact`): the card
+    /// gets it, it watches the pushed hosting controller, and its Cancel pops
+    /// the card.
     private func pushContactDetail(
         id: ContactID,
         on nav: UINavigationController?,
         appDelegate: GuessWhoAppDelegate,
-        startsInEditMode: Bool = false
+        startsInEditMode: Bool = false,
+        newContactCleanup: NewContactCleanup? = nil
     ) {
         guard let nav else { return }
         let detail = injectIPhonePushHandlers(
-            ContactDetailView(id: id, startsInEditMode: startsInEditMode)
+            ContactDetailView(id: id, startsInEditMode: startsInEditMode, newContactCleanup: newContactCleanup)
                 .environment(appDelegate.service)
                 .environment(appDelegate.contactsRepository)
                 .environment(appDelegate.contactPhotoLoader)
@@ -1986,6 +2026,13 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             appDelegate: appDelegate
         )
         let hosting = UIHostingController(rootView: detail)
+        if let newContactCleanup {
+            newContactCleanup.watch(hosting)
+            newContactCleanup.close = { [weak nav, weak hosting] in
+                guard let nav, let hosting, nav.topViewController === hosting else { return }
+                nav.popViewController(animated: true)
+            }
+        }
         nav.pushViewController(hosting, animated: true)
         // Restore-to this contact (deepest detail = what the user is looking at).
         // Edit mode is intentionally NOT restored — reopen shows the card, not an
