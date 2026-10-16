@@ -1192,8 +1192,9 @@ struct ContactDetailView: View {
     /// `original` (not `isDirty`, which stays set after a change is typed and
     /// reverted) so a no-op edit cancels without a prompt — the same gate the
     /// new-contact sheet uses. On a "+" card never saved, leaving also
-    /// deletes what the user added to the record (a photo, a dated note), so
-    /// those count too (`NewContactCleanup.hasUnsavedAdditions`).
+    /// deletes what the user added to the record (a photo, a dated note, a
+    /// note still being typed), so those count too
+    /// (`NewContactCleanup.hasUnsavedAdditions`).
     private static func hasUnsavedChanges(_ model: ContactEditModel?, cleanup: NewContactCleanup?) -> Bool {
         if cleanup?.hasUnsavedAdditions == true { return true }
         guard let model else { return false }
@@ -2842,14 +2843,14 @@ struct ContactDetailView: View {
             .lineLimit(3...)
             .focused($noteFocus, equals: .newNote)
             .editorTabStop(.newDatedNote, focus: editorFocus)
-            // On a "+" card, a note being typed counts as soon as it has
-            // text, not only once it is added: the card can go away before
+            // On a "+" card, a note being typed counts while it has text,
+            // not only once it is added: the card can go away before
             // `.onDisappear` commits the draft, and the record must still be
-            // there to take it.
+            // there to take it. Clearing the draft stops it counting.
             .onChange(of: newNoteText) { _, text in
-                if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    newContactCleanup?.recordDidGetUserData()
-                }
+                newContactCleanup?.noteDraftDidChange(
+                    hasText: !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                )
             }
             .centeredRowContent()
         if editorFocus != nil {

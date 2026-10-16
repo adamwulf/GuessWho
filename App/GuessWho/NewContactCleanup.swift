@@ -19,7 +19,8 @@ import GuessWhoLogging
 /// * With no question asked — another row clicked with nothing typed, Back,
 ///   a section switch, a Mail wake, its window closing: the record goes only
 ///   while it is still blank. A photo or a dated note the user added on the
-///   card (`recordDidGetUserData`) keeps it, and so does anything put on the
+///   card (`recordDidGetUserData`), or a note draft with text in it
+///   (`noteDraftDidChange`), keeps it, and so does anything put on the
 ///   record elsewhere that `ContactsRepository.isBlankAndUntouched` finds —
 ///   fields, a photo, a group, a favorite, a link, notes or any other
 ///   GuessWho data. A check that can't read something keeps it too.
@@ -64,6 +65,9 @@ final class NewContactCleanup {
     private var discarded = false
     /// The user added a photo or a dated note on the card.
     private var addedUserData = false
+    /// The card's new-note draft has text right now. Live, unlike
+    /// `addedUserData`: clearing the draft clears it.
+    private var noteDraftHasText = false
     /// The card went away while a write ran, so the write's outcome decides.
     private var cardEnded = false
     /// The decision `cardDidEnd` started, for `settled()`.
@@ -107,7 +111,7 @@ final class NewContactCleanup {
     /// The user added something that leaving would delete: the card asks
     /// "Discard changes?" before it lets them go, as for typed changes.
     var hasUnsavedAdditions: Bool {
-        phase == .unsaved && addedUserData && !discarded
+        phase == .unsaved && !discarded && (addedUserData || noteDraftHasText)
     }
 
     /// The user chose Cancel or Discard Changes and the card is still there.
@@ -138,12 +142,19 @@ final class NewContactCleanup {
         becomeKept()
     }
 
-    /// The user added a photo or a dated note, or started typing one. Such a
+    /// The user added a dated note, or a photo write is starting. Such a
     /// record is no longer blank: the card asks before discarding it, and an
     /// end with no question keeps it.
     func recordDidGetUserData() {
         guard phase == .unsaved || phase == .writing else { return }
         addedUserData = true
+    }
+
+    /// The card's new-note draft gained or lost its text. While it has text,
+    /// the card asks before discarding, and an end with no question keeps
+    /// the record for the draft that the card commits as it goes.
+    func noteDraftDidChange(hasText: Bool) {
+        noteDraftHasText = hasText
     }
 
     /// A save or Delete Contact started. Until it ends, nothing deletes. The
@@ -226,7 +237,7 @@ final class NewContactCleanup {
             } else if discarded {
                 Self.log.notice("deleting the never-saved new record", ["reason": "discarded"])
                 deleteRecord()
-            } else if addedUserData {
+            } else if addedUserData || noteDraftHasText {
                 Self.log.notice("new record kept: the user added to it")
             } else if await isStillBlank() {
                 // The check reads for a while; a card can open the record in

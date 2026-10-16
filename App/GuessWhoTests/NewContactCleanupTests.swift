@@ -95,6 +95,26 @@ struct NewContactCleanupTests {
     }
 
     @Test
+    func noteDraftCountsOnlyWhileItHasText() async {
+        let typing = CleanupProbe()
+        let kept = typing.makeCleanup()
+        kept.noteDraftDidChange(hasText: true)
+        #expect(kept.hasUnsavedAdditions)
+        kept.cardDidEnd()
+        await kept.settled()
+        #expect(typing.deletes == 0)
+
+        let cleared = CleanupProbe()
+        let deleted = cleared.makeCleanup()
+        deleted.noteDraftDidChange(hasText: true)
+        deleted.noteDraftDidChange(hasText: false)
+        #expect(!deleted.hasUnsavedAdditions)
+        deleted.cardDidEnd()
+        await deleted.settled()
+        #expect(cleared.deletes == 1)
+    }
+
+    @Test
     func recordAnotherCardShowsIsNeverDeleted() async {
         let untouched = CleanupProbe()
         untouched.isShownElsewhere = true
