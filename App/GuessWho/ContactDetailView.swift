@@ -456,12 +456,14 @@ struct ContactDetailView: View {
         // body's modifier chain within the type-checker's budget.
         .sheet(item: $photoCropRequest) { request in
             ContactPhotoCropEditor(image: request.image, initialCrop: request.crop) { crop in
+                // Before the write: one that fails partway can still leave a
+                // photo, and an unsure "+" record is kept.
+                newContactCleanup?.recordDidGetUserData()
                 if request.isReplacement {
                     try await repository.setContactPhoto(for: request.contactID, imageData: request.data, crop: crop)
                 } else {
                     try await repository.setContactPhotoCrop(for: request.contactID, crop: crop, originalData: request.data)
                 }
-                newContactCleanup?.recordDidGetUserData()
                 photoLoader.invalidate(request.contactID)
                 await loadContact(preferFresh: true)
                 await loadHeaderPhoto()
@@ -1374,8 +1376,8 @@ struct ContactDetailView: View {
     private func resetPhotoCrop() async {
         do {
             guard let photo = try await repository.contactPhotoData(for: id, kind: .fullSize) else { return }
-            try await repository.setContactPhotoCrop(for: id, crop: nil, originalData: photo.data)
             newContactCleanup?.recordDidGetUserData()
+            try await repository.setContactPhotoCrop(for: id, crop: nil, originalData: photo.data)
             photoLoader.invalidate(id)
             await loadHeaderPhoto()
         } catch {
@@ -1411,8 +1413,8 @@ struct ContactDetailView: View {
     /// image cache (coarse — see `ContactPhotoLoader.invalidate`), reload the
     /// contact so `imageDataAvailable` is current, then refresh the header.
     private func writePhoto(_ imageData: Data?) async throws {
-        try await repository.setContactPhoto(for: id, imageData: imageData)
         newContactCleanup?.recordDidGetUserData()
+        try await repository.setContactPhoto(for: id, imageData: imageData)
         photoLoader.invalidate(loadedContactID ?? id)
         await loadContact(preferFresh: true)
         await loadHeaderPhoto()
