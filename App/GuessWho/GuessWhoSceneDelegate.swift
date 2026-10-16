@@ -586,7 +586,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             favoritesStore: appDelegate.favoritesStore
         )
         list.didSelectContact = { [weak self] contact in
-            self?.confirmingDiscard { $0.showContactDetail(contact: contact, appDelegate: appDelegate) }
+            self?.selectContact(contact, appDelegate: appDelegate)
         }
         list.didSelectContacts = { [weak self] contacts in
             self?.confirmingDiscard { $0.showContactDetailStack(contacts: contacts, appDelegate: appDelegate) }
@@ -614,7 +614,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             favoritesStore: appDelegate.favoritesStore
         )
         list.didSelectContact = { [weak self] contact in
-            self?.confirmingDiscard { $0.showContactDetail(contact: contact, appDelegate: appDelegate) }
+            self?.selectContact(contact, appDelegate: appDelegate)
         }
         list.didSelectContacts = { [weak self] contacts in
             self?.confirmingDiscard { $0.showContactDetailStack(contacts: contacts, appDelegate: appDelegate) }
@@ -716,7 +716,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         // groups show their members in the secondary column.
         let nav = UINavigationController(rootViewController: list)
         list.didSelectContact = { [weak self] contact in
-            self?.confirmingDiscard { $0.showContactDetail(contact: contact, appDelegate: appDelegate) }
+            self?.selectContact(contact, appDelegate: appDelegate)
         }
         list.didSelectEvent = { [weak self] event in
             self?.confirmingDiscard {
@@ -825,12 +825,54 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             favoritesStore: appDelegate.favoritesStore
         )
         members.didSelectContact = { [weak self] contact in
-            self?.confirmingDiscard { $0.showContactDetail(contact: contact, appDelegate: appDelegate) }
+            self?.selectContact(contact, appDelegate: appDelegate)
         }
         members.didSelectContacts = { [weak self] contacts in
             self?.confirmingDiscard { $0.showContactDetailStack(contacts: contacts, appDelegate: appDelegate) }
         }
         nav.pushViewController(members, animated: true)
+    }
+
+    /// A list click on `contact`: show its card in the detail column, asking
+    /// first about unsaved edits there. A click on the record the column's
+    /// "+" card is adding (its row is in the list as soon as it exists)
+    /// keeps that card, edits and all: it already shows the record.
+    private func selectContact(_ contact: Contact, appDelegate: GuessWhoAppDelegate) {
+        if columnIsAddingContact(contact.contactID, repository: appDelegate.contactsRepository) {
+            Self.contactsLog.notice("add-contact: row of the record being added clicked — keeping its card")
+            return
+        }
+        confirmingDiscard { $0.showContactDetail(contact: contact, appDelegate: appDelegate) }
+    }
+
+    /// Whether the detail column holds just a "+" card, and it shows `id`.
+    private func columnIsAddingContact(_ id: ContactID, repository: ContactsRepository) -> Bool {
+        guard let split,
+              let nav = split.viewController(for: .secondary) as? UINavigationController,
+              nav.viewControllers.count == 1,
+              let card = nav.viewControllers.first,
+              NewContactCleanup.watching(card) != nil else { return false }
+        return Self.shows(card, id, repository: repository)
+    }
+
+    /// Whether the detail column of any window shows `id` on its stack —
+    /// what keeps a "+" record from its delete (`NewContactCleanup`).
+    private static func anyDetailColumnShows(_ id: ContactID, repository: ContactsRepository) -> Bool {
+        UIApplication.shared.connectedScenes
+            .compactMap { ($0 as? UIWindowScene)?.delegate as? GuessWhoSceneDelegate }
+            .contains { scene in
+                guard let nav = scene.split?.viewController(for: .secondary) as? UINavigationController else {
+                    return false
+                }
+                return nav.viewControllers.contains { shows($0, id, repository: repository) }
+            }
+    }
+
+    /// Whether `card` shows `id`. Compared through the repository, which
+    /// follows a record whose identity was minted after a card stamped it.
+    private static func shows(_ card: UIViewController, _ id: ContactID, repository: ContactsRepository) -> Bool {
+        let target = repository.contact(id: id)?.contactID ?? id
+        return card.gwShownContactIDs.contains { (repository.contact(id: $0)?.contactID ?? $0) == target }
     }
 
     /// The "+" of the People and Organizations lists: create a blank record
@@ -877,8 +919,12 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         )
         hosting.gwContactEditor = editor
         if let newContactCleanup {
+            let repository = appDelegate.contactsRepository
             newContactCleanup.watch(hosting)
             newContactCleanup.close = { [weak self, weak hosting] in self?.closeNewContactCard(hosting) }
+            newContactCleanup.isShownElsewhere = { [id = contact.contactID] in
+                Self.anyDetailColumnShows(id, repository: repository)
+            }
         }
         nav.viewControllers = [hosting]
         // Observe pops so backing out of an in-detail drill-down re-syncs the
@@ -1438,7 +1484,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
                 let repository = appDelegate.contactsRepository
                 let created = try await repository.createContact(seed)
                 Self.contactsLog.notice("add-contact: created blank \(seed.contactType.rawValue) record")
-                show(created, NewContactCleanup(id: created.contactID, repository: repository))
+                show(created, NewContactCleanup(record: created, repository: repository))
             } catch {
                 Self.contactsLog.error("add-contact: create failed: \(error.localizedDescription)")
                 self.presentAddContactFailureAlert(error: error, isOrganization: seed.contactType == .organization)
