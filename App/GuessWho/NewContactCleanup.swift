@@ -229,8 +229,14 @@ final class NewContactCleanup {
             } else if addedUserData {
                 Self.log.notice("new record kept: the user added to it")
             } else if await isStillBlank() {
-                Self.log.notice("deleting the never-saved new record", ["reason": "card closed"])
-                deleteRecord()
+                // The check reads for a while; a card can open the record in
+                // the meantime (arrow keys through the list, a click back).
+                if isShownElsewhere() {
+                    Self.log.notice("new record kept: another card opened it")
+                } else {
+                    Self.log.notice("deleting the never-saved new record", ["reason": "card closed"])
+                    deleteRecord()
+                }
             } else {
                 Self.log.notice("new record kept: not blank, already gone, or not readable")
             }

@@ -113,6 +113,18 @@ struct NewContactCleanupTests {
     }
 
     @Test
+    func cardOpeningTheRecordDuringTheBlankCheckKeepsIt() async {
+        let probe = CleanupProbe()
+        probe.duringBlankCheck = { [unowned probe] in probe.isShownElsewhere = true }
+        let cleanup = probe.makeCleanup()
+
+        cleanup.cardDidEnd()
+        await cleanup.settled()
+
+        #expect(probe.deletes == 0)
+    }
+
+    @Test
     func savedRecordIsNeverDeleted() async {
         let probe = CleanupProbe()
         let cleanup = probe.makeCleanup()
@@ -263,10 +275,15 @@ private final class CleanupProbe {
     var keeps = 0
     var isBlank = true
     var isShownElsewhere = false
+    /// Runs inside the blank check, as if it were reading.
+    var duringBlankCheck: () -> Void = {}
 
     func makeCleanup() -> NewContactCleanup {
         let cleanup = NewContactCleanup(
-            isStillBlank: { [unowned self] in isBlank },
+            isStillBlank: { [unowned self] in
+                duringBlankCheck()
+                return isBlank
+            },
             deleteRecord: { [unowned self] in deletes += 1 }
         )
         cleanup.close = { [unowned self] in closes += 1 }
