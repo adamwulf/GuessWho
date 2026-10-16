@@ -32,7 +32,9 @@ final class ContactEditorHandle {
     /// rule the editor's own Cancel asks "Discard changes?" by.
     var hasUnsavedChanges: Bool { unsavedChanges() }
 
-    /// Leave edit mode without saving, as the editor's Cancel does.
+    /// Leave edit mode without saving, as the editor's Cancel does. On a "+"
+    /// card never saved, this deletes its blank record too, but leaves the
+    /// card for the scene to replace (`NewContactCleanup.discard`).
     func discard() {
         discardChanges()
     }

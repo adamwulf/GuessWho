@@ -159,6 +159,11 @@ struct ContactDetailView: View {
     /// existing contacts share one form (no separate new-contact sheet).
     var startsInEditMode: Bool = false
 
+    /// Set by the "+" add flow only: the blank record it created for this
+    /// card, which is deleted if the editor ends without a save with Done
+    /// (`NewContactCleanup`). nil on every other card.
+    var newContactCleanup: NewContactCleanup? = nil
+
     /// The full selection when this card is the front sheet of a stacked
     /// multi-contact detail. An empty array is the normal single-contact path.
     /// Multi-selection keeps this card's content while adapting its toolbar:
@@ -1008,7 +1013,7 @@ struct ContactDetailView: View {
                     if editModel?.isDirty == true {
                         await performInlineSave()   // saves + dismisses
                     } else {
-                        cancelEdit()                // nothing to save; just dismiss
+                        finishEditWithNothingToSave()
                     }
                 }
             } label: {
@@ -1149,13 +1154,19 @@ struct ContactDetailView: View {
     /// Let the scene ask this editor before another selection replaces the
     /// card, by the same rule as Cancel. While a save or delete runs, Cancel
     /// is disabled and the outcome no longer depends on leaving, so the scene
-    /// doesn't ask either. Bindings, not `self`, per
-    /// `ContactEditorHandle.attach`.
+    /// doesn't ask either. Discard drops the changes as Cancel does and, on a
+    /// "+" card never saved, deletes the record; the scene's navigation then
+    /// replaces the card, so the card isn't closed here. Bindings and the
+    /// cleanup, not `self`, per `ContactEditorHandle.attach`.
     private func reportEditorToScene() {
         let model = $editModel, mode = $editMode, isSaving = $isSavingEdit
+        let cleanup = newContactCleanup
         editorHandle?.attach(
             hasUnsavedChanges: { !isSaving.wrappedValue && Self.hasUnsavedChanges(model.wrappedValue) },
-            discard: { Self.cancelEdit(model: model, editMode: mode) }
+            discard: {
+                Self.leaveEditMode(model: model, editMode: mode)
+                cleanup?.discard()
+            }
         )
     }
 
@@ -1178,13 +1189,24 @@ struct ContactDetailView: View {
         return model.edited != model.original
     }
 
+    /// Cancel's action, after any "Discard changes?": leave edit mode without
+    /// saving. On a "+" card never saved, the record is deleted and the card
+    /// closes (`NewContactCleanup.cancel`).
     private func cancelEdit() {
-        Self.cancelEdit(model: $editModel, editMode: $editMode)
+        Self.leaveEditMode(model: $editModel, editMode: $editMode)
+        newContactCleanup?.cancel()
     }
 
-    /// Leave edit mode without saving: Cancel's action, and the scene's
-    /// discard (`reportEditorToScene`).
-    private static func cancelEdit(model: Binding<ContactEditModel?>, editMode: Binding<EditMode>) {
+    /// Done with nothing to save: leave edit mode, keeping the record — a "+"
+    /// record included, since the user chose Done.
+    private func finishEditWithNothingToSave() {
+        Self.leaveEditMode(model: $editModel, editMode: $editMode)
+        newContactCleanup?.keep()
+    }
+
+    /// Leave edit mode without saving: Cancel, Done with nothing to save, and
+    /// the scene's discard (`reportEditorToScene`).
+    private static func leaveEditMode(model: Binding<ContactEditModel?>, editMode: Binding<EditMode>) {
         model.wrappedValue = nil
         editMode.wrappedValue = .inactive
     }
@@ -1193,8 +1215,10 @@ struct ContactDetailView: View {
         guard let model = editModel else { return }
         isSavingEdit = true
         defer { isSavingEdit = false }
+        newContactCleanup?.writeDidBegin()
         do {
             try await repository.saveContact(model.edited, for: id)
+            newContactCleanup?.saveDidEnd(succeeded: true)
             editModel = nil
             editMode = .inactive
             // No reconcile here: editing CONTACT fields is not a GuessWho-sidecar
@@ -1212,6 +1236,7 @@ struct ContactDetailView: View {
             // it's a no-op except on a never-viewed-yet-saved path.
             await stampModified()
         } catch {
+            newContactCleanup?.saveDidEnd(succeeded: false)
             editSaveError = ContactEditModel.saveErrorCategory(error)
         }
     }
@@ -1219,8 +1244,13 @@ struct ContactDetailView: View {
     private func performInlineDelete() async {
         isSavingEdit = true
         defer { isSavingEdit = false }
+        newContactCleanup?.writeDidBegin()
         do {
-            guard try await repository.deleteContact(id: id) else { return }
+            let deleted = try await repository.deleteContact(id: id)
+            // `false`: the id no longer resolves, so the record is gone
+            // either way and a "+" record needs no delete of its own.
+            newContactCleanup?.deleteDidEnd(succeeded: true)
+            guard deleted else { return }
             editModel = nil
             editMode = .inactive
             await loadContact()
@@ -1232,6 +1262,7 @@ struct ContactDetailView: View {
             // recordDoesNotExist means the contact is already gone — exactly
             // what the user asked for. Treat as success.
             if category == .recordDoesNotExist {
+                newContactCleanup?.deleteDidEnd(succeeded: true)
                 editModel = nil
                 editMode = .inactive
                 repository.removeContact(id: id)
@@ -1240,6 +1271,7 @@ struct ContactDetailView: View {
                     dismiss()
                 }
             } else {
+                newContactCleanup?.deleteDidEnd(succeeded: false)
                 editDeleteError = category
             }
         }
