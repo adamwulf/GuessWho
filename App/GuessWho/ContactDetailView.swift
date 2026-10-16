@@ -160,7 +160,7 @@ struct ContactDetailView: View {
     var startsInEditMode: Bool = false
 
     /// Set by the "+" add flow only: the blank record it created for this
-    /// card, which is deleted if the editor ends without a save with Done
+    /// card, which is deleted if the editor ends without Done
     /// (`NewContactCleanup`). nil on every other card.
     var newContactCleanup: NewContactCleanup? = nil
 
@@ -461,6 +461,7 @@ struct ContactDetailView: View {
                 } else {
                     try await repository.setContactPhotoCrop(for: request.contactID, crop: crop, originalData: request.data)
                 }
+                newContactCleanup?.recordDidGetUserData()
                 photoLoader.invalidate(request.contactID)
                 await loadContact(preferFresh: true)
                 await loadHeaderPhoto()
@@ -979,10 +980,12 @@ struct ContactDetailView: View {
         // A red X "Cancel" mirrors the accent checkmark "Done". Cancel discards
         // any pending CNContact-model edits and dismisses — it does NOT undo
         // sidecar edits (custom fields, notes), which commit live as they're
-        // made. Escape triggers Cancel via .cancelAction; an autocompleting
-        // field (Company, Department, Related) takes the first Escape to
-        // close its menu and leaves the next one to this shortcut, so
-        // unsaved work is guarded by a "Discard changes?" confirmation.
+        // made. The exception is a "+" card never ended with Done: Cancel
+        // deletes its record, with any photo or note added to it
+        // (`NewContactCleanup`). Escape triggers Cancel via .cancelAction; an
+        // autocompleting field (Company, Department, Related) takes the first
+        // Escape to close its menu and leaves the next one to this shortcut,
+        // so unsaved work is guarded by a "Discard changes?" confirmation.
         ToolbarItem(placement: .cancellationAction) {
             Button(role: .cancel) {
                 requestCancelEdit()
@@ -1162,7 +1165,9 @@ struct ContactDetailView: View {
         let model = $editModel, mode = $editMode, isSaving = $isSavingEdit
         let cleanup = newContactCleanup
         editorHandle?.attach(
-            hasUnsavedChanges: { !isSaving.wrappedValue && Self.hasUnsavedChanges(model.wrappedValue) },
+            hasUnsavedChanges: {
+                !isSaving.wrappedValue && Self.hasUnsavedChanges(model.wrappedValue, cleanup: cleanup)
+            },
             discard: {
                 Self.leaveEditMode(model: model, editMode: mode)
                 cleanup?.discard()
@@ -1173,7 +1178,7 @@ struct ContactDetailView: View {
     /// Cancel from the toolbar X or Escape: confirm first when the user has
     /// unsaved field changes, else leave edit mode straight away.
     private func requestCancelEdit() {
-        if Self.hasUnsavedChanges(editModel) {
+        if Self.hasUnsavedChanges(editModel, cleanup: newContactCleanup) {
             showDiscardEditConfirm = true
         } else {
             cancelEdit()
@@ -1183,8 +1188,11 @@ struct ContactDetailView: View {
     /// Whether leaving the editor would lose typed changes. `edited` against
     /// `original` (not `isDirty`, which stays set after a change is typed and
     /// reverted) so a no-op edit cancels without a prompt — the same gate the
-    /// new-contact sheet uses.
-    private static func hasUnsavedChanges(_ model: ContactEditModel?) -> Bool {
+    /// new-contact sheet uses. On a "+" card never saved, leaving also
+    /// deletes what the user added to the record (a photo, a dated note), so
+    /// those count too (`NewContactCleanup.hasUnsavedAdditions`).
+    private static func hasUnsavedChanges(_ model: ContactEditModel?, cleanup: NewContactCleanup?) -> Bool {
+        if cleanup?.hasUnsavedAdditions == true { return true }
         guard let model else { return false }
         return model.edited != model.original
     }
@@ -1366,6 +1374,7 @@ struct ContactDetailView: View {
         do {
             guard let photo = try await repository.contactPhotoData(for: id, kind: .fullSize) else { return }
             try await repository.setContactPhotoCrop(for: id, crop: nil, originalData: photo.data)
+            newContactCleanup?.recordDidGetUserData()
             photoLoader.invalidate(id)
             await loadHeaderPhoto()
         } catch {
@@ -1402,6 +1411,7 @@ struct ContactDetailView: View {
     /// contact so `imageDataAvailable` is current, then refresh the header.
     private func writePhoto(_ imageData: Data?) async throws {
         try await repository.setContactPhoto(for: id, imageData: imageData)
+        newContactCleanup?.recordDidGetUserData()
         photoLoader.invalidate(loadedContactID ?? id)
         await loadContact(preferFresh: true)
         await loadHeaderPhoto()
@@ -2829,6 +2839,15 @@ struct ContactDetailView: View {
             .lineLimit(3...)
             .focused($noteFocus, equals: .newNote)
             .editorTabStop(.newDatedNote, focus: editorFocus)
+            // On a "+" card, a note being typed counts as soon as it has
+            // text, not only once it is added: the card can go away before
+            // `.onDisappear` commits the draft, and the record must still be
+            // there to take it.
+            .onChange(of: newNoteText) { _, text in
+                if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    newContactCleanup?.recordDidGetUserData()
+                }
+            }
             .centeredRowContent()
         if editorFocus != nil {
             textField.editorRow(.newDatedNote)
@@ -3716,6 +3735,7 @@ struct ContactDetailView: View {
         let body = newNoteText
         let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty, let notesStore {
+            newContactCleanup?.recordDidGetUserData()
             // A nil date means the picker was never touched — stamp "now" at
             // save time (the store's default), not editor-open time.
             let date = newNoteDate
