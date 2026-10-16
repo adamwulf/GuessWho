@@ -866,26 +866,6 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         return Self.shows(card, id, repository: repository)
     }
 
-    /// Whether the detail column of any window shows `id` on its stack —
-    /// what keeps a "+" record from its delete (`NewContactCleanup`).
-    private static func anyDetailColumnShows(_ id: ContactID, repository: ContactsRepository) -> Bool {
-        UIApplication.shared.connectedScenes
-            .compactMap { ($0 as? UIWindowScene)?.delegate as? GuessWhoSceneDelegate }
-            .contains { scene in
-                guard let nav = scene.split?.viewController(for: .secondary) as? UINavigationController else {
-                    return false
-                }
-                return nav.viewControllers.contains { shows($0, id, repository: repository) }
-            }
-    }
-
-    /// Whether `card` shows `id`. Compared through the repository, which
-    /// follows a record whose identity was minted after a card stamped it.
-    private static func shows(_ card: UIViewController, _ id: ContactID, repository: ContactsRepository) -> Bool {
-        let target = repository.contact(id: id)?.contactID ?? id
-        return card.gwShownContactIDs.contains { (repository.contact(id: $0)?.contactID ?? $0) == target }
-    }
-
     /// The "+" of the People and Organizations lists: create a blank record
     /// (`createNewContact`), then open it in the detail column already
     /// editing. Callers ask first (`confirmingDiscard`), before the record
@@ -947,7 +927,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             newContactCleanup.watch(hosting)
             newContactCleanup.close = { [weak self, weak hosting] in self?.closeNewContactCard(hosting) }
             newContactCleanup.isShownElsewhere = { [id = contact.contactID] in
-                Self.anyDetailColumnShows(id, repository: repository)
+                Self.anyWindowShows(id, repository: repository)
             }
             newContactCleanup.didKeep = { [weak self, weak hosting, id = contact.contactID] in
                 guard let self, let hosting else { return }
@@ -1523,6 +1503,41 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
                 self.presentAddContactFailureAlert(error: error, isOrganization: seed.contactType == .organization)
             }
         }
+    }
+
+    /// Whether a card in any window shows `id`: a view controller stamped
+    /// with it in `gwShownContactIDs`, anywhere under the window's root —
+    /// every tab's stack, the Mac's detail column, anything presented. What
+    /// keeps a "+" record from its delete (`NewContactCleanup`).
+    private static func anyWindowShows(_ id: ContactID, repository: ContactsRepository) -> Bool {
+        UIApplication.shared.connectedScenes
+            .compactMap { ($0 as? UIWindowScene)?.delegate as? GuessWhoSceneDelegate }
+            .compactMap { $0.window?.rootViewController }
+            .contains { root in viewControllers(under: root).contains { shows($0, id, repository: repository) } }
+    }
+
+    /// `root` and every view controller below it: children (each column,
+    /// each pushed card), every tab of a tab bar controller, and anything
+    /// presented.
+    private static func viewControllers(under root: UIViewController) -> [UIViewController] {
+        var found: [UIViewController] = []
+        var seen: Set<ObjectIdentifier> = []
+        var pending = [root]
+        while let next = pending.popLast() {
+            guard seen.insert(ObjectIdentifier(next)).inserted else { continue }
+            found.append(next)
+            pending += next.children
+            pending += (next as? UITabBarController)?.viewControllers ?? []
+            if let presented = next.presentedViewController { pending.append(presented) }
+        }
+        return found
+    }
+
+    /// Whether `card` shows `id`. Compared through the repository, which
+    /// follows a record whose identity was minted after a card stamped it.
+    private static func shows(_ card: UIViewController, _ id: ContactID, repository: ContactsRepository) -> Bool {
+        let target = repository.contact(id: id)?.contactID ?? id
+        return card.gwShownContactIDs.contains { (repository.contact(id: $0)?.contactID ?? $0) == target }
     }
 
     /// User-facing alert for a failed "+" create (People or Organizations).
@@ -2106,11 +2121,18 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             appDelegate: appDelegate
         )
         let hosting = UIHostingController(rootView: detail)
+        // So a "+" record that this card shows, in this window or another,
+        // is not deleted under it (`NewContactCleanup.isShownElsewhere`).
+        hosting.gwShownContactIDs = [id]
         if let newContactCleanup {
+            let repository = appDelegate.contactsRepository
             newContactCleanup.watch(hosting)
             newContactCleanup.close = { [weak nav, weak hosting] in
                 guard let nav, let hosting, nav.topViewController === hosting else { return }
                 nav.popViewController(animated: true)
+            }
+            newContactCleanup.isShownElsewhere = {
+                Self.anyWindowShows(id, repository: repository)
             }
             newContactCleanup.didKeep = { [weak self, weak hosting] in
                 guard let self, let hosting else { return }
@@ -2150,6 +2172,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             appDelegate: appDelegate
         )
         let hosting = UIHostingController(rootView: stack)
+        hosting.gwShownContactIDs = contacts.map(\.contactID)
         nav.pushViewController(hosting, animated: true)
         syncSelectionToTop(hosting)
     }
@@ -3752,7 +3775,9 @@ private extension UIViewController {
     /// `ContactDetailView`, several for a `ContactDetailStackView`, none for
     /// anything else. Stamped on the Catalyst secondary column's hostings so a
     /// list-row delete can tell whether the column still shows the record
-    /// (`retireDetail(ifShowing:tab:appDelegate:)`). Distinct from
+    /// (`retireDetail(ifShowing:tab:appDelegate:)`), and on the iPhone and
+    /// iPad pushes too, so a "+" record is never deleted while a card in any
+    /// window shows it (`anyWindowShows`). Distinct from
     /// `gwRestorationSelection`, which names at most ONE restorable record and
     /// is deliberately nil for a stack.
     var gwShownContactIDs: [ContactID] {

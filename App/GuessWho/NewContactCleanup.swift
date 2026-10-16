@@ -27,8 +27,9 @@ import GuessWhoLogging
 ///   Because the card asks "Discard changes?" about its own additions
 ///   (`hasUnsavedAdditions`), Cancel and Discard never drop them unasked.
 ///
-/// The record is never deleted while another card shows it: one the user
-/// opened in its place, or a multi-selection that includes it, keeps it.
+/// The record is never deleted while another card, in any window, shows it:
+/// one the user opened in its place, or a multi-selection that includes
+/// it, keeps it (`isShownElsewhere`, asked again right before the delete).
 ///
 /// Done ends it: a saved record is a normal record, so a later Edit and
 /// Cancel keeps it. Done with nothing typed keeps the record too, as the
