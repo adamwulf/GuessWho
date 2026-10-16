@@ -1517,7 +1517,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
                 let repository = appDelegate.contactsRepository
                 let created = try await repository.createContact(seed)
                 Self.contactsLog.notice("add-contact: created blank \(seed.contactType.rawValue) record")
-                show(created, NewContactCleanup(record: created, repository: repository))
+                show(created, NewContactCleanup(id: created.contactID, repository: repository))
             } catch {
                 Self.contactsLog.error("add-contact: create failed: \(error.localizedDescription)")
                 self.presentAddContactFailureAlert(error: error, isOrganization: seed.contactType == .organization)

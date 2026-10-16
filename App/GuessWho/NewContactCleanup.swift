@@ -19,8 +19,11 @@ import GuessWhoLogging
 /// * With no question asked — another row clicked with nothing typed, Back,
 ///   a section switch, a Mail wake, its window closing: the record goes only
 ///   while it is still blank. A photo or a dated note the user added on the
-///   card (`recordDidGetUserData`), or any change made elsewhere, keeps it.
-///   Because the card asks "Discard changes?" about those additions
+///   card (`recordDidGetUserData`) keeps it, and so does anything put on the
+///   record elsewhere that `ContactsRepository.isBlankAndUntouched` finds —
+///   fields, a photo, a group, a favorite, a link, notes or any other
+///   GuessWho data. A check that can't read something keeps it too.
+///   Because the card asks "Discard changes?" about its own additions
 ///   (`hasUnsavedAdditions`), Cancel and Discard never drop them unasked.
 ///
 /// The record is never deleted while another card shows it: one the user
@@ -87,12 +90,11 @@ final class NewContactCleanup {
         self.deleteRecord = deleteRecord
     }
 
-    /// A cleanup for `record`, as `ContactsRepository.createContact` returned
-    /// it, in `repository`.
-    convenience init(record: Contact, repository: ContactsRepository) {
-        let id = record.contactID
+    /// A cleanup for the record `id`, which `ContactsRepository.createContact`
+    /// just made in `repository`.
+    convenience init(id: ContactID, repository: ContactsRepository) {
         self.init(
-            isStillBlank: { await Self.recordIsStillBlank(id, as: record, in: repository) },
+            isStillBlank: { await Self.recordIsStillBlank(id, in: repository) },
             deleteRecord: { Task { await Self.delete(id, from: repository) } }
         )
     }
@@ -230,33 +232,23 @@ final class NewContactCleanup {
                 Self.log.notice("deleting the never-saved new record", ["reason": "card closed"])
                 deleteRecord()
             } else {
-                Self.log.notice("new record kept: changed elsewhere, or already gone")
+                Self.log.notice("new record kept: not blank, already gone, or not readable")
             }
         }
     }
 
-    /// Whether the record is still exactly as "+" created it: the same
-    /// fields (a photo shows in `imageDataAvailable`), no dated notes, not a
-    /// favorite, and in no group. A change made anywhere else — another
-    /// window, the list's menus — makes it a record to keep. A record no
-    /// longer in the cache is gone, so there is nothing to delete.
-    private static func recordIsStillBlank(
-        _ id: ContactID, as created: Contact, in repository: ContactsRepository
-    ) async -> Bool {
-        guard let live = repository.contact(id: id),
-              !live.imageDataAvailable,
-              userFields(of: live) == userFields(of: created) else { return false }
-        let liveID = live.contactID
-        guard repository.notes(for: liveID).isEmpty, !repository.isFavorite(liveID) else { return false }
-        return await repository.groups(containing: live).isEmpty
-    }
-
-    /// `contact` without its identity URL, which the package adds on the
-    /// record's first write of GuessWho data and the user never sees.
-    private static func userFields(of contact: Contact) -> Contact {
-        var fields = contact
-        fields.urlAddresses = contact.userVisibleURLAddresses
-        return fields
+    /// Whether the record still holds nothing anyone put there, anywhere
+    /// (`ContactsRepository.isBlankAndUntouched`, which reads it all fresh).
+    /// Unsure is not blank: a read that fails keeps the record.
+    private static func recordIsStillBlank(_ id: ContactID, in repository: ContactsRepository) async -> Bool {
+        do {
+            return try await repository.isBlankAndUntouched(id)
+        } catch {
+            log.error("couldn't tell whether the new record is still blank — keeping it", [
+                "error": error.localizedDescription
+            ])
+            return false
+        }
     }
 
     /// The repository delete, with the "already gone" outcomes the other
