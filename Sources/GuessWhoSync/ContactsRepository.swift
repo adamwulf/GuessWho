@@ -1572,6 +1572,11 @@ public final class ContactsRepository: NSObject {
     /// record with an identity: the caller must then keep the record. A
     /// record that no longer resolves returns false: there is nothing to
     /// delete.
+    ///
+    /// The link read (`GuessWhoSync.links(at:)`) walks the whole link corpus,
+    /// so one unreadable link file anywhere makes this throw, and every "+"
+    /// record is kept for as long as that lasts. By design: unsure is not
+    /// blank.
     public func isBlankAndUntouched(_ id: ContactID) async throws -> Bool {
         guard let localID = contact(id: id)?.localID,
               let fresh = try await contactsStore.fetch(localID: localID) else { return false }
