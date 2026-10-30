@@ -59,6 +59,16 @@ extension Contact {
         return personName
     }
 
+    /// The name a relation row shows after the relation's `relationName` resolved
+    /// to this contact: what the contact is called, unless the relation found an
+    /// organization through the person name on its card, which keeps showing that
+    /// person.
+    func nameForRelation(named relationName: String) -> String {
+        let key = relationName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let called = displayName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return called == key ? displayName : relationName
+    }
+
     /// The contact editor's title: what the card is called so far, or a
     /// placeholder while a new card has no name.
     var editorTitle: String {

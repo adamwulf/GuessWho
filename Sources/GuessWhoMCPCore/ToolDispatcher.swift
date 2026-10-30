@@ -4723,7 +4723,7 @@ public actor ToolDispatcher {
     }
 
     /// Resolve a contact wire id for a WRITE. Same resolution as reads —
-    /// and for pre-mint ids the deterministic derivation EMBEDS the display
+    /// and for pre-mint ids the deterministic derivation EMBEDS the card's
     /// name, so a localID that system unification silently re-pointed at a
     /// different person stops resolving instead of landing the write on the
     /// wrong card (the stale-localID guard, now structural).

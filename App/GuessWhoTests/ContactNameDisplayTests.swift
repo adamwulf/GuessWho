@@ -162,6 +162,16 @@ struct ContactNameDisplayTests {
     }
 
     @Test
+    func aRelationRowShowsWhatTheContactIsCalledUnlessItNamedThePersonOnAnOrganization() {
+        let person = Contact(givenName: "Ada", familyName: "Lovelace")
+        #expect(person.nameForRelation(named: " ada lovelace ") == "Ada Lovelace")
+
+        let org = Contact(contactType: .organization, givenName: "Juan", familyName: "Perez", organizationName: "Acme")
+        #expect(org.nameForRelation(named: "acme") == "Acme")
+        #expect(org.nameForRelation(named: "Juan Perez") == "Juan Perez")
+    }
+
+    @Test
     func theEditorTitleFollowsTheSameNameRules() {
         let org = Contact(contactType: .organization, givenName: "Juan", organizationName: " Acme ")
         #expect(org.editorTitle == "Acme")

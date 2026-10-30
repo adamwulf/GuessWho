@@ -2577,13 +2577,9 @@ struct ContactDetailView: View {
             // ContactID once (it re-parses the GuessWho URL) and reuse it.
             if !key.isEmpty, let match = lookup[key],
                case let matchID = match.contactID, matchID != selfID {
-                // A relation that found an organization through the person name
-                // on its card keeps showing that person.
-                let calledThat = match.displayName
-                    .trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == key
                 rows.append(.contactLink(
                     label: localizedLabel(item.label),
-                    displayName: calledThat ? match.displayName : item.value.name,
+                    displayName: match.nameForRelation(named: item.value.name),
                     contactID: matchID
                 ))
             } else {
