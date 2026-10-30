@@ -14,10 +14,22 @@ extension Contact {
             && !organizationName.trimmingCharacters(in: .whitespaces).isEmpty
     }
 
+    /// The given and family names joined. Empty when the card has neither.
+    var personName: String {
+        "\(givenName) \(familyName)".trimmingCharacters(in: .whitespaces)
+    }
+
     /// Stable display label shared by package queries and app presentation.
     public var displayName: String {
-        if isNamedByOrganization { return organizationName }
-        let personName = "\(givenName) \(familyName)".trimmingCharacters(in: .whitespaces)
+        if isNamedByOrganization { return organizationName.trimmingCharacters(in: .whitespaces) }
+        return personFirstName
+    }
+
+    /// The person name, else the organization name, else the nickname. This is
+    /// `displayName` for every record but an organization named by its
+    /// organization name, and the name `deterministicGuessWhoID` hashes, so
+    /// marking a named person's card as an organization can't change that id.
+    var personFirstName: String {
         if !personName.isEmpty { return personName }
         if !organizationName.isEmpty { return organizationName }
         if !nickname.isEmpty { return nickname }

@@ -2488,7 +2488,13 @@ struct ContactDetailView: View {
     private func infoRows(for contact: Contact) -> [InfoRowData] {
         var rows: [InfoRowData] = []
 
-        // Skip the name parts (in the inline header) and whatever the subtitle
+        // An organization's header shows its organization name, so a person name
+        // on the same card gets a row of its own.
+        if contact.isNamedByOrganization, !contact.personNameWithNickname.isEmpty {
+            rows.append(.text(label: "name", value: contact.personNameWithNickname))
+        }
+
+        // Skip the other name parts (in the inline header) and whatever the subtitle
         // already renders (see `headerSubtitle`): for a person that's job title,
         // department, and organization; for an organization the subtitle is the
         // department, so job title stays here instead. Phonetic organization is

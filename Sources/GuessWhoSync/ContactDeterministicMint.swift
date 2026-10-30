@@ -9,12 +9,12 @@ import Foundation
 // exactly the never-reconciled contacts). Rather than minting randomly and
 // letting the wire id change out from under an agent at first write, the
 // mint itself is DETERMINISTIC: derived from the contact's device-local
-// Contacts identifier plus its normalized display name. The wire can then
-// send the same value BEFORE the mint (as a preview of what the contact
-// will mint to) and AFTER it (as the real, durable GuessWho ID) — one id,
-// stable across the mint boundary.
+// Contacts identifier plus its normalized name (`personFirstName`). The wire
+// can then send the same value BEFORE the mint (as a preview of what the
+// contact will mint to) and AFTER it (as the real, durable GuessWho ID) — one
+// id, stable across the mint boundary.
 //
-// Embedding the display name doubles as the stale-localID guard: if system
+// Embedding the name doubles as the stale-localID guard: if system
 // unification silently re-points the localID at a DIFFERENT person, the
 // derivation no longer matches, so a cached pre-mint id stops resolving
 // instead of landing a write on the wrong card.
@@ -34,16 +34,16 @@ extension Contact {
     /// (docs/contact-identity.md); the repository and the MCP dispatch core
     /// are the only consumers.
     package var deterministicGuessWhoID: String {
-        Self.deterministicGuessWhoID(localID: localID, displayName: displayName)
+        Self.deterministicGuessWhoID(localID: localID, name: personFirstName)
     }
 
-    /// SHA-256 over `localID` + "\n" + the trimmed, lowercased display
-    /// name; first 16 bytes formatted as an RFC 4122 UUID (same recipe as
+    /// SHA-256 over `localID` + "\n" + the trimmed, lowercased name; first 16
+    /// bytes formatted as an RFC 4122 UUID (same recipe as
     /// `Event.stableID(forEventKitID:)`). Same inputs always yield the same
     /// UUID; a 128-bit digest makes collisions across a contact book
     /// negligible.
-    package static func deterministicGuessWhoID(localID: String, displayName: String) -> String {
-        let normalizedName = displayName
+    package static func deterministicGuessWhoID(localID: String, name: String) -> String {
+        let normalizedName = name
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
         let digest = SHA256.hash(data: Data((localID + "\n" + normalizedName).utf8))

@@ -963,7 +963,10 @@ enum MailContactSnapshotBuilder {
             let fallbackName = addresses[0]
             let summary = MailContactSummary(
                 displayName: nonempty(candidate.contact.displayName) ?? fallbackName,
-                organization: nonempty(candidate.contact.organizationName),
+                // An organization's own name is already the title above.
+                organization: candidate.contact.isNamedByOrganization
+                    ? nil
+                    : nonempty(candidate.contact.organizationName),
                 jobTitle: nonempty(candidate.contact.jobTitle),
                 thumbnail: thumbnail,
                 highlightReasons: candidate.highlightReasons,

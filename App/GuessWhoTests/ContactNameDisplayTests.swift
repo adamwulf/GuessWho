@@ -19,6 +19,7 @@ private let everyNameShape: [Contact] = [
     Contact(contactType: .organization, nickname: "The Shop", organizationName: "Acme"),
     Contact(contactType: .organization, givenName: "Juan", familyName: "Perez", nickname: "JP", organizationName: "Acme"),
     Contact(contactType: .organization, givenName: "Juan", organizationName: "   "),
+    Contact(contactType: .organization, givenName: "Juan", organizationName: " Acme "),
     Contact(),
 ]
 
@@ -152,10 +153,25 @@ struct ContactNameDisplayTests {
         )
         #expect(org.displayNameWithNickname == "Cy-Fair HealthCare Associates")
         #expect(org.initials == "CH")
+        // The card still shows the person name, in a row of its own.
+        #expect(org.personNameWithNickname == "Juan \"JP\" Perez")
 
         let parts = runs(org.nameAttributedString)
         #expect(parts.map(\.text) == ["Cy-Fair HealthCare Associates"])
         #expect(parts.allSatisfy { !$0.isBold })
+    }
+
+    @Test
+    func theEditorTitleFollowsTheSameNameRules() {
+        let org = Contact(contactType: .organization, givenName: "Juan", organizationName: " Acme ")
+        #expect(org.editorTitle == "Acme")
+
+        let person = Contact(givenName: "Juan", familyName: "Perez", organizationName: "Acme")
+        #expect(person.editorTitle == "Juan Perez")
+
+        #expect(Contact(organizationName: "Acme").editorTitle == "Acme")
+        #expect(Contact(contactType: .organization).editorTitle == "New Organization")
+        #expect(Contact().editorTitle == "New Contact")
     }
 
     @Test

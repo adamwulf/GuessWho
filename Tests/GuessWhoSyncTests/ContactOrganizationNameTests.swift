@@ -47,6 +47,75 @@ struct ContactOrganizationNameTests {
         #expect(person.firstNameSortKey == "Juan")
     }
 
+    @Test
+    func surroundingWhitespaceNeverLeaksIntoTheName() {
+        let padded = Contact(contactType: .organization, givenName: "Juan", organizationName: " Acme ")
+        #expect(padded.displayName == "Acme")
+    }
+
+    /// The id a never-written card previews on the wire must not move when the
+    /// card becomes an organization or its company is renamed.
+    @Test
+    func thePreviewIDIgnoresTheOrganizationNameRule() {
+        let person = Contact(localID: "1", givenName: "Juan", familyName: "Perez", organizationName: "Acme")
+        var converted = person
+        converted.contactType = .organization
+        #expect(converted.displayName == "Acme")
+        #expect(converted.deterministicGuessWhoID == person.deterministicGuessWhoID)
+
+        var renamed = converted
+        renamed.organizationName = "Acme Holdings"
+        #expect(renamed.deterministicGuessWhoID == person.deterministicGuessWhoID)
+    }
+
+    /// A relation saved with the person name on the card keeps pointing at it,
+    /// and so does one using the name the card is called.
+    @Test @MainActor
+    func relationsResolveByEitherName() async {
+        let byPerson = Contact(
+            localID: "byPerson",
+            givenName: "Ana",
+            contactRelations: [LabeledContactRelation(label: "colleague", value: ContactRelation(name: "juan perez"))]
+        )
+        let byOrganization = Contact(
+            localID: "byOrganization",
+            givenName: "Bo",
+            contactRelations: [LabeledContactRelation(label: "colleague", value: ContactRelation(name: "Cy-Fair HealthCare Associates"))]
+        )
+        let repository = ContactsRepository(contacts: InMemoryContactStore(contacts: [org, byPerson, byOrganization]))
+        await repository.reload()
+
+        let lookup = repository.lookupByDisplayName()
+        #expect(lookup["juan perez"]?.localID == "org")
+        #expect(lookup["cy-fair healthcare associates"]?.localID == "org")
+
+        let cachedOrg = repository.contacts.first { $0.localID == "org" }!
+        #expect(Set(repository.contactsReferencing(contact: cachedOrg).map(\.contact.localID)) == ["byPerson", "byOrganization"])
+        #expect(repository.contactsReferencing(id: ContactID(contact: cachedOrg)).count == 2)
+    }
+
+    /// A contact actually called the person name wins the relation over the
+    /// organization card that merely carries that name.
+    @Test @MainActor
+    func aContactCalledThePersonNameWinsTheRelation() async {
+        let realJuan = Contact(localID: "juan", givenName: "Juan", familyName: "Perez")
+        let referrer = Contact(
+            localID: "ana",
+            givenName: "Ana",
+            contactRelations: [LabeledContactRelation(label: "colleague", value: ContactRelation(name: "Juan Perez"))]
+        )
+        for ordered in [[org, realJuan, referrer], [realJuan, org, referrer]] {
+            let repository = ContactsRepository(contacts: InMemoryContactStore(contacts: ordered))
+            await repository.reload()
+
+            #expect(repository.lookupByDisplayName()["juan perez"]?.localID == "juan")
+            let cachedOrg = repository.contacts.first { $0.localID == "org" }!
+            #expect(repository.contactsReferencing(contact: cachedOrg).isEmpty)
+            let cachedJuan = repository.contacts.first { $0.localID == "juan" }!
+            #expect(repository.contactsReferencing(contact: cachedJuan).map(\.contact.localID) == ["ana"])
+        }
+    }
+
     /// People naming the company associate with the record, rather than the
     /// company also appearing as a second, record-less organization row.
     @Test @MainActor

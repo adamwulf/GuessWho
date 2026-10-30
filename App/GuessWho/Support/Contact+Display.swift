@@ -39,19 +39,36 @@ extension Contact {
         return "\"\(nick)\""
     }
 
-    /// Full name with the nickname quoted between the given and family names —
-    /// `Kejing "Kathy" Zhang`. Falls back to `displayName` when there's no
-    /// nickname to insert, for organizations named by their organization name,
-    /// and for records with neither a given nor a family name (nickname-only
-    /// cards), where a lone quoted nickname would read as a scare quote rather
-    /// than an alias.
-    var displayNameWithNickname: String {
+    /// The nickname quoted between the given and family names — `Kejing "Kathy"
+    /// Zhang`. Empty for a card with neither a given nor a family name, where a
+    /// lone quoted nickname would read as a scare quote rather than an alias.
+    var personNameWithNickname: String {
         let given = givenName.trimmingCharacters(in: .whitespaces)
         let family = familyName.trimmingCharacters(in: .whitespaces)
-        guard !isNamedByOrganization, !given.isEmpty || !family.isEmpty else { return displayName }
+        guard !given.isEmpty || !family.isEmpty else { return "" }
         return [given, quotedNickname, family]
             .filter { !$0.isEmpty }
             .joined(separator: " ")
+    }
+
+    /// `personNameWithNickname`, or `displayName` for an organization named by
+    /// its organization name and for a card with no person name.
+    var displayNameWithNickname: String {
+        let personName = personNameWithNickname
+        guard !isNamedByOrganization, !personName.isEmpty else { return displayName }
+        return personName
+    }
+
+    /// The contact editor's title: what the card is called so far, or a
+    /// placeholder while a new card has no name.
+    var editorTitle: String {
+        if isNamedByOrganization { return displayName }
+        let name = [givenName, familyName]
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        if !name.isEmpty { return name }
+        if !organizationName.isEmpty { return organizationName }
+        return contactType == .organization ? "New Organization" : "New Contact"
     }
 
     /// `displayNameWithNickname` at the body text style, with the family name
