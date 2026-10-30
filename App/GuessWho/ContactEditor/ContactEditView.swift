@@ -105,6 +105,7 @@ struct ContactEditView: View {
     }
 
     private var navigationTitle: String {
+        if model.edited.isNamedByOrganization { return model.edited.organizationName }
         let name = [model.edited.givenName, model.edited.familyName]
             .filter { !$0.isEmpty }
             .joined(separator: " ")

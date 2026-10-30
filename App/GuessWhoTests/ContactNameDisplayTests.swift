@@ -17,6 +17,8 @@ private let everyNameShape: [Contact] = [
     Contact(givenName: "Kejing", familyName: "Zhang", nickname: "   "),
     Contact(nickname: "Kathy"),
     Contact(contactType: .organization, nickname: "The Shop", organizationName: "Acme"),
+    Contact(contactType: .organization, givenName: "Juan", familyName: "Perez", nickname: "JP", organizationName: "Acme"),
+    Contact(contactType: .organization, givenName: "Juan", organizationName: "   "),
     Contact(),
 ]
 
@@ -137,6 +139,37 @@ struct ContactNameDisplayTests {
         let parts = runs(org.nameAttributedString)
         #expect(parts.map(\.text) == ["Acme"])
         #expect(parts.allSatisfy { !$0.isBold })
+    }
+
+    @Test
+    func anOrganizationIsCalledByItsOrganizationNameEvenWithAPersonNameOnTheCard() {
+        let org = Contact(
+            contactType: .organization,
+            givenName: "Juan",
+            familyName: "Perez",
+            nickname: "JP",
+            organizationName: "Cy-Fair HealthCare Associates"
+        )
+        #expect(org.displayNameWithNickname == "Cy-Fair HealthCare Associates")
+        #expect(org.initials == "CH")
+
+        let parts = runs(org.nameAttributedString)
+        #expect(parts.map(\.text) == ["Cy-Fair HealthCare Associates"])
+        #expect(parts.allSatisfy { !$0.isBold })
+    }
+
+    @Test
+    func anOrganizationWithNoOrganizationNameFallsBackToThePersonName() {
+        let org = Contact(contactType: .organization, givenName: "Juan", familyName: "Perez", organizationName: "   ")
+        #expect(org.displayNameWithNickname == "Juan Perez")
+        #expect(org.initials == "JP")
+    }
+
+    @Test
+    func aPersonIsNeverCalledByTheirCompany() {
+        let person = Contact(givenName: "Juan", familyName: "Perez", organizationName: "Acme")
+        #expect(person.displayNameWithNickname == "Juan Perez")
+        #expect(person.initials == "JP")
     }
 
     @Test(arguments: everyNameShape)

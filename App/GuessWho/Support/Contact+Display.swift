@@ -11,7 +11,7 @@ extension Contact {
     var initials: String {
         let given = givenName.trimmingCharacters(in: .whitespaces)
         let family = familyName.trimmingCharacters(in: .whitespaces)
-        if !given.isEmpty || !family.isEmpty {
+        if !isNamedByOrganization, !given.isEmpty || !family.isEmpty {
             let g = given.first.map { String($0) } ?? ""
             let f = family.first.map { String($0) } ?? ""
             return (g + f).uppercased()
@@ -41,13 +41,14 @@ extension Contact {
 
     /// Full name with the nickname quoted between the given and family names —
     /// `Kejing "Kathy" Zhang`. Falls back to `displayName` when there's no
-    /// nickname to insert, and for records with neither a given nor a family
-    /// name (organizations, nickname-only cards), where a lone quoted nickname
-    /// would read as a scare quote rather than an alias.
+    /// nickname to insert, for organizations named by their organization name,
+    /// and for records with neither a given nor a family name (nickname-only
+    /// cards), where a lone quoted nickname would read as a scare quote rather
+    /// than an alias.
     var displayNameWithNickname: String {
         let given = givenName.trimmingCharacters(in: .whitespaces)
         let family = familyName.trimmingCharacters(in: .whitespaces)
-        guard !given.isEmpty || !family.isEmpty else { return displayName }
+        guard !isNamedByOrganization, !given.isEmpty || !family.isEmpty else { return displayName }
         return [given, quotedNickname, family]
             .filter { !$0.isEmpty }
             .joined(separator: " ")
@@ -64,7 +65,7 @@ extension Contact {
         let boldDescriptor = bodyFont.fontDescriptor.withSymbolicTraits(.traitBold) ?? bodyFont.fontDescriptor
         let boldFont = UIFont(descriptor: boldDescriptor, size: bodyFont.pointSize)
 
-        guard !given.isEmpty || !family.isEmpty else {
+        guard !isNamedByOrganization, !given.isEmpty || !family.isEmpty else {
             return NSAttributedString(string: displayName, attributes: [.font: bodyFont])
         }
 

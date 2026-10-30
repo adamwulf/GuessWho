@@ -6,8 +6,17 @@ extension Contact {
     /// of matching the literal.
     public static let unnamedDisplayName = "(Unnamed)"
 
+    /// True for an organization record that has an organization name. That name
+    /// is what the record is called; a given or family name on the same card
+    /// (the person to ask for at the company, say) never replaces it.
+    public var isNamedByOrganization: Bool {
+        contactType == .organization
+            && !organizationName.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
     /// Stable display label shared by package queries and app presentation.
     public var displayName: String {
+        if isNamedByOrganization { return organizationName }
         let personName = "\(givenName) \(familyName)".trimmingCharacters(in: .whitespaces)
         if !personName.isEmpty { return personName }
         if !organizationName.isEmpty { return organizationName }
@@ -16,6 +25,7 @@ extension Contact {
     }
 
     public var lastNameSortKey: String {
+        if isNamedByOrganization { return organizationName.trimmingCharacters(in: .whitespaces) }
         for candidate in [familyName, organizationName, givenName, nickname] {
             let trimmed = candidate.trimmingCharacters(in: .whitespaces)
             if !trimmed.isEmpty { return trimmed }
@@ -25,10 +35,13 @@ extension Contact {
 
     /// Sort key for the `.firstLast` order: given name first, mirroring
     /// `lastNameSortKey`'s fallback chain but leading with `givenName`. A
-    /// contact with no given name (an org, a single-name nickname-only record)
-    /// falls back to the organization name, then family name, then nickname, so
-    /// it still sorts sensibly. Empty only when the contact has no name at all.
+    /// contact with no given name (a single-name nickname-only record) falls
+    /// back to the organization name, then family name, then nickname, so it
+    /// still sorts sensibly. An organization named by its organization name
+    /// sorts by that name, as it does in the `.lastFirst` order. Empty only when
+    /// the contact has no name at all.
     public var firstNameSortKey: String {
+        if isNamedByOrganization { return organizationName.trimmingCharacters(in: .whitespaces) }
         for candidate in [givenName, organizationName, familyName, nickname] {
             let trimmed = candidate.trimmingCharacters(in: .whitespaces)
             if !trimmed.isEmpty { return trimmed }
