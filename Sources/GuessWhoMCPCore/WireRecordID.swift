@@ -10,7 +10,7 @@ import GuessWhoSync
 ///   deterministic mint WILL assign on first write, so the id is stable
 ///   across the mint boundary. Resolution scans the live book: first for a
 ///   carried GuessWho UUID, then for a matching deterministic derivation
-///   (which embeds the display name, so a localID that unification
+///   (which embeds the card's name, so a localID that unification
 ///   re-pointed at a different person stops resolving instead of
 ///   misdirecting a write).
 /// * **Event** → the record UUID when the event has a GuessWho record;

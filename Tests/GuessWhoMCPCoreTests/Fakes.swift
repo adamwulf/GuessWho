@@ -144,7 +144,7 @@ final class LegacyScriptedContactSource: MCPContactSource {
         }
         mintCount += 1
         // Mirrors the engine's DETERMINISTIC mint (Revision 2): the minted
-        // UUID is derived from localID + display name, so the wire id an
+        // UUID is derived from localID + the card's name, so the wire id an
         // agent got BEFORE the mint is the id the card ends up carrying.
         let minted = contacts.first(where: {
             $0.contactID.restorationToken.localID == localID
