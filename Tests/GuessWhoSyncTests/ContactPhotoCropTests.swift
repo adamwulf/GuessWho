@@ -160,13 +160,12 @@ struct ContactPhotoCropPersistenceTests {
         #expect(try await reopened.contactPhotoData(for: reopenedID, kind: .fullSize) == nil)
     }
 
-    @Test func originalAndCropRoundTripThroughEncryptedFiles() throws {
+    @Test func originalAndCropRoundTripThroughFiles() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
-        let cryptoKey = SymmetricKey(size: .bits256)
         func makeSync() -> GuessWhoSync {
             let store = FileSystemSidecarStore(root: root, ubiquity: FakeUbiquityProvider(),
-                                               blobCrypto: InMemoryBlobCrypto(key: cryptoKey),
+                                               blobCrypto: NoKeyBlobCrypto(),
                                                coordinatesUbiquitousAccess: false)
             return GuessWhoSync(contacts: InMemoryContactStore(), events: InMemoryEventStore(),
                                 sidecars: store, deviceID: "test")
@@ -179,6 +178,119 @@ struct ContactPhotoCropPersistenceTests {
         let loaded = try #require(try makeSync().profilePhoto(at: key))
         #expect(loaded.photo.data == original)
         #expect(loaded.photo.crop == crop)
+    }
+
+    /// The reported bug: on a device whose keychain refuses every call, choosing
+    /// a photo and cropping it must save and read back.
+    @Test @MainActor func savingACroppedPhotoWorksWithNoKeychain() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let contacts = InMemoryContactStore(contacts: [Contact(localID: "ada", givenName: "Ada")])
+        let store = FileSystemSidecarStore(root: root, ubiquity: FakeUbiquityProvider(),
+                                           blobCrypto: NoKeyBlobCrypto(),
+                                           coordinatesUbiquitousAccess: false)
+        let sync = GuessWhoSync(contacts: contacts, events: InMemoryEventStore(), sidecars: store, deviceID: "mac")
+        let repository = ContactsRepository(contacts: contacts, sync: sync)
+        await repository.reload()
+        let id = try #require(repository.contact(localID: "ada")).contactID
+        let original = Data([1, 2, 3, 4])
+        let crop = try #require(ContactPhotoCrop(x: 0.25, y: 0.25, width: 0.5, height: 0.5))
+
+        #expect(try await repository.setContactPhoto(for: id, imageData: original, crop: crop))
+
+        #expect(try await contacts.loadImageData(localID: "ada") == original)
+        let saved = try #require(try await repository.contactPhotoData(for: id, kind: .fullSize))
+        #expect(saved.data == original)
+        #expect(saved.crop == crop)
+    }
+
+    /// A contact whose stored photo file is sealed under a key this device lacks,
+    /// as a photo saved by an older build on another device would be.
+    @MainActor private func makeRepositoryWithUnreadablePhoto(
+        root: URL,
+        systemPhoto: Data
+    ) async throws -> (repository: ContactsRepository, contacts: InMemoryContactStore, sync: GuessWhoSync,
+                       store: FileSystemSidecarStore, id: ContactID, key: SidecarKey, datURL: URL) {
+        let contacts = InMemoryContactStore(contacts: [Contact(localID: "ada", givenName: "Ada")])
+        let store = FileSystemSidecarStore(root: root, ubiquity: FakeUbiquityProvider(),
+                                           blobCrypto: NoKeyBlobCrypto(),
+                                           coordinatesUbiquitousAccess: false)
+        let sync = GuessWhoSync(contacts: contacts, events: InMemoryEventStore(), sidecars: store, deviceID: "mac")
+        let repository = ContactsRepository(contacts: contacts, sync: sync)
+        await repository.reload()
+        let id = try #require(repository.contact(localID: "ada")).contactID
+        // With a crop, so a test can tell the stored crop stays out of the fallback.
+        let crop = try #require(ContactPhotoCrop(x: 0.25, y: 0.25, width: 0.5, height: 0.5))
+        try await repository.setContactPhoto(for: id, imageData: systemPhoto, crop: crop)
+
+        let saved = try #require(repository.contact(id: id))
+        let key = try #require(SidecarKey.forContact(saved))
+        let blobID = try #require(try store.blobIds(for: key).first)
+        let datURL = root.appendingPathComponent("contacts").appendingPathComponent("\(key.id).\(blobID).dat")
+        try InMemoryBlobCrypto().encrypt(Data([9, 9])).write(to: datURL)
+        return (repository, contacts, sync, store, id, key, datURL)
+    }
+
+    @Test @MainActor func olderEncryptedPhotoThatCannotBeReadFallsBackToContacts() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let systemPhoto = Data([1, 2, 3, 4])
+        let setup = try await makeRepositoryWithUnreadablePhoto(root: root, systemPhoto: systemPhoto)
+
+        let shown = try #require(try await setup.repository.contactPhotoData(for: setup.id, kind: .fullSize))
+        #expect(shown.data == systemPhoto)
+        #expect(shown.crop == nil)
+        #expect(shown.storedFileUnreadable)
+        #expect(try await setup.repository.contactPhotoData(for: setup.id, kind: .thumbnail) != nil)
+    }
+
+    @Test @MainActor func unreadablePhotoWithNoContactsPhotoShowsNoPhoto() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let setup = try await makeRepositoryWithUnreadablePhoto(root: root, systemPhoto: Data([1, 2]))
+        await setup.contacts.setImageData(nil, thumbnail: nil, for: "ada")
+
+        #expect(try await setup.repository.contactPhotoData(for: setup.id, kind: .fullSize) == nil)
+    }
+
+    /// Another device may still hold the key, so a crop made here must not touch
+    /// the file. That covers Reset Crop too, and a new device whose key hasn't
+    /// synced yet.
+    @Test(arguments: [true, false]) @MainActor
+    func cropEditsLeaveAnUnreadablePhotoFileUntouched(resetting: Bool) async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let systemPhoto = Data([1, 2, 3, 4])
+        let setup = try await makeRepositoryWithUnreadablePhoto(root: root, systemPhoto: systemPhoto)
+        let sealed = try Data(contentsOf: setup.datURL)
+        let crop = resetting ? nil : ContactPhotoCrop(x: 0, y: 0, width: 0.5, height: 0.5)
+
+        do {
+            try await setup.repository.setContactPhotoCrop(for: setup.id, crop: crop, originalData: systemPhoto)
+            Issue.record("A crop edit replaced a file this device can't read")
+        } catch ContactPhotoEditError.storedPhotoUnreadable {}
+
+        #expect(try Data(contentsOf: setup.datURL) == sealed)
+    }
+
+    /// Choosing a new photo is an explicit replacement, so it works here.
+    @Test @MainActor func unreadablePhotoCanBeReplacedWithANewOne() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let systemPhoto = Data([1, 2, 3, 4])
+        let setup = try await makeRepositoryWithUnreadablePhoto(root: root, systemPhoto: systemPhoto)
+        let replacement = Data([7, 8, 9])
+        let crop = try #require(ContactPhotoCrop(x: 0, y: 0, width: 0.5, height: 0.5))
+
+        #expect(try await setup.repository.setContactPhoto(for: setup.id, imageData: replacement, crop: crop))
+
+        let shown = try #require(try await setup.repository.contactPhotoData(for: setup.id, kind: .fullSize))
+        #expect(shown.data == replacement)
+        #expect(shown.crop == crop)
+        #expect(shown.storedFileUnreadable == false)
+        // What the doc promises: the Contacts photo is kept, and the older file goes.
+        #expect(try setup.sync.blobFieldData(at: setup.key, field: ContactsRepository.previousPhotoFieldName) == systemPhoto)
+        #expect(!FileManager.default.fileExists(atPath: setup.datURL.path))
     }
 
     @Test @MainActor func existingPhotoHasNoCropAndIsPreservedWhenFirstCropped() async throws {

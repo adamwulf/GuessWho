@@ -40,9 +40,7 @@ public protocol SidecarStoreProtocol {
     // (below), so a third-party conformer compiles unchanged.
 
     // Write `data` as the blob identified by `blobId` for `key`. Overwrites any
-    // existing file at that (key, blobId). The on-disk payload MAY be encrypted
-    // by the backend (FileSystemSidecarStore encrypts; the in-memory store does
-    // not — the contract is bytes-in / bytes-out).
+    // existing file at that (key, blobId). The contract is bytes-in / bytes-out.
     func writeBlob(_ data: Data, blobId: String, for key: SidecarKey) throws
 
     // Read the blob bytes for (key, blobId). Returns nil when the blob is not

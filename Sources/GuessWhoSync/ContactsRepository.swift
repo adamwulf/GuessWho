@@ -1427,64 +1427,75 @@ public final class ContactsRepository: NSObject {
         guard let contact = contact(id: id) else { return nil }
 
         do {
+            var storedFileUnreadable = false
             if let sync, let key = SidecarKey.forContact(contact) {
                 // Track pending reads so blob arrival refreshes visible placeholders.
                 if loadedPhotoPointers[key] == nil { loadedPhotoPointers[key] = .null }
-                let record = try await Task.detached(priority: .userInitiated) {
-                    try sync.profilePhoto(at: key)
-                }.value
-                loadedPhotoPointers[key] = record?.pointer.jsonValue ?? .null
-                if let record {
-                    return try await photoAfterCheckingSystemSource(record.photo, key: key, contact: contact)
+                do {
+                    let record = try await Task.detached(priority: .userInitiated) {
+                        try sync.profilePhoto(at: key)
+                    }.value
+                    loadedPhotoPointers[key] = record?.pointer.jsonValue ?? .null
+                    if let record {
+                        return try await photoAfterCheckingSystemSource(record.photo, key: key, contact: contact)
+                    }
+                } catch let unreadable as UnreadableProfilePhotoError {
+                    // An older encrypted file this device can't open. Contacts
+                    // has the photo, so show that instead of failing.
+                    loadedPhotoPointers[key] = unreadable.pointer.jsonValue
+                    storedFileUnreadable = true
                 }
             }
-            switch kind {
-            case .thumbnail:
-                guard let data = try await contactsStore.loadThumbnailImageData(localID: contact.localID) else {
-                    if contact.imageDataAvailable {
-                        Self.photoLog.notice("thumbnail missing despite imageDataAvailable=true", metadata: [
-                            "localID": .string(contact.localID),
-                        ])
-                    }
-                    return nil
-                }
-                Self.logFlagMismatchIfNeeded(contact: contact, loaded: "thumbnail", bytes: data.count)
-                return ContactPhoto(data: data, kind: .thumbnail)
-            case .fullSize:
-                if let data = try await contactsStore.loadImageData(localID: contact.localID) {
-                    Self.logFlagMismatchIfNeeded(contact: contact, loaded: "fullSize", bytes: data.count)
-                    return ContactPhoto(data: data, kind: .fullSize)
-                }
-                // Thumbnail-only card: full-size bytes unavailable at the API
-                // even though a photo exists. Contacts.app shows the thumbnail
-                // in that state, so we do too.
-                guard let thumbnail = try await contactsStore.loadThumbnailImageData(localID: contact.localID) else {
-                    if contact.imageDataAvailable {
-                        Self.photoLog.notice("no photo bytes despite imageDataAvailable=true", metadata: [
-                            "localID": .string(contact.localID),
-                        ])
-                    }
-                    return nil
-                }
-                Self.photoLog.notice("full-size photo unavailable; serving thumbnail", metadata: [
-                    "localID": .string(contact.localID),
-                    "imageDataAvailable": .stringConvertible(contact.imageDataAvailable),
-                    "thumbnailBytes": .stringConvertible(thumbnail.count),
-                ])
-                return ContactPhoto(data: thumbnail, kind: .thumbnail)
-            }
+            var photo = try await systemPhoto(for: contact, kind: kind)
+            photo?.storedFileUnreadable = storedFileUnreadable
+            return photo
         } catch ContactStoreError.contactNotFound(_) {
             return nil
         } catch {
-            let ns = error as NSError
-            Self.photoLog.error("contact photo load failed", metadata: [
+            Self.photoLog.error("contact photo load failed", metadata: error.logMetadata([
                 "localID": .string(contact.localID),
                 "kind": .string(kind == .thumbnail ? "thumbnail" : "fullSize"),
-                "domain": .string(ns.domain),
-                "code": .stringConvertible(ns.code),
-                "localizedDescription": .string(ns.localizedDescription),
-            ])
+            ]))
             throw error
+        }
+    }
+
+    /// The photo Contacts holds for this contact.
+    private func systemPhoto(for contact: Contact, kind: ContactPhotoKind) async throws -> ContactPhoto? {
+        switch kind {
+        case .thumbnail:
+            guard let data = try await contactsStore.loadThumbnailImageData(localID: contact.localID) else {
+                if contact.imageDataAvailable {
+                    Self.photoLog.notice("thumbnail missing despite imageDataAvailable=true", metadata: [
+                        "localID": .string(contact.localID),
+                    ])
+                }
+                return nil
+            }
+            Self.logFlagMismatchIfNeeded(contact: contact, loaded: "thumbnail", bytes: data.count)
+            return ContactPhoto(data: data, kind: .thumbnail)
+        case .fullSize:
+            if let data = try await contactsStore.loadImageData(localID: contact.localID) {
+                Self.logFlagMismatchIfNeeded(contact: contact, loaded: "fullSize", bytes: data.count)
+                return ContactPhoto(data: data, kind: .fullSize)
+            }
+            // Thumbnail-only card: full-size bytes unavailable at the API
+            // even though a photo exists. Contacts.app shows the thumbnail
+            // in that state, so we do too.
+            guard let thumbnail = try await contactsStore.loadThumbnailImageData(localID: contact.localID) else {
+                if contact.imageDataAvailable {
+                    Self.photoLog.notice("no photo bytes despite imageDataAvailable=true", metadata: [
+                        "localID": .string(contact.localID),
+                    ])
+                }
+                return nil
+            }
+            Self.photoLog.notice("full-size photo unavailable; serving thumbnail", metadata: [
+                "localID": .string(contact.localID),
+                "imageDataAvailable": .stringConvertible(contact.imageDataAvailable),
+                "thumbnailBytes": .stringConvertible(thumbnail.count),
+            ])
+            return ContactPhoto(data: thumbnail, kind: .thumbnail)
         }
     }
 
@@ -1706,6 +1717,9 @@ public final class ContactsRepository: NSObject {
         defer { photoWrites.remove(localID) }
         guard let photo = try await contactPhotoData(for: id, kind: .fullSize),
               photo.data == originalData else { throw ContactPhotoEditError.photoChanged }
+        // Replacing the slot deletes its file, and another device may still be able
+        // to read that file, or this one once its key syncs. Keep it.
+        guard !photo.storedFileUnreadable else { throw ContactPhotoEditError.storedPhotoUnreadable }
         let guessWhoID = try await resolveOrMintGuessWhoID(for: id)
         let key = SidecarKey(kind: .contact, id: guessWhoID)
         let systemData = try await systemPhotoBytes(localID: localID)
@@ -1749,8 +1763,8 @@ public final class ContactsRepository: NSObject {
             let key = SidecarKey(kind: .contact, id: guessWhoID)
             // Single-slot upsert: repoints the slot and reclaims the prior
             // `.dat` (orphan sweep is the cross-device backstop). Awaits the
-            // engine's background-hop overload — encrypting and writing a
-            // full-size photo must not stall the main actor mid-import.
+            // engine's background-hop overload — writing a full-size photo
+            // must not stall the main actor mid-import.
             _ = try await sync.setBlobField(
                 at: key,
                 field: Self.previousPhotoFieldName,

@@ -2,8 +2,8 @@ import Foundation
 import GuessWhoSync
 // The ConflictReconcile SPI carries the `FileSystemSidecarStore` init that
 // accepts a `blobCrypto` seam. Headless `swift test` has no usable keychain,
-// so the production `KeychainBlobCrypto` cannot encrypt/decrypt the photo
-// snapshot blob; the harness injects the SPI's `InMemoryBlobCrypto` instead —
+// so the production `KeychainBlobCrypto` couldn't decrypt an older encrypted
+// blob; the harness injects the SPI's `InMemoryBlobCrypto` instead —
 // a test-only substitution of the crypto seam, NOT a production behavior
 // change. The on-disk sidecar store, its coordinator, and every other write
 // path stay exactly the production `FileSystemSidecarStore`.

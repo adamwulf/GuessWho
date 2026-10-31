@@ -550,9 +550,9 @@ public final class GuessWhoSync: @unchecked Sendable {
     // snapshot never collides with an in-flight older `.dat` mid-sync.
 
     /// Async overload of `setBlobField(at:field:data:contentType:)` that hops
-    /// the write to a background queue: it AES-GCM-encrypts the full payload
-    /// (photos run to megabytes), writes the sealed `.dat` under coordination,
-    /// and read-modify-writes the envelope — none of which belongs on the
+    /// the write to a background queue: it writes the full payload (photos run
+    /// to megabytes) to the `.dat` under coordination, and read-modify-writes
+    /// the envelope — none of which belongs on the
     /// caller's actor / main thread. Same continuation pattern as the async
     /// read overloads.
     @discardableResult
@@ -759,7 +759,13 @@ public final class GuessWhoSync: @unchecked Sendable {
                       let field = SidecarField.decode(id: id, from: cell),
                       field.field == ContactsRepository.profilePhotoFieldName, field.type == .blob,
                       let pointer = BlobPointer(from: field.value) else { continue }
-                guard let data = try ctx.readBlob(blobId: pointer.blobId) else {
+                let stored: Data?
+                do {
+                    stored = try ctx.readBlob(blobId: pointer.blobId)
+                } catch SidecarBlobCryptoError.cannotDecrypt {
+                    throw UnreadableProfilePhotoError(pointer: pointer)
+                }
+                guard let data = stored else {
                     throw SidecarStoreError.notYetDownloaded(key)
                 }
                 var photo = ContactPhoto(data: data, kind: .fullSize, crop: pointer.photoCrop)

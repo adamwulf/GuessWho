@@ -67,6 +67,12 @@ The first two NOT-preserved items are genuine schema changes that need their own
 migration (see the `schemaVersion` rule below); the third is a limit on what
 kind of *value* you may safely add inside a cell.
 
+**`.dat` files are a synced format too**, outside the envelope and this guarantee.
+A new `.dat` starts with `plainBlobMarker`, which builds older than that marker
+can't read: they report a photo load error, and the failed read writes nothing.
+Never change the marker bytes, or every file already written would read as an older
+encrypted one. See [Profile photos](profile-photos.md).
+
 ## Why it holds — three legs
 
 The guarantee is not incidental; it stands on three independent properties.

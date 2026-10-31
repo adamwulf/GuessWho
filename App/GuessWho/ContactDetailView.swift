@@ -1376,6 +1376,11 @@ struct ContactDetailView: View {
                 photoSaveError = "That photo couldn’t be loaded."
                 return
             }
+            // Say so now, not after the user has positioned a crop that can't save.
+            guard !photo.storedFileUnreadable else {
+                photoSaveError = ContactPhotoEditError.storedPhotoUnreadable.localizedDescription
+                return
+            }
             photoCropRequest = PhotoCropRequest(contactID: id, data: photo.data, image: image,
                                                 crop: photo.crop, isReplacement: false)
         } catch {
