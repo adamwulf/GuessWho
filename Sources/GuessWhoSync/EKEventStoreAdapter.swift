@@ -322,13 +322,12 @@ public final class EKEventStoreAdapter: EventStoreProtocol, @unchecked Sendable 
             let elapsedNanos = DispatchTime.now().uptimeNanoseconds - startedAt
             Self.fetchLog.error(
                 "EventKit window fetch failed",
-                metadata: [
+                metadata: error.logMetadata([
                     "fetchID": .string(fetchID),
                     "from": .stringConvertible(interval.start.timeIntervalSince1970),
                     "to": .stringConvertible(interval.end.timeIntervalSince1970),
                     "durationMs": .stringConvertible(Double(elapsedNanos) / 1_000_000),
-                    "error": .string(String(describing: error)),
-                ]
+                ])
             )
             throw error
         }
@@ -1365,8 +1364,9 @@ private final class WindowSingleFlightCache<Value: Sendable>: @unchecked Sendabl
             guard let self else { return }
             self.cache.removeAll(keepingCapacity: true)
             EKEventStoreAdapter.fetchLog.info(
-                "\(self.name) cache invalidated",
+                "EventKit cache invalidated",
                 metadata: [
+                    "cache": .string(self.name),
                     "reason": .string(reason),
                     "generation": .stringConvertible(generation),
                 ]

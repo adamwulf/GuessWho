@@ -453,7 +453,7 @@ final class SyncService {
 
     /// Stamp `lastViewed = now` on the event sidecar. Best-effort and silent
     /// (a failed stamp must never break opening the detail view); errors
-    /// surface via `lastError`. A no-op inside the package when no sidecar
+    /// are logged. A no-op inside the package when no sidecar
     /// exists at `uuid` — callers stamp AFTER adopt-on-load has resolved the
     /// real sidecar UUID.
     func stampEventViewed(uuid: String) {
@@ -475,7 +475,7 @@ final class SyncService {
 
     /// Silent best-effort refresh of an event sidecar's cache cells. Skipped
     /// when the entry was refreshed within `refreshDebounceInterval` seconds.
-    /// Errors surface via `lastError` rather than throwing. `async` — the
+    /// Errors are logged rather than thrown. `async` — the
     /// refresh is a coordinated sidecar read + EventKit lookup + possible
     /// write-back, hopped off the main actor by the engine's async overload.
     /// The debounce stamp is written BEFORE the await (marking the attempt,
@@ -914,8 +914,8 @@ final class SyncService {
     }
 
     /// Stamp `lastViewed = now` on the guide sidecar. Best-effort and silent
-    /// (a failed stamp must never break opening the guide); errors surface via
-    /// `lastError`. A no-op inside the package when no sidecar exists at
+    /// (a failed stamp must never break opening the guide); errors are logged.
+    /// A no-op inside the package when no sidecar exists at
     /// `uuid`. Mirrors `stampEventViewed(uuid:)`.
     func stampGuideViewed(uuid: String) {
         guard let sync else { return }
@@ -945,7 +945,7 @@ final class SyncService {
     }
 
     /// Persist a drag-reorder of a guide's places into `orderedIDs` order.
-    /// Best-effort and silent; errors surface via `lastError`. Only meaningful
+    /// Best-effort and silent; errors are logged. Only meaningful
     /// for the "Guide Order" sort, whose backing cell this rewrites.
     func reorderPlaces(inGuide guideID: UUID, orderedIDs: [UUID]) {
         guard let sync else { return }
@@ -1142,7 +1142,7 @@ final class SyncService {
 
     /// Current ordered favorites list. Returns `[]` when storage is
     /// unavailable or the on-disk file is missing / unreadable; errors
-    /// surface via `lastError`.
+    /// are logged.
     func favorites() -> [Favorite] {
         guard let favoritesStore else { return [] }
         do {

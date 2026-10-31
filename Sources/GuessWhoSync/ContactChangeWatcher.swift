@@ -171,7 +171,7 @@ public final class ContactChangeWatcher: NSObject {
             // failed but the recovery reload succeeded" is otherwise invisible.
             // Routes through swift-log so it lands in the log file alongside the
             // rest of the app's logs.
-            Self.log.error("contact change read failed", metadata: ["error": .string(String(describing: error))])
+            Self.log.error("contact change read failed", metadata: error.logMetadata())
             postFullReload()
             return
         }

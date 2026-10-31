@@ -292,12 +292,11 @@ public actor CNContactStoreAdapter: ContactStoreProtocol {
                 let elapsedNanos = DispatchTime.now().uptimeNanoseconds - current.startedAt
                 Self.fetchLog.error(
                     "full contact fetch failed",
-                    metadata: [
+                    metadata: error.logMetadata([
                         "fetchID": .stringConvertible(current.id),
                         "callers": .stringConvertible(current.callerCount),
                         "durationMs": .stringConvertible(Double(elapsedNanos) / 1_000_000),
-                        "error": .string(String(describing: error)),
-                    ]
+                    ])
                 )
             }
             throw error
@@ -490,10 +489,7 @@ public actor CNContactStoreAdapter: ContactStoreProtocol {
                 // the repository's later refresh succeeds.
                 Self.saveLog.warning(
                     "created contact re-read failed; returning the committed card",
-                    metadata: [
-                        "localID": .string(mutable.identifier),
-                        "error": .string(String(describing: error)),
-                    ]
+                    metadata: error.logMetadata(["localID": .string(mutable.identifier)])
                 )
                 return Self.toContact(mutable)
             }

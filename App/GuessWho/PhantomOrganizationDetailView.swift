@@ -215,7 +215,8 @@ struct PhantomOrganizationDetailView: View {
                 let created = try await repository.createContact(
                     Contact(contactType: .organization, organizationName: name)
                 )
-                Self.log.notice("phantom-org: created organization card for \(name)")
+                let contactID = created.contactID.logValue
+                Self.log.notice("phantom-org: created organization card", ["contactID": contactID])
 
                 guard let favoriteDepartment else { return }
                 do {
@@ -224,11 +225,9 @@ struct PhantomOrganizationDetailView: View {
                         department: favoriteDepartment,
                         in: created
                     )
-                    Self.log.notice(
-                        "phantom-org: favorited department \(favoriteDepartment) for \(name)"
-                    )
+                    Self.log.notice("phantom-org: favorited department", ["contactID": contactID])
                 } catch {
-                    Self.log.error("phantom-org: department favorite failed", error.logContext())
+                    Self.log.error("phantom-org: department favorite failed", error.logContext(["contactID": contactID]))
                 }
                 favoritesStore.reload()
             } catch {

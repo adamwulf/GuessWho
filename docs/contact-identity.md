@@ -42,7 +42,10 @@ equivalent repository search helper that vends `[ContactID]`); `ContactID.init` 
 vending point that wraps it. The app holds the token, compares it (e.g. as a
 diffable item identifier or a `Set` member), and hands it back to
 `repository.contact(id:)` to fetch the real `Contact`. It CANNOT read any
-field off it, so the token can never be misused as a "contact-light." It is also
+field off it, so the token can never be misused as a "contact-light." The one
+exception is `logValue`, the GuessWho ID (or `localID` before the contact has one)
+for log lines, so a log can identify a contact without its name; never compare,
+persist, or key on it. The token is also
 deliberately NOT `Codable`: a `ContactID` carries the transient `localID`, so
 persisting one would dangle after the next unification. Durable references are
 owned by the package/repository layer: storage may persist the **bare GuessWho

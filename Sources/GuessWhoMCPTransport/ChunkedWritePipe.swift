@@ -188,7 +188,10 @@ public actor ChunkedWritePipe: PipeWritable {
 
     public func write(_ data: Data) async throws {
         if let soft = softLimitBytes, data.count > soft {
-            logger?.error("CHUNKED_WRITE_PIPE: control frame of \(data.count) bytes exceeds the \(soft)-byte announce budget — control messages must stay tiny")
+            logger?.error("CHUNKED_WRITE_PIPE: control frame exceeds the announce budget — control messages must stay tiny", metadata: [
+                "bytes": "\(data.count)",
+                "budgetBytes": "\(soft)",
+            ])
             assertionFailure("Announce-channel message exceeded PIPE_BUF-safe budget")
         }
         let previous = lastWrite

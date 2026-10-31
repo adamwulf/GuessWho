@@ -467,7 +467,7 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
                 routeChromeHandoff(data, attempt: attempt + 1)
             }
         } else {
-            chromeHandoffLog.error("no scene connected after \(attempt) attempts — payload dropped")
+            chromeHandoffLog.error("no scene connected — payload dropped", ["attempts": attempt])
         }
     }
     #endif

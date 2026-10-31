@@ -289,9 +289,10 @@ exceptions: the share extension has no App Group to log into, so it uses
                  metadata: error.logMetadata(["localID": .string(localID)]))
   ```
   The extras passed to `logContext` must be strings.
-- **Context holds IDs, counts, and states.** Never log note text, email
-  addresses, URLs, message subjects, or file contents. Use an ID rather than a
-  person's name; some older import lines still log names, so don't copy them.
+- **Context holds IDs, counts, and states.** Never log names, note text, email
+  addresses, phone numbers, web addresses, message subjects, or file contents.
+  Identify a contact with `contactID.logValue`, its GuessWho ID. Before a contact
+  exists, log a count or a position instead.
 - **Log an error with `error.logContext()` / `error.logMetadata()`, never with
   `error.localizedDescription` alone.** That text can reduce to "The operation
   couldn't be completed. (Type error 0.)", which drops the enum case and its
@@ -303,9 +304,8 @@ exceptions: the share extension has no App Group to log into, so it uses
   logs `LoggedError.fingerprint` instead, so an error's text can't put a path or
   an address in its log. The Safari extension, `GuessWhoLogging`, and
   `LinkedInLocalhostReceiver` put the error text in the context dictionary.
-  `GuessWhoMCPTransport` links neither `GuessWhoSync` nor `GuessWhoLogging`, so a
-  new line there uses swift-log's `metadata:`; its existing error lines still
-  interpolate the error into the message.
+  `GuessWhoMCPTransport` links neither `GuessWhoSync` nor `GuessWhoLogging`, so it
+  does the same through swift-log's `metadata:`.
 - **`errorCase` prints an enum error's payload.** An error enum whose payload can
   hold user data must define a `debugDescription` that leaves it out, as
   `SidecarStoreError` does.

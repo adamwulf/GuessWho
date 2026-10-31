@@ -224,7 +224,10 @@ public actor CappedLineReadPipe: PipeReadable {
                 if byte == 0x0A {
                     isDiscardingOversizeLine = false
                     droppedLineCount += 1
-                    logger?.error("CAPPED_READ_PIPE: dropped line over \(maxLineBytes) bytes (total dropped: \(droppedLineCount))")
+                    logger?.error("CAPPED_READ_PIPE: dropped line over the size cap", metadata: [
+                        "maxLineBytes": "\(maxLineBytes)",
+                        "totalDropped": "\(droppedLineCount)",
+                    ])
                 }
                 continue
             }
@@ -253,7 +256,10 @@ public actor CappedLineReadPipe: PipeReadable {
         pendingBytes.removeSubrange(...newlineIndex)
         if lineBytes.last == 0x0D { lineBytes.removeLast() }
         if let soft = softLimitBytes, lineBytes.count > soft {
-            logger?.error("CAPPED_READ_PIPE: control line of \(lineBytes.count) bytes exceeds the \(soft)-byte announce budget — control messages must stay tiny")
+            logger?.error("CAPPED_READ_PIPE: control line exceeds the announce budget — control messages must stay tiny", metadata: [
+                "bytes": "\(lineBytes.count)",
+                "budgetBytes": "\(soft)",
+            ])
             assertionFailure("Announce-channel message exceeded PIPE_BUF-safe budget")
         }
         return String(decoding: lineBytes, as: UTF8.self)

@@ -1501,7 +1501,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             do {
                 let repository = appDelegate.contactsRepository
                 let created = try await repository.createContact(seed)
-                Self.contactsLog.notice("add-contact: created blank \(seed.contactType.rawValue) record")
+                Self.contactsLog.notice("add-contact: created blank record", ["type": seed.contactType.rawValue])
                 show(created, NewContactCleanup(id: created.contactID, repository: repository))
             } catch {
                 Self.contactsLog.error("add-contact: create failed", error.logContext())
@@ -2637,7 +2637,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             return
         }
 
-        Self.handoffLog.notice("APP resolved App Group id=\(Self.handoffAppGroupID)")
+        Self.handoffLog.notice("APP resolved App Group", ["id": Self.handoffAppGroupID])
         Self.handoffLog.notice("LinkedIn handoff wake received", ["entry": entry])
 
         guard let data = readAndClearHandoffPayload() else { return }
@@ -2691,17 +2691,18 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         }
         let profile = profiles[0]
 
-        // Log the decoded payload (photo elided — its size says enough) so
-        // "did field X arrive?" is answerable from app.log alone, without
-        // opening the LinkedIn tab's Web Inspector.
-        Self.handoffLog.notice("decoded payload: \(Self.payloadDescription(profile))")
+        // Log which fields arrived, never their values, so "did field X arrive?"
+        // is answerable from app.log alone, without opening the LinkedIn tab's
+        // Web Inspector or writing a person's details to the log.
+        Self.handoffLog.notice("decoded payload", Self.payloadContext(profile))
 
         guard let appDelegate = UIApplication.shared.delegate as? GuessWhoAppDelegate else { return }
         let repo = appDelegate.contactsRepository
         let matches = repo.matchLinkedIn(profile: profile)
-        Self.handoffLog.notice(
-            "match: \(matches.count) contact(s) for \(profile.fullName ?? "?") (url=\(profile.contactInfo?.profileUrl ?? "-"))"
-        )
+        Self.handoffLog.notice("match: finished", [
+            "matches": matches.count,
+            "contactIDs": matches.map(\.logValue).joined(separator: ","),
+        ])
 
         // No match: present the new-contact form pre-filled from the profile,
         // as a sheet over whatever is on screen — same dialog shape as the
@@ -2758,11 +2759,14 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
                 self?.dismissHandoffSheet(sheet.sheet)
                 guard let repo else { return }
                 let fields = Self.packageFields(from: selected)
-                Self.handoffLog.notice("confirm: applying \(fields.map(\.rawValue).sorted().joined(separator: ","))")
+                Self.handoffLog.notice("confirm: applying", [
+                    "contactID": matchID.logValue,
+                    "fields": fields.map(\.rawValue).sorted().joined(separator: ","),
+                ])
                 Task {
                     do {
-                        let updated = try await repo.applyLinkedIn(profile: profile, to: matchID, fields: fields)
-                        Self.handoffLog.notice("confirm: saved \(updated.givenName) \(updated.familyName)")
+                        _ = try await repo.applyLinkedIn(profile: profile, to: matchID, fields: fields)
+                        Self.handoffLog.notice("confirm: saved", ["contactID": matchID.logValue])
                         await Self.stampImportEngagement(matchID, repo: repo)
                     } catch {
                         // Tell the user, not just the log — a silent failure
@@ -2841,10 +2845,13 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         // close.
         hosting.onDismissal = { [weak self] in self?.scheduleUncoveredHandoffSheetSweep() }
         guard let presenter = topmostPresenter() else {
-            Self.handoffLog.error("\(phase): NO presenter available — \(what) not shown")
+            Self.handoffLog.error("NO presenter available — sheet not shown", ["phase": phase, "what": what])
             return nil
         }
-        Self.handoffLog.notice("\(phase): presenting \(what)", metadata)
+        var context = metadata
+        context["phase"] = phase
+        context["what"] = what
+        Self.handoffLog.notice("presenting sheet", context)
         presenter.present(hosting, animated: true)
         return hosting
     }
@@ -2880,7 +2887,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
                 // "Couldn't save" alert, with the user's work intact — the
                 // right reading, since nothing was created.
                 let contact = try await repo.createContact(edited)
-                Self.handoffLog.notice("new-contact: created", ["name": contact.displayName])
+                Self.handoffLog.notice("new-contact: created", ["contactID": contact.contactID.logValue])
                 created.id = contact.contactID
             },
             onDone: { [weak self] in
@@ -2950,8 +2957,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             // must not bypass them — it would drop typed edits with no
             // confirmation, or tear the sheet away mid-save while
             // `createContact` still completes underneath.
-            isModal: true,
-            metadata: ["name": seed.displayName]
+            isModal: true
         )
     }
 
@@ -2978,8 +2984,8 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             let matchID = matches.count == 1 ? matches[0] : nil
             if matches.count > 1 {
                 Self.handoffLog.notice("TLS batch: ambiguous contact match — will create new", [
-                    "name": profile.fullName ?? "?",
-                    "matches": matches.count,
+                    "index": offset,
+                    "contactIDs": matches.map(\.logValue).joined(separator: ","),
                 ])
             }
             let contact = matchID.flatMap { repo.contact(id: $0) }
@@ -3046,7 +3052,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         var issues: [String] = []
         var failedCount = 0
         var partialCount = 0
-        for selection in selections {
+        for (index, selection) in selections.enumerated() {
             // Reporting must use the roster identity, not the filtered payload:
             // a user may intentionally deselect Name while updating a contact.
             let trimmedName = selection.profile.fullName?
@@ -3055,12 +3061,17 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             let profile = Self.filteredProfile(selection.profile, to: selection.fields)
             let fields = Self.packageFields(from: selection.fields)
             do {
+                let importedID: ContactID
                 if let matched = selection.matchedContactID {
+                    importedID = matched
                     do {
                         _ = try await repo.applyLinkedIn(profile: profile, to: matched, fields: fields)
                     } catch {
                         partialCount += 1
-                        Self.handoffLog.error("TLS batch: update may be partial", error.logContext(["name": name]))
+                        Self.handoffLog.error(
+                            "TLS batch: update may be partial",
+                            error.logContext(["contactID": matched.logValue])
+                        )
                         issues.append(
                             "\(name): The existing contact may be partially updated: \(error.localizedDescription)"
                         )
@@ -3069,6 +3080,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
                     await Self.stampImportEngagement(matched, repo: repo)
                 } else {
                     let contact = try await repo.createContact(LinkedInContactSeed.contact(from: profile))
+                    importedID = contact.contactID
                     await Self.stampImportEngagement(contact.contactID, repo: repo)
                     let extras = fields.intersection(Set<LinkedInField>([
                         .headline, .location, .about, .department, .office, .role, .ama, .photo,
@@ -3084,7 +3096,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
                             partialCount += 1
                             Self.handoffLog.error(
                                 "TLS batch: contact created but extras failed",
-                                error.logContext(["name": name])
+                                error.logContext(["contactID": contact.contactID.logValue])
                             )
                             issues.append(
                                 "\(name): Contact created, but some custom fields or the photo could not be saved: \(error.localizedDescription)"
@@ -3093,10 +3105,11 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
                         }
                     }
                 }
-                Self.handoffLog.notice("TLS batch: imported", ["name": name])
+                Self.handoffLog.notice("TLS batch: imported", ["contactID": importedID.logValue])
             } catch {
                 failedCount += 1
-                Self.handoffLog.error("TLS batch: import failed", error.logContext(["name": name]))
+                // No contact exists yet, so identify the row by its batch position.
+                Self.handoffLog.error("TLS batch: import failed", error.logContext(["index": String(index)]))
                 issues.append("\(name): Contact was not imported: \(error.localizedDescription)")
             }
         }
@@ -3188,9 +3201,9 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
 
         do {
             _ = try await repo.applyLinkedIn(profile: profile, to: contactID, fields: extras)
-            Self.handoffLog.notice(
-                "new-contact: attached \(extras.map(\.rawValue).sorted().joined(separator: ","))"
-            )
+            Self.handoffLog.notice("new-contact: attached", [
+                "fields": extras.map(\.rawValue).sorted().joined(separator: ","),
+            ])
             return nil
         } catch {
             Self.handoffLog.error("new-contact: attaching LinkedIn extras failed", error.logContext())
@@ -3268,19 +3281,23 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         return out
     }
 
-    /// The decoded handoff payload as a single loggable line: the profile's
-    /// JSON with the photo elided (an 800x800 base64 data URL would swamp the
-    /// log), plus the photo's type/size so its presence is still on record.
-    private static func payloadDescription(_ profile: LinkedInProfile) -> String {
+    /// The decoded handoff payload for the log: the names of the fields it
+    /// carries, never their values, plus the photo's type and size. A nested
+    /// object's fields read as `contactInfo.emails`.
+    private static func payloadContext(_ profile: LinkedInProfile) -> [String: CustomStringConvertible] {
         var elided = profile
         elided.photo = nil
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
-        let json = (try? encoder.encode(elided))
-            .flatMap { String(data: $0, encoding: .utf8) } ?? "<encode failed>"
-        let photo = profile.photo
-            .map { "photo=\($0.contentType ?? "?") \($0.byteLength ?? 0)B" } ?? "photo=none"
-        return "\(json) \(photo)"
+        let object = (try? JSONEncoder().encode(elided))
+            .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+        let fields = object?.flatMap { key, value -> [String] in
+            guard let nested = value as? [String: Any] else { return [key] }
+            return nested.keys.map { "\(key).\($0)" }
+        }
+        return [
+            "fields": fields?.sorted().joined(separator: ",") ?? "<encode failed>",
+            "photoType": profile.photo?.contentType ?? "none",
+            "photoBytes": profile.photo?.byteLength ?? 0,
+        ]
     }
 
     /// The topmost presented view controller to present from (works for the
@@ -3403,15 +3420,15 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// Returns nil on any failure (a receiver, not production error handling —
     /// failures are logged).
     private func readAndClearHandoffPayload() -> Data? {
-        Self.handoffLog.notice("read: resolving App Group id=\(Self.handoffAppGroupID)")
+        Self.handoffLog.notice("read: resolving App Group", ["id": Self.handoffAppGroupID])
         guard let container = FileManager.default
             .containerURL(forSecurityApplicationGroupIdentifier: Self.handoffAppGroupID) else {
-            Self.handoffLog.error("read: App Group container unavailable: \(Self.handoffAppGroupID)")
+            Self.handoffLog.error("read: App Group container unavailable", ["id": Self.handoffAppGroupID])
             return nil
         }
 
         let fileURL = container.appendingPathComponent(Self.handoffFilename)
-        Self.handoffLog.notice("read: looking for \(fileURL.path)")
+        Self.handoffLog.notice("read: looking for parked handoff", ["path": fileURL.path])
 
         guard FileManager.default.fileExists(atPath: fileURL.path) else {
             // Not an error: a Chrome/Brave-initiated wake parks nothing (its
@@ -3419,7 +3436,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             // wake), and a duplicate Safari wake finds the file already
             // drained. A SAFARI handoff that logs this line IS a problem —
             // check the extension's "park: wrote" line and the App Group ids.
-            Self.handoffLog.notice("read: no \(Self.handoffFilename) at \(fileURL.path) — nothing parked (Chrome-flow wake or already drained)")
+            Self.handoffLog.notice("read: nothing parked (Chrome-flow wake or already drained)", ["path": fileURL.path])
             return nil
         }
 
@@ -3430,7 +3447,10 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             let size = (attrs[.size] as? NSNumber)?.intValue ?? 0
             if size > Self.handoffMaxBytes {
                 try? FileManager.default.removeItem(at: fileURL)
-                Self.handoffLog.error("read: handoff file too large (\(size) bytes > \(Self.handoffMaxBytes)); discarded")
+                Self.handoffLog.error("read: handoff file too large; discarded", [
+                    "bytes": size,
+                    "maxBytes": Self.handoffMaxBytes,
+                ])
                 return nil
             }
 

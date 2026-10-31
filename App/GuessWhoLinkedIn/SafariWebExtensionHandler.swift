@@ -71,14 +71,14 @@ final class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
         // contain a base64 photo and profile PII, neither of which belongs in a
         // low-level transport breadcrumb. The app logs a compact photo-elided
         // decoded profile after handoff; web diagnostics are separately bounded.
-        Self.log.notice("EXTENSION resolved App Group id=\(Self.appGroupID)")
-        Self.log.notice("EXTENSION \(Self.buildDescription)")
-        Self.log.notice("native message received: \(WebExtensionMessageCodec.messageShape(rawMessage))")
+        Self.log.notice("EXTENSION resolved App Group", ["id": Self.appGroupID])
+        Self.log.notice("EXTENSION build", ["build": Self.buildDescription])
+        Self.log.notice("native message received", ["shape": WebExtensionMessageCodec.messageShape(rawMessage)])
 
         var ack: [String: Any] = ["received": false]
 
         if let diagnostic = WebExtensionMessageCodec.extractDiagnostic(from: rawMessage) {
-            Self.log.notice("web diagnostic: \(WebExtensionMessageCodec.diagnosticDescription(diagnostic))")
+            Self.log.notice("web diagnostic", ["diagnostic": WebExtensionMessageCodec.diagnosticDescription(diagnostic)])
             ack = ["received": true, "logged": true]
         } else if let payload = WebExtensionMessageCodec.extractPayload(from: rawMessage) {
             let parked = parkPayload(payload)
@@ -86,7 +86,7 @@ final class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
             // note below. It returns the URL for the popup to open.
             ack = ["received": true, "parked": parked, "wakeURL": Self.handoffURL.absoluteString]
         } else {
-            Self.log.error("native message missing diagnostic/payload: \(WebExtensionMessageCodec.messageShape(rawMessage))")
+            Self.log.error("native message missing diagnostic/payload", ["shape": WebExtensionMessageCodec.messageShape(rawMessage)])
         }
 
         let response = NSExtensionItem()
@@ -97,14 +97,14 @@ final class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
     /// Writes the handoff payload as a small JSON file in the App Group container.
     /// Returns true on success. The app reads (and clears) it on wake.
     private func parkPayload(_ payload: Any) -> Bool {
-        Self.log.notice("park: resolving App Group id=\(Self.appGroupID)")
+        Self.log.notice("park: resolving App Group", ["id": Self.appGroupID])
         guard let container = FileManager.default
             .containerURL(forSecurityApplicationGroupIdentifier: Self.appGroupID) else {
-            Self.log.error("park: App Group container UNAVAILABLE for id=\(Self.appGroupID) — entitlement not granting this group at runtime")
+            Self.log.error("park: App Group container UNAVAILABLE — entitlement not granting this group at runtime", ["id": Self.appGroupID])
             return false
         }
         let url = container.appendingPathComponent("pending-handoff.json")
-        Self.log.notice("park: writing to \(url.path)")
+        Self.log.notice("park: writing", ["path": url.path])
         do {
             let envelope: [String: Any] = ["payload": payload, "stampedBy": "extension"]
             let data = try JSONSerialization.data(withJSONObject: envelope, options: [.prettyPrinted])

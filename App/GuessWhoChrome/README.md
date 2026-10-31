@@ -115,8 +115,8 @@ extensions never auto-update.
   POST retry loop log there.
 - **App side:** `<AppGroup>/Logs/app.log` (Help → Open Container Folder),
   categories `app.linkedin-handoff` and `app.linkedin-handoff.chrome`. A
-  healthy handoff logs `listening on 127.0.0.1:57231` at launch, then
-  `handoff received: <N>B from chrome-extension://…`, then the shared
+  healthy handoff logs `listening on loopback` (`port=57231`) at launch, then
+  `handoff received` (`bytes=<N> origin=chrome-extension://…`), then the shared
   `processing handoff payload` → `match:` → `diff:` lines.
 
 ## Pack + upload to the Chrome Web Store
@@ -169,7 +169,7 @@ separate store.
 - **`Failed to fetch` in the service-worker console, app never shows the
   sheet** — the listener isn't up: the app isn't running/installed, or a
   flavor mismatch (Debug extension ↔ Release app talk different ports on
-  purpose). Check `app.log` for `listening on 127.0.0.1:<port>`.
+  purpose). Check `app.log` for `listening on loopback` (`port=<port>`).
 - **HTTP 403 in the service-worker console** — Origin not in the allowlist.
   Compare the ID in `brave://extensions` with `GUESSWHO_CHROME_EXTENSION_IDS`
   in the matching `GuessWho-<Config>.xcconfig`; `app.log` logs the rejected
@@ -180,6 +180,6 @@ separate store.
 - **No "Open GuessWho?" dialog and the app doesn't foreground** — the wake
   navigation was swallowed; the payload still lands if the app is running.
   Check the `[GuessWho][bg]` `wake:` lines for the fallback path.
-- **App opens but logs `read: no pending-handoff.json … nothing parked`** —
+- **App opens but logs `read: nothing parked`** —
   normal for the Chrome flow (that's the Safari parked-file drain); the
   payload arrives via `app.linkedin-handoff.chrome` moments later.

@@ -464,7 +464,7 @@ final class AddToGroupMenu {
     /// visible step: this menu can only be opened from a visible list.
     private func present(_ alert: UIAlertController) {
         guard let host, host.isViewLoaded, host.view.window != nil else {
-            Self.log.error("no visible host for the Add to Group alert: \(alert.title ?? "")")
+            Self.log.error("no visible host for the Add to Group alert")
             return
         }
         if let presented = host.presentedViewController {

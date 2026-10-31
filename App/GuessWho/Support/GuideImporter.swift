@@ -49,7 +49,6 @@ enum GuideImporter {
         log.notice("import: fetching guide link", ["host": url.host ?? "-"])
         let snapshot = try await MapsGuideURL.fetchSnapshot(from: url)
         log.notice("import: decoded guide", [
-            "name": snapshot.name,
             "entries": snapshot.entries.count
         ])
         return snapshot
@@ -85,7 +84,6 @@ enum GuideImporter {
             guideID = try service.createGuide(from: snapshot, sourceURL: sourceURL)
             log.notice("import: created new guide", [
                 "guideID": guideID.uuidString,
-                "name": snapshot.name,
                 "entries": snapshot.entries.count
             ])
         case .update(let existingID):
@@ -98,7 +96,6 @@ enum GuideImporter {
             guideID = existingID
             log.notice("import: updated existing guide", [
                 "guideID": guideID.uuidString,
-                "name": snapshot.name,
                 "entries": snapshot.entries.count
             ])
         }
@@ -292,7 +289,6 @@ enum GuideImporter {
 
         log.notice("refresh: updated guide", [
             "guideID": guide.id.uuidString,
-            "name": snapshot.name,
             "entries": snapshot.entries.count
         ])
         await repository.reload()
@@ -532,7 +528,6 @@ enum GuidePlaceResolver {
             "guideID": place.guideID.uuidString,
             "placeID": place.mapsPlaceID ?? "-",
             "identifier": identifier.rawValue,
-            "name": place.name.isEmpty ? "-" : place.name,
             "sortOrder": String(place.sortOrder)
         ]
     }

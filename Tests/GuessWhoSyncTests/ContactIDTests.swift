@@ -111,6 +111,18 @@ struct ContactIDIdentityTests {
     private let uuidB = "22222222-2222-2222-2222-222222222222"
 
     @Test
+    func logValueIsTheGuessWhoIDThenTheLocalID() {
+        #expect(ContactID(guessWhoID: uuidA, localID: "1").logValue == uuidA)
+        #expect(ContactID(guessWhoID: nil, localID: "1").logValue == "1")
+    }
+
+    @Test
+    func logValueNeverCarriesTheContactsName() {
+        let id = ContactID(contact: contact(localID: "1", uuid: uuidA, givenName: "Ada"))
+        #expect(!id.logValue.contains("Ada"))
+    }
+
+    @Test
     func guessWhoIDComesFromSidecarKeyCanonicalizer() {
         let mixedCase = "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"
         let id = ContactID(contact: contact(localID: "1", uuid: mixedCase, givenName: "Ada"))

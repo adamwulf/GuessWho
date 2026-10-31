@@ -36,7 +36,7 @@ enum AppKitBridgeLoader {
         }
         let bundleURL = pluginsURL.appendingPathComponent(bundleFileName)
         guard let bundle = Bundle(url: bundleURL) else {
-            log.error("AppKitBridge: no bundle at \(bundleURL.path)")
+            log.error("AppKitBridge: no bundle", ["path": bundleURL.path])
             return nil
         }
         // Accessing principalClass implicitly loads the bundle's code. A nil
@@ -46,7 +46,7 @@ enum AppKitBridgeLoader {
             log.error("AppKitBridge: principalClass is not an AppKitPlugin (check NSPrincipalClass <module>.<class>)")
             return nil
         }
-        log.info("AppKitBridge: loaded plugin from \(bundleURL.lastPathComponent)")
+        log.info("AppKitBridge: loaded plugin", ["bundle": bundleURL.lastPathComponent])
         return pluginClass.init()
     }
     #else

@@ -739,7 +739,7 @@ final class GroupContextMenu {
             return
         }
         guard let host, host.isViewLoaded, host.view.window != nil else {
-            Self.log.error("no visible host for the group alert: \(alert.title ?? "")")
+            Self.log.error("no visible host for the group alert")
             return
         }
         if let presented = host.presentedViewController {

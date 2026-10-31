@@ -824,8 +824,8 @@ struct EventDetailView: View {
     }
 
     /// Returns `true` when the link was created (or already existed) so the
-    /// picker sheet knows it's safe to dismiss. A write failure returns `false`
-    /// and surfaces via `service.recordError` so the user can pick a different
+    /// picker sheet knows it's safe to dismiss. A write failure is logged through
+    /// `service.recordError` and returns `false`, so the user can pick a different
     /// contact or retry without losing the sheet.
     private func addLink(to contacts: [Contact], note: String) async -> Bool {
         do {
@@ -1052,8 +1052,8 @@ struct ContactPickerSheet: View {
     /// Writes ONE link joining every picked contact to the entity with the one
     /// shared note. Returns `true` once the link has been created, `false` if the
     /// underlying reconcile-then-link sequence failed. The picker surfaces its
-    /// own neutral failure copy in that case — the host view is also free to
-    /// surface a richer message via `recordError`.
+    /// own neutral failure copy in that case; the host view logs the cause with
+    /// `recordError`.
     let onPick: ([Contact], String) async -> Bool
 
     @State private var query: String = ""
@@ -1122,7 +1122,7 @@ struct ContactPickerSheet: View {
                 // disabling Cancel would trap the user. The unstructured
                 // Task continues running after dismissal — SwiftUI state
                 // mutations on the dismissed view are no-ops, so there's no
-                // crash risk; any failure still surfaces via recordError.
+                // crash risk; any failure is still logged through recordError.
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
                 }

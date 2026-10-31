@@ -61,7 +61,7 @@ public final class RelayMCPServer: @unchecked Sendable {
             do {
                 try await server.start(transport: stdio)
             } catch {
-                logger?.error("RELAY_SERVER: failed to start: \(error)")
+                logger?.error("RELAY_SERVER: failed to start", metadata: ["error": "\(error)"])
                 throw error
             }
         }
@@ -119,7 +119,7 @@ public final class RelayMCPServer: @unchecked Sendable {
             }
             return noHostList(status: WireErrorMessage.noHostStatus)
         } catch {
-            logger?.info("RELAY_SERVER: tools/list without host: \(error)")
+            logger?.info("RELAY_SERVER: tools/list without host", metadata: ["error": "\(error)"])
             return noHostList(status: WireErrorMessage.noHostStatus)
         }
     }
@@ -198,7 +198,7 @@ public final class RelayMCPServer: @unchecked Sendable {
         do {
             try await server.notify(ToolListChangedNotification.message())
         } catch {
-            logger?.info("RELAY_SERVER: list_changed nudge failed: \(error)")
+            logger?.info("RELAY_SERVER: list_changed nudge failed", metadata: ["error": "\(error)"])
         }
     }
 }

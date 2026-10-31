@@ -659,7 +659,7 @@ public final class SidecarFileWatcher: NSObject {
         } catch {
             Self.log.error(
                 "sidecar conflict reconciliation failed",
-                metadata: ["error": .string(String(describing: error))]
+                metadata: error.logMetadata()
             )
         }
 

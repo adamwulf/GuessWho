@@ -558,8 +558,8 @@ struct EventLinkSheet: View {
                 pickInFlight = false
                 return
             }
-            // Partial-failure note: if `onLinked` throws (caller wraps it via
-            // recordError, see SyncService.addContactEventLink path), the
+            // Partial-failure note: if the link write inside `onLinked` fails
+            // (the caller logs it through recordError), the
             // sidecar minted by `linkEvent` exists but the contact↔event
             // link does not. The orphan sidecar is harmless and the user can
             // retry the link from the contact view.
