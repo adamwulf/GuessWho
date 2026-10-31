@@ -67,10 +67,12 @@ Catalyst profiles list only the `group.` ID.
 A device that can't open an older file, including a new device whose key hasn't
 synced yet, shows the Contacts photo, uncropped. Edit Crop and Reset Crop then
 report an error and leave the file alone, because another device may still be able
-to read it. Replacing the photo still works: choosing a new one, or saving a
-LinkedIn import with its photo row checked. That row starts checked, as it does for
-any photo, and the sheet shows the change before Save. The Contacts photo moves to
-`previousPhoto`, and the older file and its crop are deleted on every device.
+to read it. Replacing the photo still works: choosing a new one, using the CLI/MCP
+set-photo tool, or saving a LinkedIn or TLS roster import with its photo row checked.
+That row starts checked, as it does for any photo. A single-profile sheet shows the
+change before Save, but a roster import can include people you never paged to. The
+Contacts photo moves to `previousPhoto`, and the older file and its crop are deleted
+on every device.
 
 A build from before this change can't read the new files. It shows no photo for
 those contacts, not even the Contacts one, and its crop edits fail before writing,
