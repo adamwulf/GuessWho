@@ -48,6 +48,14 @@ struct FileSystemSidecarStoreBlobTests {
     }
 
     @Test
+    func keychainFailureNamesItsStatusInPlainLanguage() {
+        let message = SidecarBlobCryptoError.keychainStatus(-34018).localizedDescription
+        #expect(message.contains("-34018"))
+        #expect(!message.contains("Sidecar"))
+        #expect(!message.contains("GuessWhoSync"))
+    }
+
+    @Test
     func readOfMissingBlobReturnsNil() throws {
         let root = makeRoot()
         defer { cleanup(root) }
