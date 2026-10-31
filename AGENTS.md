@@ -301,10 +301,11 @@ exceptions: the share extension has no App Group to log into, so it uses
   so log a wrapper's `underlying` error directly.
 - **These helpers live in `GuessWhoSync`.** The Mail extension doesn't link it and
   logs `LoggedError.fingerprint` instead, so an error's text can't put a path or
-  an address in its log. Other code without it (the Safari extension,
-  `GuessWhoLogging`, `LinkedInLocalhostReceiver`, `GuessWhoMCPTransport`) puts the
-  error text in the context dictionary; some older `GuessWhoMCPTransport` lines
-  still interpolate it into the message.
+  an address in its log. The Safari extension, `GuessWhoLogging`, and
+  `LinkedInLocalhostReceiver` put the error text in the context dictionary.
+  `GuessWhoMCPTransport` links neither `GuessWhoSync` nor `GuessWhoLogging`, so a
+  new line there uses swift-log's `metadata:`; its existing error lines still
+  interpolate the error into the message.
 - **`errorCase` prints an enum error's payload.** An error enum whose payload can
   hold user data must define a `debugDescription` that leaves it out, as
   `SidecarStoreError` does.
