@@ -45,12 +45,6 @@ with the one numeric caveat below.
 
 **NOT preserved** — do not rely on these surviving an older build:
 
-- **The contents of a `.dat` file.** They are a synced format too, outside the
-  envelope. A new `.dat` starts with `plainBlobMarker`, which builds older than that
-  marker can't read: they report a photo load error, and the failed read writes
-  nothing. Never change
-  the marker bytes, or every file already written would read as an older encrypted
-  one. See [Profile photos](profile-photos.md).
 - A new key at the **`SidecarCell`** level (a sibling of `value` /
   `modifiedAt`) or at the **`SidecarEnvelope`** level. Both decode with fixed
   `CodingKeys`, so an unknown key there is dropped on re-encode.
@@ -72,6 +66,12 @@ with the one numeric caveat below.
 The first two NOT-preserved items are genuine schema changes that need their own
 migration (see the `schemaVersion` rule below); the third is a limit on what
 kind of *value* you may safely add inside a cell.
+
+**`.dat` files are a synced format too**, outside the envelope and this guarantee.
+A new `.dat` starts with `plainBlobMarker`, which builds older than that marker
+can't read: they report a photo load error, and the failed read writes nothing.
+Never change the marker bytes, or every file already written would read as an older
+encrypted one. See [Profile photos](profile-photos.md).
 
 ## Why it holds — three legs
 

@@ -15,7 +15,7 @@ public struct ContactPhoto: Sendable {
     /// These bytes came from Contacts because the stored file couldn't be read
     /// here. Another device may be able to read that file, so it must not be replaced
     /// by a crop edit made from these bytes.
-    package var storedFileUnreadable = false
+    public package(set) var storedFileUnreadable = false
 
     public init(data: Data, kind: ContactPhotoKind, crop: ContactPhotoCrop? = nil) {
         self.data = data

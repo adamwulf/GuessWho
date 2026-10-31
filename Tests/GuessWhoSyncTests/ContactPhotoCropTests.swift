@@ -209,7 +209,7 @@ struct ContactPhotoCropPersistenceTests {
     @MainActor private func makeRepositoryWithUnreadablePhoto(
         root: URL,
         systemPhoto: Data
-    ) async throws -> (repository: ContactsRepository, contacts: InMemoryContactStore,
+    ) async throws -> (repository: ContactsRepository, contacts: InMemoryContactStore, sync: GuessWhoSync,
                        store: FileSystemSidecarStore, id: ContactID, key: SidecarKey, datURL: URL) {
         let contacts = InMemoryContactStore(contacts: [Contact(localID: "ada", givenName: "Ada")])
         let store = FileSystemSidecarStore(root: root, ubiquity: FakeUbiquityProvider(),
@@ -219,14 +219,16 @@ struct ContactPhotoCropPersistenceTests {
         let repository = ContactsRepository(contacts: contacts, sync: sync)
         await repository.reload()
         let id = try #require(repository.contact(localID: "ada")).contactID
-        try await repository.setContactPhoto(for: id, imageData: systemPhoto)
+        // With a crop, so a test can tell the stored crop stays out of the fallback.
+        let crop = try #require(ContactPhotoCrop(x: 0.25, y: 0.25, width: 0.5, height: 0.5))
+        try await repository.setContactPhoto(for: id, imageData: systemPhoto, crop: crop)
 
         let saved = try #require(repository.contact(id: id))
         let key = try #require(SidecarKey.forContact(saved))
         let blobID = try #require(try store.blobIds(for: key).first)
         let datURL = root.appendingPathComponent("contacts").appendingPathComponent("\(key.id).\(blobID).dat")
         try InMemoryBlobCrypto().encrypt(Data([9, 9])).write(to: datURL)
-        return (repository, contacts, store, id, key, datURL)
+        return (repository, contacts, sync, store, id, key, datURL)
     }
 
     @Test @MainActor func olderEncryptedPhotoThatCannotBeReadFallsBackToContacts() async throws {
@@ -238,6 +240,7 @@ struct ContactPhotoCropPersistenceTests {
         let shown = try #require(try await setup.repository.contactPhotoData(for: setup.id, kind: .fullSize))
         #expect(shown.data == systemPhoto)
         #expect(shown.crop == nil)
+        #expect(shown.storedFileUnreadable)
         #expect(try await setup.repository.contactPhotoData(for: setup.id, kind: .thumbnail) != nil)
     }
 
@@ -274,7 +277,8 @@ struct ContactPhotoCropPersistenceTests {
     @Test @MainActor func unreadablePhotoCanBeReplacedWithANewOne() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
-        let setup = try await makeRepositoryWithUnreadablePhoto(root: root, systemPhoto: Data([1, 2, 3, 4]))
+        let systemPhoto = Data([1, 2, 3, 4])
+        let setup = try await makeRepositoryWithUnreadablePhoto(root: root, systemPhoto: systemPhoto)
         let replacement = Data([7, 8, 9])
         let crop = try #require(ContactPhotoCrop(x: 0, y: 0, width: 0.5, height: 0.5))
 
@@ -283,6 +287,10 @@ struct ContactPhotoCropPersistenceTests {
         let shown = try #require(try await setup.repository.contactPhotoData(for: setup.id, kind: .fullSize))
         #expect(shown.data == replacement)
         #expect(shown.crop == crop)
+        #expect(shown.storedFileUnreadable == false)
+        // What the doc promises: the Contacts photo is kept, and the older file goes.
+        #expect(try setup.sync.blobFieldData(at: setup.key, field: ContactsRepository.previousPhotoFieldName) == systemPhoto)
+        #expect(!FileManager.default.fileExists(atPath: setup.datURL.path))
     }
 
     @Test @MainActor func existingPhotoHasNoCropAndIsPreservedWhenFirstCropped() async throws {
