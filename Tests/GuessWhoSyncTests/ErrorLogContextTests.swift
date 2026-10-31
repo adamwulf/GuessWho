@@ -79,7 +79,10 @@ struct ErrorLogContextTests {
         contact.givenName = "Private"
         contact.familyName = "Person"
         contact.phoneNumbers = [CNLabeledValue(label: nil, value: CNPhoneNumber(stringValue: "555-0100"))]
-        let validation = NSError(domain: CNErrorDomain, code: 300)
+        let validation = NSError(domain: CNErrorDomain, code: 301, userInfo: [
+            CNErrorUserInfoAffectedRecordsKey: [contact],
+            CNErrorUserInfoKeyPathsKey: ["phoneNumbers"],
+        ])
         let error = NSError(domain: CNErrorDomain, code: 300, userInfo: [
             CNErrorUserInfoAffectedRecordsKey: [contact],
             CNErrorUserInfoKeyPathsKey: ["givenName"],
@@ -94,7 +97,7 @@ struct ErrorLogContextTests {
         #expect(!logged.contains("555-0100"))
         #expect(metadata["userInfoKeys"]?.description.contains(CNErrorUserInfoAffectedRecordsKey) == true)
         #expect(metadata["keyPaths"]?.description == "givenName")
-        #expect(metadata["validationErrors"]?.description == "\(CNErrorDomain)#300")
+        #expect(metadata["validationErrors"]?.description == "\(CNErrorDomain)#301[phoneNumbers]")
     }
 
     @Test

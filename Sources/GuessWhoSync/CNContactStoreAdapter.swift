@@ -447,9 +447,9 @@ public actor CNContactStoreAdapter: ContactStoreProtocol {
             } catch {
                 // DEBUG BREADCRUMB (developer surface, never user-facing): a
                 // CNSaveRequest.execute() rejection arrives as a terse "Cocoa
-                // error <code>" with the actionable detail buried in userInfo /
-                // NSUnderlyingError. Log the full chain so the failing
-                // account/property shows in the device log, then re-throw the
+                // error <code>" with the detail buried in userInfo /
+                // NSUnderlyingError. Log the chain's codes and the rejected
+                // property names (see `saveFailureMetadata`), then re-throw the
                 // ORIGINAL error so categorization (and the user's alert) is
                 // unchanged. Most common cause: a contact unified across
                 // accounts where one backing card lives in a read-only source
@@ -496,18 +496,17 @@ public actor CNContactStoreAdapter: ContactStoreProtocol {
         }
     }
 
-    /// Emits the full error chain for a failed contact save through swift-log
-    /// (so it lands in `<AppGroup>/Logs/app.log` via FellerBuncher, NOT just the
-    /// OS unified log where the detail is `<private>`-redacted). This is a
+    /// Emits the error chain for a failed contact save through swift-log (so it
+    /// lands in `<AppGroup>/Logs/app.log` via FellerBuncher). This is a
     /// developer-facing debug breadcrumb and is NOT shown to the user —
     /// `saveErrorCategory` owns the user-facing message.
     ///
-    /// Walks `NSUnderlyingError` so the buried `CNError` / per-property detail
-    /// (which names the offending account or field — e.g. the keys behind a
-    /// 134092 rejection) is captured alongside the top-level "Cocoa error
-    /// <code>". One log line per level (top, then `underlying[0]`, `[1]`, …) for
-    /// independent grepping. `userInfo` is logged by key name only, because its
-    /// values can hold the rejected contact; see `saveFailureMetadata`.
+    /// Walks `NSUnderlyingError` so a buried `CNError` is captured alongside the
+    /// top-level "Cocoa error <code>". One log line per level (top, then
+    /// `underlying[0]`, `[1]`, …) for independent grepping. Each line holds the
+    /// domain, code, description, `userInfo` key names, and rejected property
+    /// names, never `userInfo` values, which can hold the rejected contact; see
+    /// `saveFailureMetadata`.
     nonisolated static func logSaveFailure(_ error: Error, contactLocalID: String) {
         // Native swift-log metadata form (matches ContactChangeWatcher): this
         // package depends on swift-log directly, NOT GuessWhoLogging, so the
@@ -544,9 +543,11 @@ public actor CNContactStoreAdapter: ContactStoreProtocol {
             metadata["keyPaths"] = .string(keyPaths.joined(separator: ","))
         }
         if let validationErrors = error.userInfo[CNErrorUserInfoValidationErrorsKey] as? [NSError] {
-            metadata["validationErrors"] = .string(
-                validationErrors.map { "\($0.domain)#\($0.code)" }.joined(separator: ",")
-            )
+            // A code 300 error keeps its key paths only on these nested errors.
+            metadata["validationErrors"] = .string(validationErrors.map { validation in
+                let keyPaths = validation.userInfo[CNErrorUserInfoKeyPathsKey] as? [String] ?? []
+                return "\(validation.domain)#\(validation.code)[\(keyPaths.joined(separator: "+"))]"
+            }.joined(separator: ","))
         }
         return metadata
     }
