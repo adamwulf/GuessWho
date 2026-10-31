@@ -566,7 +566,7 @@ final class GroupContextMenu {
             do {
                 try await command(self.repository)
             } catch {
-                Self.log.error("couldn't \(action): \(error.localizedDescription)")
+                Self.log.error("group menu action failed", error.logContext(["action": action]))
                 let alert = UIAlertController(
                     title: "Couldn’t Save This Change",
                     message: GroupFolderErrorPresentation.message(for: error),
@@ -659,7 +659,7 @@ final class GroupContextMenu {
     }
 
     private func presentMutationError(action: String, error: Error) async {
-        Self.log.error("couldn't \(action) group: \(error.localizedDescription)")
+        Self.log.error("group action failed", error.logContext(["action": action]))
         let presentation = GroupMutationErrorPresentation.make(
             error: error,
             authorization: await repository.contactsAuthorizationStatus()
@@ -683,7 +683,7 @@ final class GroupContextMenu {
         for group: ContactGroup,
         thenFolderCleanup pending: PendingGroupPlacementCleanup? = nil
     ) {
-        Self.log.error("couldn't remove deleted group from favorites: \(error.localizedDescription)")
+        Self.log.error("couldn't remove deleted group from favorites", error.logContext())
         let alert = UIAlertController(
             title: "Group Deleted",
             message: "The group was deleted, but it couldn’t be removed from Favorites.",

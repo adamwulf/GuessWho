@@ -155,6 +155,7 @@ public final class KeychainBlobCrypto: SidecarBlobCrypto {
 
         if let existing = try readKey() {
             cachedKey = existing
+            logKeyReady(existing, source: "keychain")
             return existing
         }
 
@@ -164,6 +165,7 @@ public final class KeychainBlobCrypto: SidecarBlobCrypto {
         switch status {
         case errSecSuccess:
             cachedKey = fresh
+            logKeyReady(fresh, source: "minted")
             return fresh
         case errSecDuplicateItem:
             // Another device (or a racing call) added one first; re-read it so
@@ -173,11 +175,25 @@ public final class KeychainBlobCrypto: SidecarBlobCrypto {
                 throw SidecarBlobCryptoError.keychainStatus(errSecDuplicateItem)
             }
             cachedKey = raced
+            logKeyReady(raced, source: "keychain-after-duplicate")
             return raced
         default:
             logFailure("add", status: status)
             throw SidecarBlobCryptoError.keychainStatus(status)
         }
+    }
+
+    // Says once per instance where the key came from. Comparing the fingerprint
+    // across two devices' logs shows whether they hold the same key; if they
+    // don't, neither can decrypt the other's photos. Four bytes of a hash of a
+    // random 256-bit key reveal nothing about the key.
+    private func logKeyReady(_ key: SymmetricKey, source: String) {
+        let digest = SHA256.hash(data: key.withUnsafeBytes { Data($0) })
+        let fingerprint = digest.prefix(4).map { String(format: "%02x", $0) }.joined()
+        Self.log.notice("blob key ready", metadata: [
+            "source": .string(source),
+            "fingerprint": .string(fingerprint),
+        ])
     }
 
     // Names the failing call, which the thrown error can't: the same status

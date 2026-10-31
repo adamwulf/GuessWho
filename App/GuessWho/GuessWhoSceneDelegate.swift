@@ -1504,7 +1504,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
                 Self.contactsLog.notice("add-contact: created blank \(seed.contactType.rawValue) record")
                 show(created, NewContactCleanup(id: created.contactID, repository: repository))
             } catch {
-                Self.contactsLog.error("add-contact: create failed: \(error.localizedDescription)")
+                Self.contactsLog.error("add-contact: create failed", error.logContext())
                 self.presentAddContactFailureAlert(error: error, isOrganization: seed.contactType == .organization)
             }
         }
@@ -2501,7 +2501,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
                     self?.showGuidesSection(revealing: guideID, appDelegate: appDelegate)
                 },
                 onFailure: { [weak self] error in
-                    Self.guidesLog.error("guide import failed: \(error.localizedDescription)")
+                    Self.guidesLog.error("guide import failed", error.logContext())
                     self?.presentGuideImportFailureAlert()
                 }
             )
@@ -2668,7 +2668,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         do {
             envelope = try JSONDecoder().decode(HandoffEnvelope.self, from: data)
         } catch {
-            Self.handoffLog.error("decode: \(error.localizedDescription)")
+            Self.handoffLog.error("decode", error.logContext())
             presentBrowserImportFailureAlert(
                 message: "The browser import could not be read. Reload the page and try again."
             )
@@ -2767,7 +2767,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
                     } catch {
                         // Tell the user, not just the log — a silent failure
                         // here reads as "saved" (the sheet is already gone).
-                        Self.handoffLog.error("confirm: apply failed: \(error.localizedDescription)")
+                        Self.handoffLog.error("confirm: apply failed", error.logContext())
                         await MainActor.run {
                             self?.presentLinkedInApplyFailureAlert(error: error)
                         }
@@ -3060,9 +3060,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
                         _ = try await repo.applyLinkedIn(profile: profile, to: matched, fields: fields)
                     } catch {
                         partialCount += 1
-                        Self.handoffLog.error(
-                            "TLS batch: \(name) update may be partial: \(error.localizedDescription)"
-                        )
+                        Self.handoffLog.error("TLS batch: update may be partial", error.logContext(["name": name]))
                         issues.append(
                             "\(name): The existing contact may be partially updated: \(error.localizedDescription)"
                         )
@@ -3085,7 +3083,8 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
                         } catch {
                             partialCount += 1
                             Self.handoffLog.error(
-                                "TLS batch: \(name) contact created but extras failed: \(error.localizedDescription)"
+                                "TLS batch: contact created but extras failed",
+                                error.logContext(["name": name])
                             )
                             issues.append(
                                 "\(name): Contact created, but some custom fields or the photo could not be saved: \(error.localizedDescription)"
@@ -3097,7 +3096,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
                 Self.handoffLog.notice("TLS batch: imported", ["name": name])
             } catch {
                 failedCount += 1
-                Self.handoffLog.error("TLS batch: \(name) failed: \(error.localizedDescription)")
+                Self.handoffLog.error("TLS batch: import failed", error.logContext(["name": name]))
                 issues.append("\(name): Contact was not imported: \(error.localizedDescription)")
             }
         }
@@ -3194,7 +3193,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             )
             return nil
         } catch {
-            Self.handoffLog.error("new-contact: attaching LinkedIn extras failed: \(error.localizedDescription)")
+            Self.handoffLog.error("new-contact: attaching LinkedIn extras failed", error.logContext())
             return error
         }
     }
@@ -3215,7 +3214,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         do {
             try await repo.stampViewedAndInteracted(id)
         } catch {
-            Self.handoffLog.error("import engagement stamp failed: \(error.localizedDescription)")
+            Self.handoffLog.error("import engagement stamp failed", error.logContext())
         }
     }
 
@@ -3440,7 +3439,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             try FileManager.default.removeItem(at: fileURL)
             return data
         } catch {
-            Self.handoffLog.error("read: failed to read/clear handoff: \(error.localizedDescription)")
+            Self.handoffLog.error("read: failed to read/clear handoff", error.logContext())
             return nil
         }
     }

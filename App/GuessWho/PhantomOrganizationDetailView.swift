@@ -228,13 +228,11 @@ struct PhantomOrganizationDetailView: View {
                         "phantom-org: favorited department \(favoriteDepartment) for \(name)"
                     )
                 } catch {
-                    Self.log.error(
-                        "phantom-org: department favorite failed: \(error.localizedDescription)"
-                    )
+                    Self.log.error("phantom-org: department favorite failed", error.logContext())
                 }
                 favoritesStore.reload()
             } catch {
-                Self.log.error("phantom-org: create failed: \(error.localizedDescription)")
+                Self.log.error("phantom-org: create failed", error.logContext())
             }
         }
     }

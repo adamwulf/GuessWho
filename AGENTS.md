@@ -270,6 +270,32 @@ Both shells host the same SwiftUI detail views
 - Never silence an error by commenting it out; fix the underlying cause.
 - Slow is smooth; smooth is fast. Be methodical.
 
+## Logging
+
+All logging goes through swift-log (`Logger`), which FellerBuncher writes to the
+per-process log file. Never use `os.Logger`, `NSLog`, or `print`.
+
+- **Keep the message a fixed string and put values in a context dictionary.** Do
+  not interpolate values into the message:
+  ```swift
+  // App target (GuessWhoLogging's overload takes a plain dictionary):
+  Self.log.error("guide import failed", error.logContext(["guideID": id]))
+  Self.log.notice("TLS batch: imported", ["name": name])
+
+  // GuessWhoSync (plain swift-log, so it takes Logger.Metadata):
+  Self.log.error("contact photo restore failed",
+                 metadata: error.logMetadata(["localID": .string(localID)]))
+  ```
+- **Log an error with `error.logContext()` / `error.logMetadata()`, never with
+  `error.localizedDescription` alone.** That text can reduce to "The operation
+  couldn't be completed. (Type error 0.)", which drops the enum case and its
+  payload (a real keychain `-34018` was lost this way). The context carries
+  `error`, `errorDomain`, `errorCode`, `errorCase`, and the underlying error.
+- **Those fields are developer-facing.** Show users `localizedDescription`, and
+  give an error type that can reach an alert a plain-language `LocalizedError`.
+- **Log every failure you catch and don't rethrow.** A failure recorded only in
+  a property or swallowed as "best-effort" leaves no trace in the log.
+
 # Codex
 
 Codex agents run inside an outer filesystem and process sandbox. A command

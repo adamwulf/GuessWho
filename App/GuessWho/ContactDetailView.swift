@@ -1363,6 +1363,7 @@ struct ContactDetailView: View {
             let data = try await item.loadTransferable(type: Data.self)
             await applyRawPhotoData(data, loadError: nil)
         } catch {
+            Self.photoLog.error("photo picker load failed", error.logContext())
             photoSaveError = error.localizedDescription
         }
     }
@@ -1371,12 +1372,14 @@ struct ContactDetailView: View {
         do {
             guard let photo = try await repository.contactPhotoData(for: id, kind: .fullSize),
                   let image = UIImage(data: photo.data) else {
+                Self.photoLog.error("crop edit: no decodable photo to open")
                 photoSaveError = "That photo couldn’t be loaded."
                 return
             }
             photoCropRequest = PhotoCropRequest(contactID: id, data: photo.data, image: image,
                                                 crop: photo.crop, isReplacement: false)
         } catch {
+            Self.photoLog.error("crop edit: photo load failed", error.logContext())
             photoSaveError = error.localizedDescription
         }
     }
@@ -1389,6 +1392,7 @@ struct ContactDetailView: View {
             photoLoader.invalidate(id)
             await loadHeaderPhoto()
         } catch {
+            Self.photoLog.error("crop reset failed", error.logContext())
             photoSaveError = error.localizedDescription
         }
     }
@@ -1397,7 +1401,7 @@ struct ContactDetailView: View {
         do {
             try await writePhoto(nil)
         } catch {
-            Self.photoLog.error("photo removal failed: \(error.localizedDescription)")
+            Self.photoLog.error("photo removal failed", error.logContext())
             photoSaveError = error.localizedDescription
         }
     }
@@ -1405,11 +1409,13 @@ struct ContactDetailView: View {
     /// Photos, file selection, and drops all use the same non-destructive editor.
     private func applyRawPhotoData(_ rawData: Data?, loadError: Error?) async {
         guard let rawData else {
+            Self.photoLog.error("photo load returned no data", loadError?.logContext() ?? [:])
             photoSaveError = loadError?.localizedDescription ?? "That photo couldn’t be loaded."
             return
         }
         let image = await Task.detached(priority: .userInitiated) { UIImage(data: rawData) }.value
         guard let image else {
+            Self.photoLog.error("photo decode failed", ["bytes": rawData.count])
             photoSaveError = "That photo couldn’t be processed."
             return
         }

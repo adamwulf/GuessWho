@@ -1,4 +1,5 @@
 import Foundation
+import Logging
 
 public final class FileSystemSidecarStore: SidecarStoreProtocol {
     private let root: URL
@@ -469,7 +470,19 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
 
         switch outcome {
         case .bytes(let sealed):
-            return try blobCrypto.decrypt(sealed)
+            do {
+                return try blobCrypto.decrypt(sealed)
+            } catch {
+                // A `.dat` sealed under another device's key fails here as an
+                // authentication failure.
+                Logger(label: "sync.blob-crypto").error("blob decrypt failed", metadata: error.logMetadata([
+                    "kind": .string(String(describing: key.kind)),
+                    "id": .string(key.id),
+                    "blobId": .string(blobId),
+                    "bytes": .stringConvertible(sealed.count),
+                ]))
+                throw error
+            }
         case .placeholderPresent:
             // Materialized bytes aren't here yet; ask iCloud to fetch them and
             // report "pending" (nil), not "gone" — the caller retries later.

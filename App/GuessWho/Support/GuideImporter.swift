@@ -537,24 +537,12 @@ enum GuidePlaceResolver {
         ]
     }
 
-    /// Decompose `error` into the fields that actually explain a resolution
-    /// failure: the bridged `NSError` domain/code (present even when the
-    /// localized description is the generic "operation couldn't be completed"),
-    /// the specific `MKError` case when MapKit is the source, and any
-    /// underlying error it wraps.
+    /// `Error.logContext` plus the specific `MKError` case when MapKit is the
+    /// source of a resolution failure.
     private static func errorMetadata(_ error: Error) -> [String: CustomStringConvertible] {
-        let nsError = error as NSError
-        var metadata: [String: CustomStringConvertible] = [
-            "error": error.localizedDescription,
-            "errorDomain": nsError.domain,
-            "errorCode": String(nsError.code)
-        ]
+        var metadata: [String: CustomStringConvertible] = error.logContext()
         if let mkError = error as? MKError {
             metadata["mkErrorCode"] = mkErrorCodeName(mkError.code)
-        }
-        if let underlying = nsError.userInfo[NSUnderlyingErrorKey] as? NSError {
-            metadata["underlyingDomain"] = underlying.domain
-            metadata["underlyingCode"] = String(underlying.code)
         }
         return metadata
     }

@@ -393,7 +393,7 @@ final class AddToGroupMenu {
                 authorization: await repository.contactsAuthorizationStatus()
             ))
         } catch {
-            Self.log.error("couldn't add contacts to group: \(error.localizedDescription)")
+            Self.log.error("couldn't add contacts to group", error.logContext())
             let presentation = GroupMutationErrorPresentation.make(
                 error: error,
                 authorization: await repository.contactsAuthorizationStatus()
@@ -429,7 +429,7 @@ final class AddToGroupMenu {
             do {
                 group = try await repository.createGroup(name: name)
             } catch {
-                Self.log.error("couldn't create group: \(error.localizedDescription)")
+                Self.log.error("couldn't create group", error.logContext())
                 let presentation = GroupMutationErrorPresentation.make(
                     error: error,
                     authorization: await repository.contactsAuthorizationStatus()

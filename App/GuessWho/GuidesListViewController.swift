@@ -257,7 +257,7 @@ final class GuidesListViewController: UIViewController {
                 onFailure: { [weak self] error in
                     guard let self else { return }
                     self.updateEmptyState()
-                    Self.log.error("import failed: \(error.localizedDescription)")
+                    Self.log.error("import failed", error.logContext())
                     self.presentImportFailure(
                         message: "The guide couldn't be loaded. Check the link and your internet connection, then try again."
                     )
