@@ -176,7 +176,6 @@ final class SyncService {
         contactsAuthorization = result.status
         if let description = result.failureDescription {
             lastError = "Contacts access request failed: \(description)"
-            Self.log.error("contacts access request failed", ["error": description])
         }
     }
 
@@ -189,7 +188,6 @@ final class SyncService {
         eventsAuthorization = result.status
         if let description = result.failureDescription {
             lastError = "Events access request failed: \(description)"
-            Self.log.error("events access request failed", ["error": description])
         }
     }
 
@@ -1134,8 +1132,7 @@ final class SyncService {
         link.endpointA == endpoint ? link.endpointB : link.endpointA
     }
 
-    /// Notes a failure the caller won't see thrown. No app code outside this
-    /// class reads `lastError`, so the log line is the only visible record of it.
+    /// Notes a failure. No app code reads `lastError`, so this also logs it.
     func recordError(_ operation: String, _ error: Error) {
         lastError = "\(operation): \(error.localizedDescription)"
         Self.log.error("sync operation failed", error.logContext(["op": operation]))

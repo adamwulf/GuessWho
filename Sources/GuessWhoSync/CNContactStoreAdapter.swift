@@ -192,6 +192,7 @@ public actor CNContactStoreAdapter: ContactStoreProtocol {
                 let granted = try await store.requestAccess(for: .contacts)
                 return StoreAccessResult(status: granted ? .authorized : .denied)
             } catch {
+                Self.fetchLog.error("contacts access request failed", metadata: error.logMetadata())
                 return StoreAccessResult(status: .denied, failureDescription: error.localizedDescription)
             }
         case .authorized, .limited:

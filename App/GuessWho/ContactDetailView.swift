@@ -2019,10 +2019,7 @@ struct ContactDetailView: View {
             do {
                 try await repository.highlightEmail(email, for: contactID)
             } catch {
-                Self.highlightedEmailLog.error(
-                    "save email failed", error.logContext()
-                )
-                service.recordError("save email failed", error)
+                Self.highlightedEmailLog.error("save email failed", error.logContext())
             }
         }
     }
@@ -2037,10 +2034,7 @@ struct ContactDetailView: View {
             do {
                 try await repository.removeHighlightedEmail(id: email.id, for: contactID)
             } catch {
-                Self.highlightedEmailLog.error(
-                    "remove highlighted email failed", error.logContext()
-                )
-                service.recordError("remove highlighted email failed", error)
+                Self.highlightedEmailLog.error("remove highlighted email failed", error.logContext())
             }
         }
     }
@@ -2088,10 +2082,7 @@ struct ContactDetailView: View {
                     }
                 } catch {
                     // Keep going so one failed message does not drop the rest.
-                    Self.highlightedEmailLog.error(
-                        "highlight email failed", error.logContext()
-                    )
-                    service.recordError("highlight email failed", error)
+                    Self.highlightedEmailLog.error("highlight email failed", error.logContext())
                 }
             }
             // The rows can show before or after this point, because each
@@ -2157,10 +2148,7 @@ struct ContactDetailView: View {
             try await repository.highlightEmail(email, for: contactID)
             Self.logLateFileHeaders("written")
         } catch {
-            Self.highlightedEmailLog.error(
-                "highlight email file headers failed", error.logContext()
-            )
-            service.recordError("highlight email file headers failed", error)
+            Self.highlightedEmailLog.error("highlight email file headers failed", error.logContext())
         }
     }
 
@@ -2181,10 +2169,7 @@ struct ContactDetailView: View {
         do {
             added = try await repository.addContactValues(from: urls, for: contactID)
         } catch {
-            Self.highlightedEmailLog.error(
-                "add contact values failed", error.logContext()
-            )
-            service.recordError("add contact values failed", error)
+            Self.highlightedEmailLog.error("add contact values failed", error.logContext())
             return
         }
         guard added.total > 0 else { return }

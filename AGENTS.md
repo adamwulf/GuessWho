@@ -290,7 +290,8 @@ exceptions: the share extension has no App Group to log into, so it uses
   ```
   The extras passed to `logContext` must be strings.
 - **Context holds IDs, counts, and states.** Never log note text, email
-  addresses, URLs, message subjects, or file contents.
+  addresses, URLs, message subjects, or file contents. Use an ID rather than a
+  person's name; some older import lines still log names, so don't copy them.
 - **Log an error with `error.logContext()` / `error.logMetadata()`, never with
   `error.localizedDescription` alone.** That text can reduce to "The operation
   couldn't be completed. (Type error 0.)", which drops the enum case and its
@@ -301,8 +302,9 @@ exceptions: the share extension has no App Group to log into, so it uses
 - **These helpers live in `GuessWhoSync`.** The Mail extension doesn't link it and
   logs `LoggedError.fingerprint` instead, so an error's text can't put a path or
   an address in its log. Other code without it (the Safari extension,
-  `GuessWhoLogging`, `LinkedInLocalhostReceiver`) still puts the error text in the
-  context dictionary.
+  `GuessWhoLogging`, `LinkedInLocalhostReceiver`, `GuessWhoMCPTransport`) puts the
+  error text in the context dictionary; some older `GuessWhoMCPTransport` lines
+  still interpolate it into the message.
 - **`errorCase` prints an enum error's payload.** An error enum whose payload can
   hold user data must define a `debugDescription` that leaves it out, as
   `SidecarStoreError` does.

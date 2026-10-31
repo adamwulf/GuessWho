@@ -5,13 +5,13 @@ import Logging
 /// swift-log's native metadata API requires wrapping every value in a
 /// `Logger.MetadataValue` case:
 /// ```swift
-/// log.info("park wrote", metadata: ["bytes": .stringConvertible(count), "path": .string(path)])
+/// log.info("park wrote", metadata: ["bytes": .stringConvertible(count), "state": .string(state)])
 /// ```
 /// These overloads let callers pass a plain dictionary instead:
 /// ```swift
-/// log.info("park wrote", ["bytes": count, "path": url])
+/// log.info("park wrote", ["bytes": count, "state": state])
 /// ```
-/// Values are `CustomStringConvertible` (so `Int`, `String`, `URL`, `UUID`, …
+/// Values are `CustomStringConvertible` (so `Int`, `String`, `UUID`, …
 /// all work directly and the compiler rejects nonsensical values), and each is
 /// bridged to `.stringConvertible`, which FellerBuncher's logfmt formatter
 /// flattens into the line. The trailing `file`/`function`/`line` are forwarded

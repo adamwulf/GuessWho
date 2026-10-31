@@ -1397,8 +1397,7 @@ public final class ContactsRepository: NSObject {
 
     private static let failureLog = Logger(label: "sync.contacts-repository")
 
-    /// Notes a failure the caller won't see thrown. No app code reads
-    /// `lastError`, so the log line is the only visible record of it.
+    /// Notes a failure. No app code reads `lastError`, so this also logs it.
     private func recordFailure(_ operation: String, _ error: Error) {
         lastError = "\(operation): \(error.localizedDescription)"
         Self.failureLog.error("repository operation failed", metadata: error.logMetadata(["op": .string(operation)]))

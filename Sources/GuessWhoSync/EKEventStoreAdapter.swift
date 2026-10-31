@@ -241,6 +241,7 @@ public final class EKEventStoreAdapter: EventStoreProtocol, @unchecked Sendable 
                 resolveAuthorization(to: result.status)
                 return result
             } catch {
+                Self.fetchLog.error("events access request failed", metadata: error.logMetadata())
                 let result = StoreAccessResult(status: .denied, failureDescription: error.localizedDescription)
                 resolveAuthorization(to: result.status)
                 return result
