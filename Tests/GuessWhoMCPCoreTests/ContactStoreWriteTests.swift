@@ -210,7 +210,9 @@ final class ContactStoreWriteTests: XCTestCase {
             return XCTFail("expected organization conversion")
         }
         XCTAssertEqual(organization.kind, "organization")
-        XCTAssertEqual(organization.name, "Jane Doe")
+        // An organization is called by its organization name; converting back
+        // below shows the person name was kept.
+        XCTAssertEqual(organization.name, "Doe Industries")
 
         var toPerson = WireContactScalarFields()
         toPerson.kind = "person"

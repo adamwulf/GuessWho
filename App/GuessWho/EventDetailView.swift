@@ -1191,14 +1191,9 @@ struct ContactPickerSheet: View {
         let sorted = contacts.sorted {
             $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
         }
-        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        let matched: [Contact]
-        if trimmed.isEmpty {
-            matched = sorted
-        } else {
-            let needle = trimmed.lowercased()
-            matched = sorted.filter { $0.displayName.lowercased().contains(needle) }
-        }
-        return matched.map { (id: $0.contactID, contact: $0) }
+        // Blank queries match everything (see `matches(searchQuery:)`).
+        return sorted
+            .filter { $0.matches(searchQuery: query) }
+            .map { (id: $0.contactID, contact: $0) }
     }
 }

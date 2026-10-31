@@ -331,9 +331,11 @@ same per-contact algorithm, dispatching on the number of *distinct, valid*
   the user attaches GuessWho data to a contact, it gets an ID.) Since the
   CLI/MCP Revision 2 (2026-07-17) the minted UUID is **deterministic** —
   `Contact.deterministicGuessWhoID`, SHA-256 over `localID` + the normalized
-  display name, formatted as an RFC 4122 UUID — so the agent interface can
-  hand out the same value for a never-written contact as a *preview* of what
-  it will mint to, and the id survives the mint unchanged. Two devices still
+  `personFirstName` (the person name, else organization name, else nickname;
+  unlike `displayName`, it ignores whether the card is an organization),
+  formatted as an RFC 4122 UUID — so the agent interface can hand out the same
+  value for a never-written contact as a *preview* of what it will mint to, and
+  the id survives the mint unchanged. Two devices still
   mint different UUIDs for the same logical contact (localIDs are
   device-local), exactly as with random minting; Case D converges them.
   [^caseA]

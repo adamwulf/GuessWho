@@ -17,6 +17,9 @@ private let everyNameShape: [Contact] = [
     Contact(givenName: "Kejing", familyName: "Zhang", nickname: "   "),
     Contact(nickname: "Kathy"),
     Contact(contactType: .organization, nickname: "The Shop", organizationName: "Acme"),
+    Contact(contactType: .organization, givenName: "Juan", familyName: "Perez", nickname: "JP", organizationName: "Acme"),
+    Contact(contactType: .organization, givenName: "Juan", organizationName: "   "),
+    Contact(contactType: .organization, givenName: "Juan", organizationName: " Acme "),
     Contact(),
 ]
 
@@ -137,6 +140,62 @@ struct ContactNameDisplayTests {
         let parts = runs(org.nameAttributedString)
         #expect(parts.map(\.text) == ["Acme"])
         #expect(parts.allSatisfy { !$0.isBold })
+    }
+
+    @Test
+    func anOrganizationIsCalledByItsOrganizationNameEvenWithAPersonNameOnTheCard() {
+        let org = Contact(
+            contactType: .organization,
+            givenName: "Juan",
+            familyName: "Perez",
+            nickname: "JP",
+            organizationName: "Cy-Fair HealthCare Associates"
+        )
+        #expect(org.displayNameWithNickname == "Cy-Fair HealthCare Associates")
+        #expect(org.initials == "CH")
+        // The card still shows the person name, in a row of its own.
+        #expect(org.personNameWithNickname == "Juan \"JP\" Perez")
+
+        let parts = runs(org.nameAttributedString)
+        #expect(parts.map(\.text) == ["Cy-Fair HealthCare Associates"])
+        #expect(parts.allSatisfy { !$0.isBold })
+    }
+
+    @Test
+    func aRelationRowShowsWhatTheContactIsCalledUnlessItNamedThePersonOnAnOrganization() {
+        let person = Contact(givenName: "Ada", familyName: "Lovelace")
+        #expect(person.nameForRelation(named: " ada lovelace ") == "Ada Lovelace")
+
+        let org = Contact(contactType: .organization, givenName: "Juan", familyName: "Perez", organizationName: "Acme")
+        #expect(org.nameForRelation(named: "acme") == "Acme")
+        #expect(org.nameForRelation(named: "Juan Perez") == "Juan Perez")
+    }
+
+    @Test
+    func theEditorTitleFollowsTheSameNameRules() {
+        let org = Contact(contactType: .organization, givenName: "Juan", organizationName: " Acme ")
+        #expect(org.editorTitle == "Acme")
+
+        let person = Contact(givenName: "Juan", familyName: "Perez", organizationName: "Acme")
+        #expect(person.editorTitle == "Juan Perez")
+
+        #expect(Contact(organizationName: "Acme").editorTitle == "Acme")
+        #expect(Contact(contactType: .organization).editorTitle == "New Organization")
+        #expect(Contact().editorTitle == "New Contact")
+    }
+
+    @Test
+    func anOrganizationWithNoOrganizationNameFallsBackToThePersonName() {
+        let org = Contact(contactType: .organization, givenName: "Juan", familyName: "Perez", organizationName: "   ")
+        #expect(org.displayNameWithNickname == "Juan Perez")
+        #expect(org.initials == "JP")
+    }
+
+    @Test
+    func aPersonIsNeverCalledByTheirCompany() {
+        let person = Contact(givenName: "Juan", familyName: "Perez", organizationName: "Acme")
+        #expect(person.displayNameWithNickname == "Juan Perez")
+        #expect(person.initials == "JP")
     }
 
     @Test(arguments: everyNameShape)

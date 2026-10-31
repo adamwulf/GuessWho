@@ -154,6 +154,23 @@ struct MailBridgeControllerTests {
     }
 
     @Test
+    func anOrganizationDoesNotRepeatItsNameAsItsOrganization() throws {
+        let contact = Contact(
+            contactType: .organization,
+            givenName: "Juan",
+            organizationName: "Analytical Engines",
+            emailAddresses: [LabeledValue(label: "work", value: "info@example.com")]
+        )
+        let snapshot = MailContactSnapshotBuilder.build([
+            MailSnapshotContact(contact: contact, thumbnail: nil, highlightReasons: [])
+        ], generatedAt: .distantPast)
+
+        let summary = try #require(snapshot.summaries(forAddress: "info@example.com").first)
+        #expect(summary.displayName == "Analytical Engines")
+        #expect(summary.organization == nil)
+    }
+
+    @Test
     func projectionCarriesDetailPageFields() throws {
         let guessWhoID = "40000000-0000-4000-8000-000000000004"
         let contact = Contact(

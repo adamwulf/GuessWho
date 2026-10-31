@@ -105,12 +105,7 @@ struct ContactEditView: View {
     }
 
     private var navigationTitle: String {
-        let name = [model.edited.givenName, model.edited.familyName]
-            .filter { !$0.isEmpty }
-            .joined(separator: " ")
-        if !name.isEmpty { return name }
-        if !model.edited.organizationName.isEmpty { return model.edited.organizationName }
-        return model.edited.contactType == .organization ? "New Organization" : "New Contact"
+        model.edited.editorTitle
     }
 
     /// True when the user has any unsaved work that Cancel would lose.

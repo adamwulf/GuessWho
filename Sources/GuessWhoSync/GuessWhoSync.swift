@@ -1682,7 +1682,7 @@ public final class GuessWhoSync: @unchecked Sendable {
                 && SidecarKey.parseGuessWhoContactURL(url.value) == nil
         }
         // Deterministic mint (plans/cli-mcp.md Revision 2): derived from the
-        // contact's localID + display name, so the CLI/MCP wire can hand out
+        // contact's localID + personFirstName, so the CLI/MCP wire can hand out
         // the same value BEFORE the mint and it stays the contact's id after.
         // Cross-device divergence is unchanged from random minting (localIDs
         // differ per device) and still converges via Case D.

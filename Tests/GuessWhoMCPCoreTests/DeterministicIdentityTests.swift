@@ -19,7 +19,7 @@ final class DeterministicIdentityTests: XCTestCase {
         XCTAssertNotEqual(first, Fixture.janeDoe().deterministicGuessWhoID)
     }
 
-    /// The pre-mint id embeds the display name: if system unification
+    /// The pre-mint id embeds the card's name: if system unification
     /// re-points the localID at a DIFFERENT person, the id stops resolving
     /// (the structural stale-localID guard) — asserted end-to-end here.
     func testPreMintIdStopsResolvingWhenTheContactIsRepointed() async {

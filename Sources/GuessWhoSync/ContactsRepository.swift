@@ -4069,11 +4069,11 @@ public final class ContactsRepository: NSObject {
     /// with `await`, never a task group or one `Task` per message. Then only
     /// the first call reconciles. Calls that start before the first one has
     /// minted each reconcile on their own. The Case-A mint derives the ID from
-    /// the contact's `localID` and display name
+    /// the contact's `localID` and `personFirstName`
     /// (`Contact.deterministicGuessWhoID`), so they normally resolve to the
     /// same ID and every email lands on one envelope, at the cost of extra
     /// Contacts reads and saves, cache refreshes, and reload posts. But if
-    /// the display name changes between two reconciles that both read the
+    /// that name changes between two reconciles that both read the
     /// contact before either saved, they derive different IDs. A save writes
     /// the contact's whole URL list, so the later save wins, and the email
     /// written under the other ID lands on a sidecar that no contact carries.
@@ -4749,16 +4749,16 @@ public final class ContactsRepository: NSObject {
     /// reverse-relation list.
     public func contactsReferencing(id: ContactID) -> [(id: ContactID, label: String)] {
         // ContactID is identity-only, so resolve it to its cached Contact (O(1)
-        // index hit) to read the display name we match relations against.
-        guard let needle = contact(id: id)?.displayName
-            .trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
-            !needle.isEmpty else { return [] }
+        // index hit) to read the names we match relations against.
+        guard let target = contact(id: id) else { return [] }
+        let needles = relationNames(for: target)
+        guard !needles.isEmpty else { return [] }
         return contacts.flatMap { other -> [(id: ContactID, label: String)] in
             let otherID = ContactID(contact: other)
             guard otherID.effectiveID != id.effectiveID else { return [] }
             return other.contactRelations.compactMap { relation in
                 let name = relation.value.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-                return name == needle ? (id: otherID, label: relation.label) : nil
+                return needles.contains(name) ? (id: otherID, label: relation.label) : nil
             }
         }
     }
@@ -4804,9 +4804,16 @@ public final class ContactsRepository: NSObject {
     func peopleSections(now: Date) -> [(String, [Contact])] { sectioned(people, now: now) }
 
     /// Transitional compatibility lookup. Duplicate display names collapse to
-    /// the last cached contact; new callers should use `contacts(named:)`.
+    /// the last cached contact; new callers should use `contacts(named:)`. Also
+    /// finds an organization by the person name on its card, unless a contact is
+    /// actually called that, so a relation naming that person still resolves.
     public func lookupByDisplayName() -> [String: Contact] {
         var map: [String: Contact] = [:]
+        for contact in contacts where contact.isNamedByOrganization {
+            let key = contact.personName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard !key.isEmpty else { continue }
+            map[key] = contact
+        }
         for contact in contacts {
             let key = contact.displayName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
             guard !key.isEmpty else { continue }
@@ -4826,17 +4833,31 @@ public final class ContactsRepository: NSObject {
     }
 
     public func contactsReferencing(contact: Contact) -> [(contact: Contact, label: String)] {
-        let needle = contact.displayName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !needle.isEmpty else { return [] }
+        let needles = relationNames(for: contact)
+        guard !needles.isEmpty else { return [] }
         return contacts.flatMap { other in
             guard other.localID != contact.localID else {
                 return [(contact: Contact, label: String)]()
             }
             return other.contactRelations.compactMap { relation in
                 let name = relation.value.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-                return name == needle ? (contact: other, label: relation.label) : nil
+                return needles.contains(name) ? (contact: other, label: relation.label) : nil
             }
         }
+    }
+
+    /// The normalized names a relation can use to point at `contact`: its display
+    /// name, plus the person name on an organization's card unless a contact is
+    /// actually called that (the same priority as `lookupByDisplayName()`).
+    private func relationNames(for contact: Contact) -> Set<String> {
+        var names: Set<String> = []
+        let displayName = contact.displayName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if !displayName.isEmpty { names.insert(displayName) }
+        let personName = contact.personName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if contact.isNamedByOrganization, !personName.isEmpty, contacts(named: personName).isEmpty {
+            names.insert(personName)
+        }
+        return names
     }
 
     /// The cached organization record (`contactType == .organization`) whose
