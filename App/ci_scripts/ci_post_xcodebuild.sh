@@ -47,11 +47,43 @@ get_app_version() {
     echo $version
 }
 
+# Print what a signed app claims and what its embedded profile authorizes. On
+# macOS an app still runs when its profile doesn't authorize an App Group it
+# claims, but the keychain then refuses it with -34018. An installed TestFlight
+# app has no embedded profile, so this build log is the place to read it.
+# Prints only the profile's name and entitlements, never its certificates or
+# device list. Diagnostic only: nothing here may fail the build.
+log_signing_details() {
+    find "$1" -maxdepth 1 -name "*.app" | while read -r app_file; do
+        echo "Signing details for $app_file"
+        codesign -dvv "$app_file" 2>&1 | grep -E '^(Authority|TeamIdentifier)=' || true
+        codesign -d --entitlements - --xml "$app_file" 2>/dev/null || true
+        echo
+        for profile_name in Contents/embedded.provisionprofile embedded.mobileprovision; do
+            profile_file="$app_file/$profile_name"
+            if [ -f "$profile_file" ]; then
+                decoded=$(mktemp)
+                if security cms -D -i "$profile_file" -o "$decoded" 2>/dev/null; then
+                    /usr/libexec/PlistBuddy -c "Print :Name" "$decoded" || true
+                    /usr/libexec/PlistBuddy -c "Print :Entitlements" "$decoded" || true
+                else
+                    echo "warning: could not decode $profile_file"
+                fi
+                rm -f "$decoded"
+            fi
+        done
+    done
+}
+
 # Next, automatically tag the build in Github
 
 if [ "$CI_XCODEBUILD_EXIT_CODE" -eq 0 ]; then
     echo "Build succeeded"
     tag="build/$CI_BUILD_NUMBER"
+
+    if [ -n "$CI_APP_STORE_SIGNED_APP_PATH" ] && [ -d "$CI_APP_STORE_SIGNED_APP_PATH" ]; then
+        log_signing_details "$CI_APP_STORE_SIGNED_APP_PATH"
+    fi
 
     # GITHUB_TOKEN can be configured in github -> account settings -> developer settings -> personal access tokens -> fine grained token -> read/write access to code
     remote_url=$(github_authed_url $GITHUB_USERNAME $GITHUB_TOKEN)

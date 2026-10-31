@@ -96,6 +96,39 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
     private(set) var benchmarkAttendeeLoadStatus: String?
     #endif
 
+    /// Which build wrote this log and how it was installed, which can decide
+    /// what the system allows it to do. Every local build reports version 0.1,
+    /// build 1 (SharedVersion.xcconfig), so the line also carries the path and
+    /// the executable's modification date. `masReceipt` lists what a Mac store
+    /// install keeps in `Contents/_MASReceipt`; a local build has none. A
+    /// TestFlight Mac install has no embedded profile, so `embeddedProfile=false`
+    /// is expected there.
+    private static func logAppStarted() {
+        let bundle = Bundle.main
+        let files = FileManager.default
+        let info = bundle.infoDictionary
+        let executableModified = (try? bundle.executableURL?
+            .resourceValues(forKeys: [.contentModificationDateKey]))?
+            .contentModificationDate?
+            .formatted(.iso8601) ?? "?"
+        let masReceipt = (try? files.contentsOfDirectory(
+            atPath: bundle.bundleURL.appendingPathComponent("Contents/_MASReceipt").path
+        ))?.sorted().joined(separator: ",") ?? "none"
+        let embeddedProfile = ["Contents/embedded.provisionprofile", "embedded.mobileprovision"].contains {
+            files.fileExists(atPath: bundle.bundleURL.appendingPathComponent($0).path)
+        }
+        GuessWhoLog.logger("app.lifecycle").notice("app started", [
+            "version": info?["CFBundleShortVersionString"] as? String ?? "?",
+            "build": info?["CFBundleVersion"] as? String ?? "?",
+            "bundleID": bundle.bundleIdentifier ?? "?",
+            "path": bundle.bundlePath,
+            "pid": ProcessInfo.processInfo.processIdentifier,
+            "executableModified": executableModified,
+            "masReceipt": masReceipt,
+            "embeddedProfile": embeddedProfile,
+        ])
+    }
+
     override init() {
         // Bootstrap file logging FIRST — before UserDefaults.register and before
         // SyncService() — so the logging backend is live before any logger in the
@@ -103,6 +136,7 @@ final class GuessWhoAppDelegate: UIResponder, UIApplicationDelegate {
         // <AppGroup>/Logs/app.log. Idempotent and lock-guarded; safe to call once
         // here. (Bodies are developer-facing; see GuessWhoLogging notes.)
         GuessWhoLog.bootstrap(processName: "app", appGroupID: AppGroup.id)
+        Self.logAppStarted()
 
         // Register defaults so non-@AppStorage readers and the iOS
         // Settings pane both see the canonical default before the user
