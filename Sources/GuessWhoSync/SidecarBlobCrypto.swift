@@ -1,5 +1,6 @@
 import Foundation
 import CryptoKit
+import Logging
 
 #if canImport(Security)
 import Security
@@ -26,7 +27,7 @@ public protocol SidecarBlobCrypto: AnyObject {
 }
 
 @_spi(ConflictReconcile)
-public enum SidecarBlobCryptoError: Error, Equatable {
+public enum SidecarBlobCryptoError: LocalizedError, Equatable {
     // The keychain returned an unexpected OSStatus we don't map to a
     // recoverable case (duplicate-item is handled internally via re-read).
     case keychainStatus(Int32)
@@ -35,6 +36,19 @@ public enum SidecarBlobCryptoError: Error, Equatable {
     // No keychain is available on this platform (non-Apple SwiftPM CI). The
     // store can't produce a synced key, so blob I/O is unsupported there.
     case keychainUnavailable
+
+    // Shown in the photo alerts and written to the logs. Only photos use blob
+    // storage today, so this speaks about photos and keeps the OSStatus visible.
+    public var errorDescription: String? {
+        switch self {
+        case .keychainStatus(let status):
+            return "The keychain wouldn’t provide the key that protects your photos (error \(status))."
+        case .malformedKey:
+            return "The key that protects your photos isn’t usable."
+        case .keychainUnavailable:
+            return "This device has no keychain to protect your photos."
+        }
+    }
 }
 
 #if !canImport(Security)
@@ -97,6 +111,8 @@ public final class InMemoryBlobCrypto: SidecarBlobCrypto {
 /// The key is loaded lazily and cached for the instance lifetime.
 @_spi(ConflictReconcile)
 public final class KeychainBlobCrypto: SidecarBlobCrypto {
+    private static let log = Logger(label: "sync.blob-crypto")
+
     private let service: String
     private let account: String
     private let lock = NSLock()
@@ -139,6 +155,7 @@ public final class KeychainBlobCrypto: SidecarBlobCrypto {
 
         if let existing = try readKey() {
             cachedKey = existing
+            logKeyReady(existing, source: "keychain")
             return existing
         }
 
@@ -148,18 +165,46 @@ public final class KeychainBlobCrypto: SidecarBlobCrypto {
         switch status {
         case errSecSuccess:
             cachedKey = fresh
+            logKeyReady(fresh, source: "minted")
             return fresh
         case errSecDuplicateItem:
             // Another device (or a racing call) added one first; re-read it so
             // every caller converges on the same key bytes.
             guard let raced = try readKey() else {
+                logFailure("add-then-read", status: errSecDuplicateItem)
                 throw SidecarBlobCryptoError.keychainStatus(errSecDuplicateItem)
             }
             cachedKey = raced
+            logKeyReady(raced, source: "keychain-after-duplicate")
             return raced
         default:
+            logFailure("add", status: status)
             throw SidecarBlobCryptoError.keychainStatus(status)
         }
+    }
+
+    // Says once per instance where the key came from. Comparing the fingerprint
+    // across two devices' logs shows whether they hold the same key; if they
+    // don't, neither can decrypt the other's photos. Four bytes of a hash of a
+    // random 256-bit key reveal nothing about the key.
+    private func logKeyReady(_ key: SymmetricKey, source: String) {
+        let digest = SHA256.hash(data: key.withUnsafeBytes { Data($0) })
+        let fingerprint = digest.prefix(4).map { String(format: "%02x", $0) }.joined()
+        Self.log.notice("blob key ready", metadata: [
+            "source": .string(source),
+            "fingerprint": .string(fingerprint),
+        ])
+    }
+
+    // Names the failing call, which the thrown error can't: the same status
+    // means different things on a read and on an add. Never logs key bytes.
+    private func logFailure(_ operation: String, status: OSStatus) {
+        let message = SecCopyErrorMessageString(status, nil) as String? ?? "unknown"
+        Self.log.error("keychain call failed", metadata: [
+            "op": .string(operation),
+            "status": .stringConvertible(status),
+            "message": .string(message),
+        ])
     }
 
     private func baseQuery() -> [String: Any] {
@@ -192,6 +237,7 @@ public final class KeychainBlobCrypto: SidecarBlobCrypto {
         case errSecItemNotFound:
             return nil
         default:
+            logFailure("read", status: status)
             throw SidecarBlobCryptoError.keychainStatus(status)
         }
     }

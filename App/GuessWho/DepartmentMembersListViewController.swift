@@ -231,7 +231,7 @@ final class DepartmentMembersListViewController: UIViewController {
                     in: self.currentOrganization
                 )
             } catch {
-                Self.log.error("department favorite toggle failed: \(error.localizedDescription)")
+                Self.log.error("department favorite toggle failed", error.logContext())
             }
             self.favoritesStore.reload()
             self.updateFavoriteButton()

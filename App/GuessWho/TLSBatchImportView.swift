@@ -12,6 +12,9 @@ struct TLSBatchImportCandidate: Identifiable {
 }
 
 struct TLSBatchImportSelection {
+    /// This person's position in the whole roster, which is the `index` every
+    /// TLS batch log line uses. Skipped people keep their positions.
+    let rosterIndex: Int
     let profile: LinkedInProfile
     let matchedContactID: ContactID?
     let fields: Set<LinkedInDiffRow.Field>
@@ -160,6 +163,7 @@ struct TLSBatchImportView: View {
                   let fields = selected[candidate.id],
                   !fields.isEmpty else { return nil }
             return TLSBatchImportSelection(
+                rosterIndex: candidate.id,
                 profile: candidate.profile,
                 matchedContactID: candidate.matchedContactID,
                 fields: fields

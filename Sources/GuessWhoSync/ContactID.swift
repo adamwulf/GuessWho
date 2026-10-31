@@ -48,6 +48,7 @@ import Foundation
 /// `ContactID` is a fully OPAQUE token: every stored property is `package`, so
 /// the app target can hold it, compare it (for diffing), and hand it back to the
 /// repository to fetch the real `Contact` — but it CANNOT read any field off it.
+/// `logValue` is the one exception, and it is for log lines only.
 /// It is deliberately NOT a "contact-light": the app must go through
 /// `repository.contact(id:)` to render a row, so there is one source of truth for
 /// contact data. The conformances (`Hashable`, `Sendable`) are public so the app
@@ -72,6 +73,11 @@ public struct ContactID: Hashable, Sendable {
     /// once present, otherwise the `localID` fallback. Both members must use
     /// this — never `guessWhoID`/`localID` independently — so they cannot diverge.
     var effectiveID: String { guessWhoID ?? localID }
+
+    /// What a log line records for this contact, in place of a name: the GuessWho
+    /// ID, or the `localID` before the contact has one. For logs only. Never
+    /// compare, persist, or key on it; compare the `ContactID` itself.
+    public var logValue: String { effectiveID }
 
     /// Materialize a `ContactID` from a cached contact. ALWAYS succeeds —
     /// `localID` is always available, so a row can be vended before the contact

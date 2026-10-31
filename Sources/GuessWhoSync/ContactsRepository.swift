@@ -269,6 +269,8 @@ public final class ContactsRepository: NSObject {
 
     public private(set) var contacts: [Contact] = []
     public private(set) var isLoading = false
+    /// The latest failure recorded instead of thrown. A failure reaches this
+    /// only through `recordFailure`, which also logs it.
     public private(set) var lastError: String?
     /// Outcome of the most recent winning direct reload. Unlike `lastError`,
     /// this cannot be polluted by an unrelated group/sidecar operation and is
@@ -596,9 +598,8 @@ public final class ContactsRepository: NSObject {
         } catch {
             guard contactGeneration == contactReloadGeneration else { return .superseded }
             setContacts([])
-            let message = "Contacts fetch failed: \(error.localizedDescription)"
-            lastError = message
-            fetchFailure = message
+            recordFailure("Contacts fetch failed", error)
+            fetchFailure = "Contacts fetch failed: \(error.localizedDescription)"
         }
         if fetchedContacts {
             await repairPendingCreationTimestamps()
@@ -819,7 +820,7 @@ public final class ContactsRepository: NSObject {
             guard loadGeneration == groupLoadRequestGeneration,
                   mutationGeneration == groupMutationGeneration else { return }
             groupsError = error.localizedDescription
-            lastError = "Groups fetch failed: \(error.localizedDescription)"
+            recordFailure("Groups fetch failed", error)
         }
         // Groups moved; the CONTACT records in the cache are untouched.
         guard loadGeneration == groupLoadRequestGeneration,
@@ -899,7 +900,7 @@ public final class ContactsRepository: NSObject {
             } catch {
                 Self.groupHierarchyLog.warning(
                     "placement cleanup after group deletion failed",
-                    metadata: ["error": "\(error.localizedDescription)"])
+                    metadata: error.logMetadata())
                 return cleanup
             }
         }
@@ -1096,6 +1097,9 @@ public final class ContactsRepository: NSObject {
                 // others (the same choice `ContactDetailView`'s multi-select
                 // favorite toggle makes). Every failure is reported together
                 // below, after the batch has run to the end.
+                Self.failureLog.error("group membership write failed", metadata: error.logMetadata([
+                    "localID": .string(contact.localID),
+                ]))
                 failures.append(.init(contact: contact, error: error))
             }
         }
@@ -1204,7 +1208,7 @@ public final class ContactsRepository: NSObject {
             guard loadGeneration == groupLoadRequestGeneration,
                   mutationGeneration == groupMutationGeneration else { return true }
             groupsError = error.localizedDescription
-            lastError = "Groups fetch failed: \(error.localizedDescription)"
+            recordFailure("Groups fetch failed", error)
             isLoadingGroups = false
             postDidReload(
                 contactDataChanged: false,
@@ -1271,7 +1275,7 @@ public final class ContactsRepository: NSObject {
             // failure path below writes it.
             return try await contactsStore.fetchMembers(ofGroup: groupLocalID)
         } catch {
-            lastError = "Group members fetch failed: \(error.localizedDescription)"
+            recordFailure("Group members fetch failed", error)
             return []
         }
     }
@@ -1292,7 +1296,7 @@ public final class ContactsRepository: NSObject {
                 $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
             }
         } catch {
-            lastError = "Group memberships fetch failed: \(error.localizedDescription)"
+            recordFailure("Group memberships fetch failed", error)
             return []
         }
     }
@@ -1390,6 +1394,14 @@ public final class ContactsRepository: NSObject {
     /// mystery save failure was unattributable because nothing recorded which
     /// operation initiated it.
     private static let saveLog = Logger(label: "sync.contact-save")
+
+    private static let failureLog = Logger(label: "sync.contacts-repository")
+
+    /// Notes a failure. No app code reads `lastError`, so this also logs it.
+    private func recordFailure(_ operation: String, _ error: Error) {
+        lastError = "\(operation): \(error.localizedDescription)"
+        Self.failureLog.error("repository operation failed", metadata: error.logMetadata(["op": .string(operation)]))
+    }
 
     private var loadedPhotoPointers: [SidecarKey: JSONValue] = [:]
     private var photoWrites: Set<String> = []
@@ -1619,7 +1631,7 @@ public final class ContactsRepository: NSObject {
     /// bytes are captured into a single-slot "previous photo" so a replacement is
     /// recoverable — a general rule on the contact-image write path, so every
     /// caller that replaces a photo gets it for free. Best-effort: it never
-    /// blocks the actual photo write; a failure is recorded in `lastError` only.
+    /// blocks the actual photo write; a failure is logged, not thrown.
     @discardableResult
     public func setContactPhoto(for id: ContactID, imageData: Data?) async throws -> Bool {
         try await setContactPhoto(for: id, imageData: imageData, crop: nil)
@@ -1668,9 +1680,13 @@ public final class ContactsRepository: NSObject {
         } catch {
             // Contacts and file storage cannot share a transaction. Restore the system
             // photo if committing the preserved original/crop fails.
+            Self.saveLog.error("contact photo commit failed, restoring previous photo",
+                               metadata: error.logMetadata(["localID": .string(localID)]))
             do {
                 try await contactsStore.setImageData(localID: localID, imageData: previousSystemData)
             } catch let restoreError {
+                Self.saveLog.error("contact photo restore failed",
+                                   metadata: restoreError.logMetadata(["localID": .string(localID)]))
                 await refreshContact(localID: localID)
                 throw ContactPhotoEditError.restoreFailed(save: error.localizedDescription,
                                                          restore: restoreError.localizedDescription)
@@ -1744,7 +1760,7 @@ public final class ContactsRepository: NSObject {
             await refreshCacheIfMinted(minted, localID: localID)
         } catch {
             // Best-effort: the snapshot must never block the photo write.
-            lastError = "previous-photo snapshot failed: \(error.localizedDescription)"
+            recordFailure("previous-photo snapshot failed", error)
         }
     }
 
@@ -2441,7 +2457,7 @@ public final class ContactsRepository: NSObject {
         do {
             return try sync.notes(at: SidecarKey(kind: .contact, id: guessWhoID))
         } catch {
-            lastError = "notes read failed: \(error.localizedDescription)"
+            recordFailure("notes read failed", error)
             return []
         }
     }
@@ -2457,7 +2473,7 @@ public final class ContactsRepository: NSObject {
         do {
             return try sync.allNotes(at: SidecarKey(kind: .contact, id: guessWhoID))
         } catch {
-            lastError = "all-notes read failed: \(error.localizedDescription)"
+            recordFailure("all-notes read failed", error)
             return []
         }
     }
@@ -2473,7 +2489,7 @@ public final class ContactsRepository: NSObject {
         do {
             return try sync.fields(at: SidecarKey(kind: .contact, id: guessWhoID))
         } catch {
-            lastError = "all-fields read failed: \(error.localizedDescription)"
+            recordFailure("all-fields read failed", error)
             return []
         }
     }
@@ -2488,7 +2504,7 @@ public final class ContactsRepository: NSObject {
         do {
             return try sync.link(id: linkID)
         } catch {
-            lastError = "link read failed: \(error.localizedDescription)"
+            recordFailure("link read failed", error)
             return nil
         }
     }
@@ -2530,7 +2546,7 @@ public final class ContactsRepository: NSObject {
             }
             return (contactLinks, eventLinks, placeLinks)
         } catch {
-            lastError = "contact-detail links read failed: \(error.localizedDescription)"
+            recordFailure("contact-detail links read failed", error)
             return ([], [], [])
         }
     }
@@ -2555,7 +2571,7 @@ public final class ContactsRepository: NSObject {
                 link.deletedAt == nil && Self.linkClass(of: link, from: endpoint) == .contact
             }
         } catch {
-            lastError = "links read failed: \(error.localizedDescription)"
+            recordFailure("links read failed", error)
             return []
         }
     }
@@ -2576,7 +2592,7 @@ public final class ContactsRepository: NSObject {
                 link.deletedAt == nil && Self.linkClass(of: link, from: endpoint) == .event
             }
         } catch {
-            lastError = "event links read failed: \(error.localizedDescription)"
+            recordFailure("event links read failed", error)
             return []
         }
     }
@@ -2595,7 +2611,7 @@ public final class ContactsRepository: NSObject {
                 link.deletedAt == nil && Self.linkClass(of: link, from: endpoint) == .place
             }
         } catch {
-            lastError = "place links read failed: \(error.localizedDescription)"
+            recordFailure("place links read failed", error)
             return []
         }
     }
@@ -2616,7 +2632,7 @@ public final class ContactsRepository: NSObject {
                 return link.otherEndpoints(from: endpoint).first { $0.kind == .event }?.id
             }
         } catch {
-            lastError = "linked event UUIDs read failed: \(error.localizedDescription)"
+            recordFailure("linked event UUIDs read failed", error)
             return []
         }
     }
@@ -2720,7 +2736,7 @@ public final class ContactsRepository: NSObject {
         do {
             return try favorites.isFavorite(kind: .contact, id: guessWhoID)
         } catch {
-            lastError = "favorites lookup failed: \(error.localizedDescription)"
+            recordFailure("favorites lookup failed", error)
             return false
         }
     }
@@ -2734,7 +2750,7 @@ public final class ContactsRepository: NSObject {
         do {
             return try favorites.isFavorite(kind: .group, id: identityID)
         } catch {
-            lastError = "group favorites lookup failed: \(error.localizedDescription)"
+            recordFailure("group favorites lookup failed", error)
             return false
         }
     }
@@ -2804,7 +2820,7 @@ public final class ContactsRepository: NSObject {
         do {
             return try favorites.isFavorite(kind: .department, id: key.favoriteID)
         } catch {
-            lastError = "department favorites lookup failed: \(error.localizedDescription)"
+            recordFailure("department favorites lookup failed", error)
             return false
         }
     }
@@ -3131,7 +3147,7 @@ public final class ContactsRepository: NSObject {
             hasAuthoritativeGroupIdentities = false
             Self.groupIdentityLog.warning(
                 "group identity startup refresh failed",
-                metadata: ["error": "\(error.localizedDescription)"])
+                metadata: error.logMetadata())
         }
         // A group's placement is read through its identity, so a pass that may
         // have resolved one can move a group into (or out of) a folder. No I/O,
@@ -3162,10 +3178,7 @@ public final class ContactsRepository: NSObject {
         } catch {
             Self.groupIdentityLog.warning(
                 "group identity fingerprint refresh failed",
-                metadata: [
-                    "identityID": "\(identityID)",
-                    "error": "\(error.localizedDescription)",
-                ])
+                metadata: error.logMetadata(["identityID": "\(identityID)"]))
         }
     }
 
@@ -3176,11 +3189,10 @@ public final class ContactsRepository: NSObject {
         } catch {
             Self.groupIdentityLog.warning(
                 "group identity write failed",
-                metadata: [
+                metadata: error.logMetadata([
                     "operation": "\(operation)",
                     "identityID": "\(identity.id)",
-                    "error": "\(error.localizedDescription)",
-                ])
+                ]))
         }
     }
 
@@ -3231,7 +3243,7 @@ public final class ContactsRepository: NSObject {
             hierarchyRecords.enumerationFailed = true
             Self.groupHierarchyLog.warning(
                 "group hierarchy read failed; keeping the last good records",
-                metadata: ["error": "\(error.localizedDescription)"])
+                metadata: error.logMetadata())
             rebuildGroupFolderTree()
             return false
         }
@@ -3843,10 +3855,8 @@ public final class ContactsRepository: NSObject {
             }
             creationTimestampRepairs.remove(localID: id.localID)
         } catch {
-            Self.saveLog.error("contact timestamp write failed", metadata: [
-                "op": "createContact",
-                "error": .string(error.localizedDescription),
-            ])
+            Self.saveLog.error("contact timestamp write failed",
+                               metadata: error.logMetadata(["op": "createContact"]))
         }
     }
 
@@ -3870,10 +3880,8 @@ public final class ContactsRepository: NSObject {
         do {
             try await stampModified(id)
         } catch {
-            Self.saveLog.error("contact timestamp write failed", metadata: [
-                "op": .string(operation),
-                "error": .string(error.localizedDescription),
-            ])
+            Self.saveLog.error("contact timestamp write failed",
+                               metadata: error.logMetadata(["op": .string(operation)]))
         }
     }
 
@@ -3949,7 +3957,7 @@ public final class ContactsRepository: NSObject {
         do {
             return try await sync.mailActivities(at: SidecarKey(kind: .contact, id: guessWhoID))
         } catch {
-            lastError = "mail activity read failed: \(error.localizedDescription)"
+            recordFailure("mail activity read failed", error)
             return []
         }
     }
@@ -4046,7 +4054,7 @@ public final class ContactsRepository: NSObject {
         do {
             return try await sync.highlightedEmails(at: SidecarKey(kind: .contact, id: guessWhoID))
         } catch {
-            lastError = "highlighted email read failed: \(error.localizedDescription)"
+            recordFailure("highlighted email read failed", error)
             return []
         }
     }
@@ -5036,7 +5044,7 @@ public final class ContactsRepository: NSObject {
                     if rebuilt != stored { try favorites.setAll(rebuilt) }
                 }
             } catch {
-                lastError = "department favorite re-key failed: \(error.localizedDescription)"
+                recordFailure("department favorite re-key failed", error)
             }
         }
 
@@ -5184,7 +5192,7 @@ public final class ContactsRepository: NSObject {
             }
             lastError = nil
         case .failure(let error):
-            lastError = "Failed to refresh contact: \(error.localizedDescription)"
+            recordFailure("Failed to refresh contact", error)
         }
 
         // Capture provenance immediately around the synchronous cache commit.
@@ -5216,7 +5224,7 @@ public final class ContactsRepository: NSObject {
         } catch {
             // A failed individual re-read cannot establish whether the record
             // changed or disappeared, so retain the prior cached projection.
-            lastError = "Contact fetch failed: \(error.localizedDescription)"
+            recordFailure("Contact fetch failed", error)
         }
     }
 

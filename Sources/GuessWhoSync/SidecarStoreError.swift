@@ -19,3 +19,18 @@ public enum SidecarStoreError: Error, Equatable {
     // `setField(at:id:field:value:)`.
     case typeValueMismatch(expected: SidecarFieldType, got: JSONValue)
 }
+
+// `Error.logContext` reflects an enum error into the log. A rejected field value
+// is the user's data, so this leaves it out.
+extension SidecarStoreError: CustomDebugStringConvertible {
+    public var debugDescription: String {
+        switch self {
+        case .notYetDownloaded(let key):
+            return "SidecarStoreError.notYetDownloaded(\(key.kind), \(key.id))"
+        case .timedOut(let key):
+            return "SidecarStoreError.timedOut(\(key.kind), \(key.id))"
+        case .typeValueMismatch(let expected, _):
+            return "SidecarStoreError.typeValueMismatch(expected: \(expected))"
+        }
+    }
+}

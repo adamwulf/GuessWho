@@ -41,7 +41,7 @@ public actor RelayResponseRouter {
                     guard let response = try? JSONDecoder().decode(
                         WireResponse.self, from: Data(line.utf8))
                     else {
-                        logger?.error("RESPONSE_ROUTER: undecodable response line (\(line.utf8.count) bytes)")
+                        logger?.error("RESPONSE_ROUTER: undecodable response line", metadata: ["bytes": "\(line.utf8.count)"])
                         continue
                     }
                     deliver(response)
@@ -49,7 +49,7 @@ public actor RelayResponseRouter {
             } catch is CancellationError {
                 logger?.info("RESPONSE_ROUTER: reader exited on cancellation")
             } catch {
-                logger?.error("RESPONSE_ROUTER: reader error: \(error)")
+                logger?.error("RESPONSE_ROUTER: reader error", metadata: ["error": "\(error)"])
             }
         }
     }

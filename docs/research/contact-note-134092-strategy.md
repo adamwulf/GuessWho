@@ -445,10 +445,11 @@ distinguishes a **faulting** failure from a plain validation/conflict 134092.
 > **Verify on device before trusting it as a predicate.** I have NOT confirmed
 > that `NSUnderlyingException` survives into the `NSError.userInfo` your
 > `catch` block receives (vs. only appearing in the console `NSLog`). The adapter
-> already dumps the full `userInfo` and the `NSUnderlyingError` chain at the
+> logs the `userInfo` key names and the `NSUnderlyingError` chain at the
 > `execute()` site[^adapter-logfailure] — the on-device test plan's **step 0** is
 > to read that log and confirm which keys are actually present in the thrown
-> error.
+> error. The log leaves `userInfo` values out, because they can hold the rejected
+> contact, so reading a key's value takes a temporary local check on the test build.
 
 **Proposed predicate (only degrade when ALL hold), pending step-0 confirmation:**
 
@@ -540,8 +541,8 @@ to survive at all before the entitlement ships.
 
 Run on a TestFlight (or distribution-signed) build, which is the only context
 that reproduces 134092. Use a real contact you control. Each step is
-independent; record pass/fail and the full thrown `NSError` (domain, code,
-`userInfo`, `NSUnderlyingError` chain) via the adapter's existing `execute()`-site
+independent; record pass/fail and the thrown `NSError` (domain, code, `userInfo`
+key names, `NSUnderlyingError` chain) via the adapter's existing `execute()`-site
 log.[^adapter-logfailure]
 
 **Setup.** In Contacts.app, add a **non-empty note** to a test contact (e.g.
@@ -563,11 +564,12 @@ on a distribution-signed build, perform the *identical* note-bearing field edit 
 **Step 0 — Capture the real thrown error (do this first, on Catalyst).**
 Edit a normal field (e.g. add a phone number) on the note-bearing contact through
 the current code path. Confirm it throws 134092, then **read the adapter log** and
-record: is `NSUnderlyingException` present in `userInfo`? Does any
-`NSUnderlyingError` carry the "during faulting" string? Is the
-`"[api] Attempt to read notes by an unentitled app"` line in the OS log only, or
-also in the `NSError`? *This decides whether predicate clause (3) is usable or we
-must rely on clause (4).*
+record: is `NSUnderlyingException` in `userInfoKeys`? The log leaves values out, so
+add a temporary local check on the test build to read that key's value and any
+`NSUnderlyingError` description, and don't commit it: does either carry the "during
+faulting" string? Is the `"[api] Attempt to read notes by an unentitled app"` line
+in the OS log only, or also in the `NSError`? *This decides whether predicate
+clause (3) is usable or we must rely on clause (4).*
 
 **Step 1 — Control.** Repeat the same phone-number edit on a contact **with no
 note**. Expected: succeeds. (Confirms the edit itself is valid and the gating
@@ -689,7 +691,7 @@ mechanism is in play — do it alongside step 0.
 
 <!-- GuessWho source (relative paths, symbol-anchored) -->
 [^adapter-keys]: [CNContactStoreAdapter — `keys` deliberately omits CNContactNoteKey (read-side mitigation; necessary but not sufficient for the save fault)](../../Sources/GuessWhoSync/CNContactStoreAdapter.swift:CNContactStoreAdapter.keys)
-[^adapter-logfailure]: [CNContactStoreAdapter.logSaveFailure — dumps top-level error + full NSUnderlyingError chain + userInfo at the execute() site; use it for test step 0](../../Sources/GuessWhoSync/CNContactStoreAdapter.swift:CNContactStoreAdapter.logSaveFailure)
+[^adapter-logfailure]: [CNContactStoreAdapter.logSaveFailure — logs the top-level error + NSUnderlyingError chain + userInfo key names at the execute() site; use it for test step 0](../../Sources/GuessWhoSync/CNContactStoreAdapter.swift:CNContactStoreAdapter.logSaveFailure)
 [^editmodel-cocoa]: [ContactEditModel.cocoaErrorCategory — routes NSCocoaErrorDomain 134060…134095 (incl. 134092) to .storeRejected without asserting a cause](../../Sources/GuessWhoSync/ContactEditModel.swift:ContactEditModel.cocoaErrorCategory)
 [^editmodel-message]: [ContactEditModel.SaveErrorCategory.saveFailureMessage — .storeRejected copy: "This change to the contact couldn't be saved: …" (honest, plain-language, no Settings button)](../../Sources/GuessWhoSync/ContactEditModel.swift:ContactEditModel.SaveErrorCategory)
 [^identity-unified]: [docs/contact-identity.md — package uses ONLY unified contacts (unifiedContact/unifiedContacts), never the non-unified contact(withIdentifier:); identity keyed on the unified localID](../contact-identity.md)

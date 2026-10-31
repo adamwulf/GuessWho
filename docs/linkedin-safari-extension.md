@@ -559,13 +559,14 @@ Both processes log their resolved App Group id and the file path, so a mismatch
 is visible in Console:
 
 - **Extension** — subsystem `com.milestonemade.guesswho.safari`, category
-  `handoff`: `EXTENSION resolved App Group id=…`, `park: writing to …`,
-  `park: wrote N bytes OK …`.
+  `handoff`: `EXTENSION resolved App Group` (`id=…`), `park: writing` (`path=…`),
+  `park: wrote OK` (`bytes=… path=…`).
 - **App** — subsystem `com.milestonemade.guesswho`, category `linkedin-handoff`:
-  `APP resolved App Group id=…`, `read: looking for …`.
+  `APP resolved App Group` (`id=…`), `read: looking for parked handoff` (`path=…`).
 
-The `EXTENSION resolved … id=` and `APP resolved … id=` lines must be
-**identical**, and the `park: writing to …` path must match `read: looking for …`.
+The `id` fields on the `EXTENSION resolved App Group` and `APP resolved App Group`
+lines must be **identical**, and the `path` on `park: writing` must match the one
+on `read: looking for parked handoff`.
 
 To see **what the parser captured** for a given profile (e.g. "why is the
 headline missing?"), use these three complementary views across the boundary:
@@ -576,11 +577,13 @@ headline missing?"), use these three complementary views across the boundary:
   *before* headline/location classification, which pinpoints whether a miss is
   a DOM-walking problem or a classification problem.
 - **App log** — after decoding the parked payload, the scene delegate logs
-  `decoded payload: {…}` (photo elided) under `app.linkedin-handoff`, so "did
-  field X arrive in the app?" is answerable from `app.log` alone.
+  `decoded payload` under `app.linkedin-handoff`, with the names of the fields
+  that arrived (never their values) and the photo's type and size, so "did field
+  X arrive in the app?" is answerable from `app.log` alone. For the values
+  themselves, use the page console.
 - **Extension file log** — during the scroll pass, `content.js` sends bounded
   `guesswho.diagnostic` events through the background worker. The native handler
-  records them as `web diagnostic: {…}` in `extension-*.log`. Each record has a
+  records them as `web diagnostic` (`diagnostic={…}`) in `extension-*.log`. Each record has a
   probe id, elapsed time, readiness transition, scroller dimensions, viewport,
   browser user agent, a redacted route shape (`/in/<redacted>`), semantic section
   keys/text lengths, attribute presence/length/recognized kinds, Experience

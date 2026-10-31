@@ -10,8 +10,9 @@ After the package-vended-`ContactID` migration there are **three** identity
 layers, and which identifier is legal depends on which layer you are in:
 
 1. **App layer → `ContactID`.** The app holds, compares, and fetches with an
-   **opaque `ContactID`** and nothing else. It never reads a GuessWho ID string
-   or a `localID` off it, and never persists one. <!-- [^contactid] -->
+   **opaque `ContactID`** and nothing else. Outside the log-only `logValue`, it
+   never reads a GuessWho ID string or a `localID` off it, and it never persists
+   one. <!-- [^contactid] -->
 2. **Repository / package boundary → translation.** `ContactsRepository`
    translates a `ContactID` into a GuessWho ID (or, internally, a `localID`) to
    reach the engine. This is where the GuessWho-ID-vs-`localID` distinction below
@@ -42,7 +43,10 @@ equivalent repository search helper that vends `[ContactID]`); `ContactID.init` 
 vending point that wraps it. The app holds the token, compares it (e.g. as a
 diffable item identifier or a `Set` member), and hands it back to
 `repository.contact(id:)` to fetch the real `Contact`. It CANNOT read any
-field off it, so the token can never be misused as a "contact-light." It is also
+field off it, so the token can never be misused as a "contact-light." The one
+exception is `logValue`, the GuessWho ID (or `localID` before the contact has one)
+for log lines, so a log can identify a contact without its name; never compare,
+persist, or key on it. The token is also
 deliberately NOT `Codable`: a `ContactID` carries the transient `localID`, so
 persisting one would dangle after the next unification. Durable references are
 owned by the package/repository layer: storage may persist the **bare GuessWho
@@ -84,8 +88,8 @@ public struct ContactID: Hashable, Sendable {
 
 - Both stored properties are `package`, so the **app target cannot read either
   one**. The conformances (`Hashable`, `Sendable`) are `public` so the app can
-  put a `ContactID` in a diffable snapshot or a `Set`; the data stays sealed.
-  <!-- [^contactid] -->
+  put a `ContactID` in a diffable snapshot or a `Set`; the data stays sealed,
+  apart from the log-only `logValue`. <!-- [^contactid] -->
 - `effectiveID` is `guessWhoID ?? localID`. **`==` and `hash(into:)` BOTH key on
   `effectiveID` and only on it**, so they cannot diverge — `ContactID` is a
   consistent `Hashable`. Two `ContactID`s for the same contact are equal
@@ -225,7 +229,7 @@ repository translates to one of these (see [the three layers](#the-one-rule-thre
 | Stable across devices? | **Yes** — same on every device after sync | **No** — different on each device |
 | Persistable on one device? | **Yes** | **Yes**, but it may later resolve to a *different* unified contact (or stop resolving) when linked cards change |
 | Who owns it | GuessWhoSync | The Contacts framework |
-| Used for | Identity, sidecar keys, links, dedup — at the package/repository layer; the app does not resolve bare contact UUIDs directly | **Nothing as identity** — it's a transient lookup token. The Contacts adapter and the repository consume it internally; the app never reads it (it lives sealed inside `ContactID`). |
+| Used for | Identity, sidecar keys, links, dedup — at the package/repository layer; the app does not resolve bare contact UUIDs directly | **Nothing as identity** — it's a transient lookup token. The Contacts adapter and the repository consume it internally; the app never reads it (it lives sealed inside `ContactID`), apart from `logValue` for a contact with no GuessWho ID yet. |
 
 ### Why `localID` cannot be identity
 

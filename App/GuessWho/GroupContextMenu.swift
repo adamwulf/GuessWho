@@ -385,7 +385,7 @@ final class GroupContextMenu {
                     if let parentFolderID { self.didPlaceItem?(parentFolderID) }
                 } catch let failure as GroupPlacementFailedError {
                     // The group EXISTS; only filing it failed. Never create again.
-                    self.presentPlacementFailure(failure.group, parentFolderID: parentFolderID)
+                    self.presentPlacementFailure(failure.group, parentFolderID: parentFolderID, error: failure.underlying)
                 } catch {
                     await self.presentMutationError(action: "create", error: error)
                 }
@@ -566,7 +566,7 @@ final class GroupContextMenu {
             do {
                 try await command(self.repository)
             } catch {
-                Self.log.error("couldn't \(action): \(error.localizedDescription)")
+                Self.log.error("group menu action failed", error.logContext(["action": action]))
                 let alert = UIAlertController(
                     title: "Couldn’t Save This Change",
                     message: GroupFolderErrorPresentation.message(for: error),
@@ -580,8 +580,8 @@ final class GroupContextMenu {
 
     /// The new group was created but could not be filed. It is at the top level
     /// and fully usable; Retry files THAT group, and never creates another.
-    private func presentPlacementFailure(_ group: ContactGroup, parentFolderID: String?) {
-        Self.log.error("created group but couldn't place it in its folder")
+    private func presentPlacementFailure(_ group: ContactGroup, parentFolderID: String?, error: Error) {
+        Self.log.error("created group but couldn't place it in its folder", error.logContext())
         let folderName = parentFolderID
             .flatMap { repository.groupFolderTree.folders[$0]?.name }
             .map(GroupFolderDestination.displayName)
@@ -599,7 +599,7 @@ final class GroupContextMenu {
                     try await self.repository.moveGroup(group, toFolder: parentFolderID)
                     if let parentFolderID { self.didPlaceItem?(parentFolderID) }
                 } catch {
-                    self.presentPlacementFailure(group, parentFolderID: parentFolderID)
+                    self.presentPlacementFailure(group, parentFolderID: parentFolderID, error: error)
                 }
             }
         })
@@ -659,7 +659,7 @@ final class GroupContextMenu {
     }
 
     private func presentMutationError(action: String, error: Error) async {
-        Self.log.error("couldn't \(action) group: \(error.localizedDescription)")
+        Self.log.error("group action failed", error.logContext(["action": action]))
         let presentation = GroupMutationErrorPresentation.make(
             error: error,
             authorization: await repository.contactsAuthorizationStatus()
@@ -683,7 +683,7 @@ final class GroupContextMenu {
         for group: ContactGroup,
         thenFolderCleanup pending: PendingGroupPlacementCleanup? = nil
     ) {
-        Self.log.error("couldn't remove deleted group from favorites: \(error.localizedDescription)")
+        Self.log.error("couldn't remove deleted group from favorites", error.logContext())
         let alert = UIAlertController(
             title: "Group Deleted",
             message: "The group was deleted, but it couldn’t be removed from Favorites.",
@@ -739,7 +739,7 @@ final class GroupContextMenu {
             return
         }
         guard let host, host.isViewLoaded, host.view.window != nil else {
-            Self.log.error("no visible host for the group alert: \(alert.title ?? "")")
+            Self.log.error("no visible host for the group alert")
             return
         }
         if let presented = host.presentedViewController {

@@ -2,6 +2,7 @@
 import Foundation
 import GuessWhoLogging
 import GuessWhoMCPWire
+import GuessWhoSync
 
 /// Phase 0 diagnostic hook for the embedded relay CLI (plans/cli-mcp.md).
 ///
@@ -65,9 +66,7 @@ final class CLIProbeListener {
                 withIntermediateDirectories: true
             )
         } catch {
-            Self.log.error("cli probe listener: cannot create Diagnostics dir", [
-                "error": "\(error)"
-            ])
+            Self.log.error("cli probe listener: cannot create Diagnostics dir", error.logContext())
             return
         }
 

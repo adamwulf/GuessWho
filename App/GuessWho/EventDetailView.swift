@@ -771,7 +771,7 @@ struct EventDetailView: View {
                     let minted = try await service.linkEvent(toEventKitID: ekid)
                     adoptedUUID = minted.uuidString.lowercased()
                 } catch {
-                    service.recordError("adopt event failed: \(error.localizedDescription)")
+                    service.recordError("adopt event failed", error)
                 }
             }
             DetailLoadSignpost.end("event_adopt", adoptSignpostID)
@@ -824,8 +824,8 @@ struct EventDetailView: View {
     }
 
     /// Returns `true` when the link was created (or already existed) so the
-    /// picker sheet knows it's safe to dismiss. A write failure returns `false`
-    /// and surfaces via `service.recordError` so the user can pick a different
+    /// picker sheet knows it's safe to dismiss. A write failure is logged through
+    /// `service.recordError` and returns `false`, so the user can pick a different
     /// contact or retry without losing the sheet.
     private func addLink(to contacts: [Contact], note: String) async -> Bool {
         do {
@@ -841,7 +841,7 @@ struct EventDetailView: View {
                 note: note
             )
         } catch {
-            service.recordError("add contact-event link failed: \(error.localizedDescription)")
+            service.recordError("add contact-event link failed", error)
             return false
         }
         await reload()
@@ -854,7 +854,7 @@ struct EventDetailView: View {
         do {
             _ = try service.addLink(from: eventEndpoint, to: other, note: note)
         } catch {
-            service.recordError("add event-event link failed: \(error.localizedDescription)")
+            service.recordError("add event-event link failed", error)
             return
         }
         await reload()
@@ -864,7 +864,7 @@ struct EventDetailView: View {
         do {
             try service.removeLink(id: linkID)
         } catch {
-            service.recordError("remove link failed: \(error.localizedDescription)")
+            service.recordError("remove link failed", error)
         }
         Task { await reload() }
     }
@@ -880,7 +880,7 @@ struct EventDetailView: View {
                 location: edited.location
             )
         } catch {
-            service.recordError("update event failed: \(error.localizedDescription)")
+            service.recordError("update event failed", error)
         }
         Task { await reload() }
     }
@@ -890,7 +890,7 @@ struct EventDetailView: View {
             try service.deleteEvent(uuid: resolvedUUID)
             dismiss()
         } catch {
-            service.recordError("delete event failed: \(error.localizedDescription)")
+            service.recordError("delete event failed", error)
         }
     }
 
@@ -909,7 +909,7 @@ struct EventDetailView: View {
             newNoteText = ""
             newNoteDate = nil
         } catch {
-            service.recordError("add event note failed: \(error.localizedDescription)")
+            service.recordError("add event note failed", error)
         }
         Task { await reload() }
     }
@@ -932,7 +932,7 @@ struct EventDetailView: View {
                 forEventUUID: resolvedUUID
             )
         } catch {
-            service.recordError("edit event note failed: \(error.localizedDescription)")
+            service.recordError("edit event note failed", error)
         }
         editingNoteID = nil
         editingNoteDraft = ""
@@ -943,7 +943,7 @@ struct EventDetailView: View {
         do {
             try service.deleteEventNote(id: id, forEventUUID: resolvedUUID)
         } catch {
-            service.recordError("delete event note failed: \(error.localizedDescription)")
+            service.recordError("delete event note failed", error)
         }
         Task { await reload() }
     }
@@ -955,7 +955,7 @@ struct EventDetailView: View {
             _ = try service.addEventTag(text: trimmed, forEventUUID: resolvedUUID)
             newTagText = ""
         } catch {
-            service.recordError("add event tag failed: \(error.localizedDescription)")
+            service.recordError("add event tag failed", error)
         }
         Task { await reload() }
     }
@@ -964,7 +964,7 @@ struct EventDetailView: View {
         do {
             try service.deleteEventTag(id: id, forEventUUID: resolvedUUID)
         } catch {
-            service.recordError("delete event tag failed: \(error.localizedDescription)")
+            service.recordError("delete event tag failed", error)
         }
         Task { await reload() }
     }
@@ -1052,8 +1052,8 @@ struct ContactPickerSheet: View {
     /// Writes ONE link joining every picked contact to the entity with the one
     /// shared note. Returns `true` once the link has been created, `false` if the
     /// underlying reconcile-then-link sequence failed. The picker surfaces its
-    /// own neutral failure copy in that case — the host view is also free to
-    /// surface a richer message via `recordError`.
+    /// own neutral failure copy in that case; the host view logs the cause with
+    /// `recordError`.
     let onPick: ([Contact], String) async -> Bool
 
     @State private var query: String = ""
@@ -1122,7 +1122,7 @@ struct ContactPickerSheet: View {
                 // disabling Cancel would trap the user. The unstructured
                 // Task continues running after dismissal — SwiftUI state
                 // mutations on the dismissed view are no-ops, so there's no
-                // crash risk; any failure still surfaces via recordError.
+                // crash risk; any failure is still logged through recordError.
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
                 }

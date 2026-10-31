@@ -376,9 +376,8 @@ On the card:
   does not re-load. The card does not scroll to the new row; the scroll
   after a drop is for highlighted emails only.
 - **Errors.** A failed call (a gone contact, a failed save) is logged as
-  `add contact values failed` (channel `app.highlighted-email`) and recorded
-  with `service.recordError`. The card puts no URL, address, or number in
-  either.
+  `add contact values failed` (channel `app.highlighted-email`). The card puts
+  no URL, address, or number in that line.
 
 `ContactsRepository.addContactValues(from:for:)` takes `[URL]` and a
 `ContactID` and returns `AddedContactValues`, the rows it added to each

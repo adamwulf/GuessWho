@@ -558,8 +558,8 @@ struct EventLinkSheet: View {
                 pickInFlight = false
                 return
             }
-            // Partial-failure note: if `onLinked` throws (caller wraps it via
-            // recordError, see SyncService.addContactEventLink path), the
+            // Partial-failure note: if the link write inside `onLinked` fails
+            // (the caller logs it through recordError), the
             // sidecar minted by `linkEvent` exists but the contact↔event
             // link does not. The orphan sidecar is harmless and the user can
             // retry the link from the contact view.
@@ -585,7 +585,7 @@ struct EventLinkSheet: View {
             let minted = try await service.linkEvent(toEventKitID: ekid)
             return minted.uuidString
         } catch {
-            service.recordError("link event failed: \(error.localizedDescription)")
+            service.recordError("link event failed", error)
             return nil
         }
     }
@@ -616,7 +616,7 @@ struct EventLinkSheet: View {
                     )
                 }
             } catch {
-                service.recordError("create event failed: \(error.localizedDescription)")
+                service.recordError("create event failed", error)
                 return
             }
             onCreated(newUUID.uuidString)
@@ -635,7 +635,7 @@ struct EventLinkSheet: View {
                     location: locationOrNil
                 )
             } catch {
-                service.recordError("create manual event failed: \(error.localizedDescription)")
+                service.recordError("create manual event failed", error)
                 return
             }
             onLinked(newUUID.uuidString, draftLinkNote.trimmingCharacters(in: .whitespacesAndNewlines))

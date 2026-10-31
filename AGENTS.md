@@ -33,7 +33,7 @@ find:
   and "GuessWho" (as a noun for our private records) MUST NOT appear in
   any user-facing label, message, or banner. The carve-out is **debug-mode
   surfaces** (the contact-row reconcile checkmark, the contact detail Debug
-  section, debug toggle copy in Settings, OS-level NSLog breadcrumbs) —
+  section, debug toggle copy in Settings, log breadcrumbs) —
   those are for the developer, not the user, and the vocabulary helps
   diagnose issues. Anything visible without flipping the debug switch
   must use plain-language: "contact," "event," "notes," "tags," "storage,"
@@ -269,6 +269,52 @@ Both shells host the same SwiftUI detail views
 - Use `grep`, not `rg`.
 - Never silence an error by commenting it out; fix the underlying cause.
 - Slow is smooth; smooth is fast. Be methodical.
+
+## Logging
+
+All logging goes through swift-log (`Logger`), which FellerBuncher writes to the
+per-process log file. Don't add `os.Logger`, `NSLog`, or `print`. Two existing
+exceptions: the share extension has no App Group to log into, so it uses
+`os.Logger`, and the Debug-only sample-data seeding uses `NSLog`.
+
+- **Keep the message a fixed string and put values in a context dictionary.** Do
+  not interpolate values into the message:
+  ```swift
+  // App target (GuessWhoLogging's overload takes a plain dictionary):
+  Self.log.notice("guide imported", ["guideID": id])
+  Self.log.error("guide import failed", error.logContext(["guideID": id.uuidString]))
+
+  // GuessWhoSync (plain swift-log, so it takes Logger.Metadata):
+  Self.log.error("contact photo restore failed",
+                 metadata: error.logMetadata(["localID": .string(localID)]))
+  ```
+  The extras passed to `logContext` must be strings.
+- **Context holds IDs, counts, and states.** Never log names, note text, email
+  addresses, phone numbers, web addresses, message subjects, or file contents.
+  Identify a contact with `contactID.logValue`, its GuessWho ID. Before a contact
+  exists, log a count or a position instead.
+- **Log an error with `error.logContext()` / `error.logMetadata()`, never with
+  `error.localizedDescription` alone.** That text can reduce to "The operation
+  couldn't be completed. (Type error 0.)", which drops the enum case and its
+  payload (a real keychain `-34018` was lost this way). The context carries
+  `error`, `errorDomain`, `errorCode`, an enum's `errorCase`, and the domain and
+  code of an `NSUnderlyingErrorKey` error. A struct's own fields aren't captured,
+  so log a wrapper's `underlying` error directly. Never dump a whole `userInfo`,
+  because it can hold a whole contact. Use `error.logCodes()` for an error about a
+  file the user chose, because Foundation's description names the file.
+- **These helpers live in `GuessWhoSync`.** The Mail extension doesn't link it and
+  logs `LoggedError.fingerprint` instead, so an error's text can't put a path or
+  an address in its log. The Safari extension, `GuessWhoLogging`, and
+  `LinkedInLocalhostReceiver` put the error text in the context dictionary.
+  `GuessWhoMCPTransport` links neither `GuessWhoSync` nor `GuessWhoLogging`, so it
+  does the same through swift-log's `metadata:`.
+- **`errorCase` prints an enum error's payload.** An error enum whose payload can
+  hold user data must define a `debugDescription` that leaves it out, as
+  `SidecarStoreError` does.
+- **Those fields are developer-facing.** Show users `localizedDescription`, and
+  give an error type that can reach an alert a plain-language `LocalizedError`.
+- **Log every failure you catch and don't rethrow.** A failure recorded only in
+  a property or swallowed as "best-effort" leaves no trace in the log.
 
 # Codex
 

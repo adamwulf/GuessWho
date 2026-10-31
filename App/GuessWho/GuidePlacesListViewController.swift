@@ -300,7 +300,7 @@ final class GuidePlacesListViewController: UIViewController {
             } catch is CancellationError {
                 // A cancelled navigation task needs no user-facing error.
             } catch {
-                self.service.recordError("refresh guide failed: \(error.localizedDescription)")
+                self.service.recordError("refresh guide failed", error)
                 self.presentRefreshError(error)
             }
             self.isRefreshing = false
@@ -564,7 +564,7 @@ extension GuidePlacesListViewController: UITableViewDelegate {
         do {
             try service.deletePlace(uuid: place.id.uuidString)
         } catch {
-            service.recordError("delete place failed: \(error.localizedDescription)")
+            service.recordError("delete place failed", error)
             Task { await repository.reload() }
             return
         }
@@ -572,7 +572,7 @@ extension GuidePlacesListViewController: UITableViewDelegate {
             do {
                 try favoritesStore.remove(kind: .place, id: place.id.uuidString)
             } catch {
-                service.recordError("unfavorite deleted place failed: \(error.localizedDescription)")
+                service.recordError("unfavorite deleted place failed", error)
             }
         }
         Task { await repository.reload() }

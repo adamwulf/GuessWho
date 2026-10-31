@@ -1363,6 +1363,7 @@ struct ContactDetailView: View {
             let data = try await item.loadTransferable(type: Data.self)
             await applyRawPhotoData(data, loadError: nil)
         } catch {
+            Self.photoLog.error("photo picker load failed", error.logCodes())
             photoSaveError = error.localizedDescription
         }
     }
@@ -1371,12 +1372,14 @@ struct ContactDetailView: View {
         do {
             guard let photo = try await repository.contactPhotoData(for: id, kind: .fullSize),
                   let image = UIImage(data: photo.data) else {
+                Self.photoLog.error("crop edit: no decodable photo to open")
                 photoSaveError = "That photo couldn’t be loaded."
                 return
             }
             photoCropRequest = PhotoCropRequest(contactID: id, data: photo.data, image: image,
                                                 crop: photo.crop, isReplacement: false)
         } catch {
+            Self.photoLog.error("crop edit: photo load failed", error.logContext())
             photoSaveError = error.localizedDescription
         }
     }
@@ -1389,6 +1392,7 @@ struct ContactDetailView: View {
             photoLoader.invalidate(id)
             await loadHeaderPhoto()
         } catch {
+            Self.photoLog.error("crop reset failed", error.logContext())
             photoSaveError = error.localizedDescription
         }
     }
@@ -1397,7 +1401,7 @@ struct ContactDetailView: View {
         do {
             try await writePhoto(nil)
         } catch {
-            Self.photoLog.error("photo removal failed: \(error.localizedDescription)")
+            Self.photoLog.error("photo removal failed", error.logContext())
             photoSaveError = error.localizedDescription
         }
     }
@@ -1405,11 +1409,13 @@ struct ContactDetailView: View {
     /// Photos, file selection, and drops all use the same non-destructive editor.
     private func applyRawPhotoData(_ rawData: Data?, loadError: Error?) async {
         guard let rawData else {
+            Self.photoLog.error("photo load returned no data", loadError?.logCodes() ?? [:])
             photoSaveError = loadError?.localizedDescription ?? "That photo couldn’t be loaded."
             return
         }
         let image = await Task.detached(priority: .userInitiated) { UIImage(data: rawData) }.value
         guard let image else {
+            Self.photoLog.error("photo decode failed", ["bytes": rawData.count])
             photoSaveError = "That photo couldn’t be processed."
             return
         }
@@ -2013,10 +2019,7 @@ struct ContactDetailView: View {
             do {
                 try await repository.highlightEmail(email, for: contactID)
             } catch {
-                Self.highlightedEmailLog.error(
-                    "save email failed: \(error.localizedDescription)"
-                )
-                service.recordError("save email failed: \(error.localizedDescription)")
+                Self.highlightedEmailLog.error("save email failed", error.logContext())
             }
         }
     }
@@ -2031,10 +2034,7 @@ struct ContactDetailView: View {
             do {
                 try await repository.removeHighlightedEmail(id: email.id, for: contactID)
             } catch {
-                Self.highlightedEmailLog.error(
-                    "remove highlighted email failed: \(error.localizedDescription)"
-                )
-                service.recordError("remove highlighted email failed: \(error.localizedDescription)")
+                Self.highlightedEmailLog.error("remove highlighted email failed", error.logContext())
             }
         }
     }
@@ -2082,10 +2082,7 @@ struct ContactDetailView: View {
                     }
                 } catch {
                     // Keep going so one failed message does not drop the rest.
-                    Self.highlightedEmailLog.error(
-                        "highlight email failed: \(error.localizedDescription)"
-                    )
-                    service.recordError("highlight email failed: \(error.localizedDescription)")
+                    Self.highlightedEmailLog.error("highlight email failed", error.logContext())
                 }
             }
             // The rows can show before or after this point, because each
@@ -2151,10 +2148,7 @@ struct ContactDetailView: View {
             try await repository.highlightEmail(email, for: contactID)
             Self.logLateFileHeaders("written")
         } catch {
-            Self.highlightedEmailLog.error(
-                "highlight email file headers failed: \(error.localizedDescription)"
-            )
-            service.recordError("highlight email file headers failed: \(error.localizedDescription)")
+            Self.highlightedEmailLog.error("highlight email file headers failed", error.logContext())
         }
     }
 
@@ -2175,10 +2169,7 @@ struct ContactDetailView: View {
         do {
             added = try await repository.addContactValues(from: urls, for: contactID)
         } catch {
-            Self.highlightedEmailLog.error(
-                "add contact values failed: \(error.localizedDescription)"
-            )
-            service.recordError("add contact values failed: \(error.localizedDescription)")
+            Self.highlightedEmailLog.error("add contact values failed", error.logContext())
             return
         }
         guard added.total > 0 else { return }
@@ -2405,7 +2396,7 @@ struct ContactDetailView: View {
                         )
                     } catch {
                         Self.favoriteLog.error(
-                            "department favorite toggle failed: \(error.localizedDescription)"
+                            "department favorite toggle failed", error.logContext()
                         )
                     }
                     favoritesStore.reload()
@@ -3163,7 +3154,7 @@ struct ContactDetailView: View {
                 // Continue through the selection so one failed contact does not
                 // prevent the remaining requested updates. The observable reload
                 // below reflects whichever writes actually landed.
-                service.recordError("toggle favorite failed: \(error.localizedDescription)")
+                service.recordError("toggle favorite failed", error)
             }
         }
 
@@ -3186,7 +3177,7 @@ struct ContactDetailView: View {
             // singular create overload exists).
             _ = try await repository.addEventLink(for: [id], eventUUID: eventUUID, note: note)
         } catch {
-            service.recordError("add contact-event link failed: \(error.localizedDescription)")
+            service.recordError("add contact-event link failed", error)
         }
         // A first link may have minted the UUID, re-keying the cache. Re-resolve
         // the loaded contact off the reconcile-stable `contact(id:)` so
@@ -3248,7 +3239,7 @@ struct ContactDetailView: View {
         do {
             try repository.removeLink(id: id)
         } catch {
-            service.recordError("remove link failed: \(error.localizedDescription)")
+            service.recordError("remove link failed", error)
         }
         // Do NOT refire refreshLinkedEvents. The contact already has a UUID (it
         // had event links to remove), so reading off `loadedContactID` resolves;
@@ -3280,7 +3271,7 @@ struct ContactDetailView: View {
         do {
             try repository.removeLink(id: id)
         } catch {
-            service.recordError("remove place link failed: \(error.localizedDescription)")
+            service.recordError("remove place link failed", error)
         }
         Task {
             let cid = loadedContactID ?? self.id
@@ -3831,7 +3822,7 @@ struct ContactDetailView: View {
                     eventLinks = links
                 }
             } catch {
-                service.recordError("set event-link note failed: \(error.localizedDescription)")
+                service.recordError("set event-link note failed", error)
             }
         } else if placeLinks.contains(where: { $0.id == id }) {
             // Place-link note edit — same shared write (keyed on the link's own
@@ -3849,7 +3840,7 @@ struct ContactDetailView: View {
                     linkedPlaces = places
                 }
             } catch {
-                service.recordError("set place-link note failed: \(error.localizedDescription)")
+                service.recordError("set place-link note failed", error)
             }
         }
     }

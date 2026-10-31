@@ -153,7 +153,7 @@ public actor RelayConnection {
 
         isConnected = true
         startPinging()
-        logger?.info("RELAY: connected as \(helperId)")
+        logger?.info("RELAY: connected", metadata: ["helperId": "\(helperId)"])
     }
 
     public func disconnect() async {
@@ -199,7 +199,7 @@ public actor RelayConnection {
         do {
             try await pipe.send(request)
         } catch {
-            logger?.info("RELAY: request write failed (\(error)); attempting reconnect")
+            logger?.info("RELAY: request write failed; attempting reconnect", metadata: ["error": "\(error)"])
             await closePipes()
             try await connect()
             guard let retryPipe = requestPipe else {
@@ -252,7 +252,7 @@ public actor RelayConnection {
         do {
             _ = try await send(ping, timeout: readyTimeout)
         } catch {
-            logger?.info("RELAY: ping failed (\(error)); session will reconnect on next use")
+            logger?.info("RELAY: ping failed; session will reconnect on next use", metadata: ["error": "\(error)"])
         }
     }
 }

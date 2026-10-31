@@ -107,7 +107,7 @@ public actor MCPPipeHost {
                 await self?.reapDeadSessions()
             }
         }
-        logger?.info("PIPE_HOST: listening on \(announceURL.path)")
+        logger?.info("PIPE_HOST: listening", metadata: ["path": "\(announceURL.path)"])
     }
 
     public func stopListening() async {
@@ -138,7 +138,7 @@ public actor MCPPipeHost {
         } else if request.isDeinitialize {
             await teardownSession(helperId: request.helperId)
         } else {
-            logger?.error("PIPE_HOST: non-lifecycle message on the announce channel from \(request.helperId) — ignored")
+            logger?.error("PIPE_HOST: non-lifecycle message on the announce channel — ignored", metadata: ["helperId": "\(request.helperId)"])
             assertionFailure("Announce channel must carry only initialize/deinitialize")
         }
     }
@@ -149,7 +149,7 @@ public actor MCPPipeHost {
         // build fresh ones. Handles minted by the dispatch layer survive —
         // they are keyed on the host run, not the helper session.
         if sessions[helperId] != nil {
-            logger?.info("PIPE_HOST: re-announce from \(helperId); rebuilding session")
+            logger?.info("PIPE_HOST: re-announce; rebuilding session", metadata: ["helperId": "\(helperId)"])
             await teardownSession(helperId: helperId)
         }
 
@@ -191,9 +191,12 @@ public actor MCPPipeHost {
             // and only then opens the request pipe we just created.
             try await responsePipe.sendResponse(
                 .ready(helperId: helperId, messageId: readyMessageId))
-            logger?.info("PIPE_HOST: session up for \(helperId)")
+            logger?.info("PIPE_HOST: session up", metadata: ["helperId": "\(helperId)"])
         } catch {
-            logger?.error("PIPE_HOST: session setup failed for \(helperId): \(error)")
+            logger?.error("PIPE_HOST: session setup failed", metadata: [
+                "helperId": "\(helperId)",
+                "error": "\(error)",
+            ])
             // Close whatever half-opened before the failure; the session was
             // never registered (or is removed) so nothing else references it.
             sessions.removeValue(forKey: helperId)
@@ -213,7 +216,7 @@ public actor MCPPipeHost {
         // dead helpers don't accumulate FIFOs across a long run. The
         // response FIFO is the helper's to recreate on reconnect.
         try? FileManager.default.removeItem(at: session.requestFIFOURL)
-        logger?.info("PIPE_HOST: session down for \(helperId)")
+        logger?.info("PIPE_HOST: session down", metadata: ["helperId": "\(helperId)"])
     }
 
     // MARK: - Per-helper requests
@@ -221,7 +224,7 @@ public actor MCPPipeHost {
     private func handleHelperRequest(_ request: WireRequest) async {
         let helperId = request.helperId
         guard sessions[helperId] != nil else {
-            logger?.error("PIPE_HOST: request from unknown session \(helperId) — dropped")
+            logger?.error("PIPE_HOST: request from unknown session — dropped", metadata: ["helperId": "\(helperId)"])
             return
         }
         sessions[helperId]?.lastSeen = Date()
@@ -233,7 +236,7 @@ public actor MCPPipeHost {
             return
         }
         if request.isInitialize || request.isDeinitialize {
-            logger?.error("PIPE_HOST: lifecycle message on a data pipe from \(helperId) — ignored")
+            logger?.error("PIPE_HOST: lifecycle message on a data pipe — ignored", metadata: ["helperId": "\(helperId)"])
             return
         }
         if let response = await handler(request) {
@@ -243,13 +246,16 @@ public actor MCPPipeHost {
 
     private func send(_ response: WireResponse, to helperId: String) async {
         guard let session = sessions[helperId] else {
-            logger?.error("PIPE_HOST: no session to answer \(helperId)")
+            logger?.error("PIPE_HOST: no session to answer", metadata: ["helperId": "\(helperId)"])
             return
         }
         do {
             try await session.responsePipe.sendResponse(response)
         } catch {
-            logger?.error("PIPE_HOST: response write failed for \(helperId): \(error)")
+            logger?.error("PIPE_HOST: response write failed", metadata: [
+                "helperId": "\(helperId)",
+                "error": "\(error)",
+            ])
         }
     }
 
@@ -259,7 +265,7 @@ public actor MCPPipeHost {
         let cutoff = Date().addingTimeInterval(-livenessTimeout)
         let dead = sessions.filter { $0.value.lastSeen < cutoff }.map(\.key)
         for helperId in dead {
-            logger?.info("PIPE_HOST: reaping quiet session \(helperId)")
+            logger?.info("PIPE_HOST: reaping quiet session", metadata: ["helperId": "\(helperId)"])
             await teardownSession(helperId: helperId)
         }
     }
@@ -279,7 +285,7 @@ public actor MCPPipeHost {
             }
             let url = container.appendingPathComponent(name)
             try? fm.removeItem(at: url)
-            logger?.info("PIPE_HOST: swept orphaned FIFO \(name)")
+            logger?.info("PIPE_HOST: swept orphaned FIFO", metadata: ["fifo": "\(name)"])
         }
     }
 }

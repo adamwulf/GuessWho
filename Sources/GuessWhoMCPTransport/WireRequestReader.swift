@@ -59,7 +59,7 @@ public actor WireRequestReader {
                 logger?.info("REQUEST_READER: read loop exited on cancellation")
                 isReading = false
             } catch {
-                logger?.error("REQUEST_READER: read loop error: \(error)")
+                logger?.error("REQUEST_READER: read loop error", metadata: ["error": "\(error)"])
                 isReading = false
             }
         }
@@ -80,7 +80,10 @@ public actor WireRequestReader {
         } catch {
             // Malformed line: log and drop. Never echo the line's content
             // anywhere agent-visible.
-            logger?.error("REQUEST_READER: undecodable request line (\(line.utf8.count) bytes): \(error)")
+            logger?.error("REQUEST_READER: undecodable request line", metadata: [
+                "bytes": "\(line.utf8.count)",
+                "error": "\(error)",
+            ])
             return nil
         }
     }

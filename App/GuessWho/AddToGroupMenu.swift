@@ -385,15 +385,16 @@ final class AddToGroupMenu {
         do {
             try await repository.addContacts(contacts, toGroup: group)
         } catch let partial as GroupMembershipPartialFailureError {
-            Self.log.error(
-                "add to group partially failed: \(partial.failures.count) of \(contacts.count) contacts"
-            )
+            Self.log.error("add to group partially failed", [
+                "failed": partial.failures.count,
+                "contacts": contacts.count,
+            ])
             present(.partialFailure(
                 partial,
                 authorization: await repository.contactsAuthorizationStatus()
             ))
         } catch {
-            Self.log.error("couldn't add contacts to group: \(error.localizedDescription)")
+            Self.log.error("couldn't add contacts to group", error.logContext())
             let presentation = GroupMutationErrorPresentation.make(
                 error: error,
                 authorization: await repository.contactsAuthorizationStatus()
@@ -429,7 +430,7 @@ final class AddToGroupMenu {
             do {
                 group = try await repository.createGroup(name: name)
             } catch {
-                Self.log.error("couldn't create group: \(error.localizedDescription)")
+                Self.log.error("couldn't create group", error.logContext())
                 let presentation = GroupMutationErrorPresentation.make(
                     error: error,
                     authorization: await repository.contactsAuthorizationStatus()
@@ -463,7 +464,7 @@ final class AddToGroupMenu {
     /// visible step: this menu can only be opened from a visible list.
     private func present(_ alert: UIAlertController) {
         guard let host, host.isViewLoaded, host.view.window != nil else {
-            Self.log.error("no visible host for the Add to Group alert: \(alert.title ?? "")")
+            Self.log.error("no visible host for the Add to Group alert")
             return
         }
         if let presented = host.presentedViewController {

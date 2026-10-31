@@ -257,7 +257,7 @@ final class GuidesListViewController: UIViewController {
                 onFailure: { [weak self] error in
                     guard let self else { return }
                     self.updateEmptyState()
-                    Self.log.error("import failed: \(error.localizedDescription)")
+                    Self.log.error("import failed", error.logContext())
                     self.presentImportFailure(
                         message: "The guide couldn't be loaded. Check the link and your internet connection, then try again."
                     )
@@ -435,7 +435,7 @@ extension GuidesListViewController: UITableViewDelegate {
         do {
             try service.deleteGuide(uuid: guide.id.uuidString)
         } catch {
-            service.recordError("delete guide failed: \(error.localizedDescription)")
+            service.recordError("delete guide failed", error)
             Task { await repository.reload() }
             return
         }
@@ -458,14 +458,14 @@ extension GuidesListViewController: UITableViewDelegate {
             do {
                 try favoritesStore.remove(kind: .guide, id: guideID)
             } catch {
-                service.recordError("unfavorite deleted guide failed: \(error.localizedDescription)")
+                service.recordError("unfavorite deleted guide failed", error)
             }
         }
         for placeID in placeIDs where favoritesStore.isFavorite(kind: .place, id: placeID) {
             do {
                 try favoritesStore.remove(kind: .place, id: placeID)
             } catch {
-                service.recordError("unfavorite deleted place failed: \(error.localizedDescription)")
+                service.recordError("unfavorite deleted place failed", error)
             }
         }
     }

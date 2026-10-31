@@ -93,7 +93,7 @@ final class LinkedInLocalhostReceiver: @unchecked Sendable {
     private func startOnQueue() {
         guard listener == nil else { return }
         guard let nwPort = NWEndpoint.Port(rawValue: port) else {
-            Self.log.error("invalid port \(port) — receiver not started")
+            Self.log.error("invalid port — receiver not started", ["port": port])
             return
         }
         let params = NWParameters.tcp
@@ -107,7 +107,9 @@ final class LinkedInLocalhostReceiver: @unchecked Sendable {
         do {
             listener = try NWListener(using: params)
         } catch {
-            Self.log.error("listener create failed on 127.0.0.1:\(port): \(error.localizedDescription)")
+            // Not `error.logContext()`: this class stays free of GuessWhoSync so
+            // it can compile into a standalone harness.
+            Self.log.error("listener create failed", ["port": port, "error": String(describing: error)])
             return
         }
 
@@ -115,12 +117,17 @@ final class LinkedInLocalhostReceiver: @unchecked Sendable {
             guard let self else { return }
             switch state {
             case .ready:
-                Self.log.notice("listening on 127.0.0.1:\(self.port) (allowed origins: \(self.allowedOrigins.isEmpty ? "ANY chrome-extension://" : self.allowedOrigins.joined(separator: ",")))")
+                Self.log.notice("listening on loopback", [
+                    "port": self.port,
+                    "allowedOrigins": self.allowedOrigins.isEmpty
+                        ? "ANY chrome-extension://"
+                        : self.allowedOrigins.joined(separator: ","),
+                ])
             case .failed(let error):
                 // Most likely the port is already bound (a second app copy —
                 // e.g. a worktree build — or an unrelated process). The Safari
                 // handoff path is unaffected; only the Chrome transport is down.
-                Self.log.error("listener failed on 127.0.0.1:\(self.port): \(error.localizedDescription) — Chrome handoff unavailable")
+                Self.log.error("listener failed — Chrome handoff unavailable", ["port": self.port, "error": String(describing: error)])
             case .cancelled:
                 Self.log.notice("listener cancelled")
             default:
@@ -322,7 +329,7 @@ final class LinkedInLocalhostReceiver: @unchecked Sendable {
                 return
             }
             guard let origin = allowedOrigin(head) else {
-                LinkedInLocalhostReceiver.log.error("rejected POST: origin \(head.origin ?? "<none>") not allowed")
+                LinkedInLocalhostReceiver.log.error("rejected POST: origin not allowed", ["origin": head.origin ?? "<none>"])
                 respond(status: "403 Forbidden", origin: nil)
                 return
             }
@@ -338,7 +345,10 @@ final class LinkedInLocalhostReceiver: @unchecked Sendable {
                 return
             }
             guard contentLength <= maxBodyBytes else {
-                LinkedInLocalhostReceiver.log.error("rejected POST: body \(contentLength)B > cap \(maxBodyBytes)B")
+                LinkedInLocalhostReceiver.log.error("rejected POST: body over cap", [
+                    "bytes": contentLength,
+                    "maxBytes": maxBodyBytes,
+                ])
                 respond(status: "413 Content Too Large", origin: origin)
                 return
             }
@@ -350,7 +360,10 @@ final class LinkedInLocalhostReceiver: @unchecked Sendable {
             let start = buffer.index(buffer.startIndex, offsetBy: head.bodyStart)
             let end = buffer.index(start, offsetBy: contentLength)
             let body = Data(buffer[start..<end])
-            LinkedInLocalhostReceiver.log.notice("handoff received: \(body.count)B from \(head.origin ?? "<no origin>")")
+            LinkedInLocalhostReceiver.log.notice("handoff received", [
+                "bytes": body.count,
+                "origin": head.origin ?? "<no origin>",
+            ])
             onPayload(body)
             respond(status: "200 OK", body: "{\"received\":true}", origin: allowedOrigin(head))
         }

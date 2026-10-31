@@ -180,7 +180,7 @@ final class MCPHostController: NSObject {
         do {
             try await newHost.startListening()
         } catch {
-            Self.log.error("mcp host: failed to start", ["error": "\(error)"])
+            Self.log.error("mcp host: failed to start", error.logContext())
             state = .stopped
             return
         }

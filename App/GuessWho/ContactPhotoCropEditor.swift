@@ -1,8 +1,12 @@
 import SwiftUI
 import UIKit
 import GuessWhoSync
+import GuessWhoLogging
 
 struct ContactPhotoCropEditor: View {
+    /// Same channel as `ContactDetailView.photoLog`.
+    private static let log = GuessWhoLog.logger("contact.photo")
+
     let image: UIImage
     let initialCrop: ContactPhotoCrop?
     let onChoose: (ContactPhotoCrop) async throws -> Void
@@ -36,6 +40,7 @@ struct ContactPhotoCropEditor: View {
                                 try await onChoose(crop)
                                 dismiss()
                             } catch {
+                                Self.log.error("crop save failed", error.logContext())
                                 self.error = error.localizedDescription
                                 saving = false
                             }
