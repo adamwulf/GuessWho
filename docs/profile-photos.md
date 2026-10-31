@@ -62,9 +62,18 @@ be reached. Mac Catalyst can't reach it: the app claims `<TeamID>.` App Groups
 that its provisioning profile doesn't authorize, so macOS ignores the app's
 entitlements for the keychain, which answers `-34018`. The profile can't be changed to allow them:
 `<TeamID>.` groups can't be registered on the Apple Developer site, and the
-Catalyst profiles list only the `group.` ID. On such a device the app shows the
-Contacts photo, and a re-crop replaces the file with a new unencrypted one. A
-build from before this change can't read the new files, so update every device.
+Catalyst profiles list only the `group.` ID.
+
+A device that can't open an older file, including a new device whose key hasn't
+synced yet, shows the Contacts photo, uncropped. Edit Crop and Reset Crop then
+report an error and leave the file alone, because another device may still be able
+to read it. Choosing a new photo is an explicit replacement, so it still works: the
+Contacts photo moves to `previousPhoto` and the older file is deleted on every
+device.
+
+A build from before this change can't read the new files. It shows no photo for
+those contacts, not even the Contacts one, and its crop edits fail before writing,
+so nothing is corrupted. Update every device.
 
 ## Changes made in Contacts.app
 

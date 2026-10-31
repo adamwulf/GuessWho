@@ -9,11 +9,13 @@ import Security
 // Reads `.blob` `.dat` payloads that older builds encrypted.
 //
 // New `.dat` files are not encrypted (see `FileSystemSidecarStore.writeBlob`), so
-// nothing here runs when saving a photo or reading a new one. Files from older
-// builds are AES-GCM sealed under a 256-bit key in the iCloud-synchronizable
-// keychain, and this decrypts them where that key can be reached. Mac Catalyst
-// can't reach it: the app claims `<TeamID>.` App Groups its provisioning profile
-// doesn't authorize, so the keychain ignores its entitlements and answers -34018.
+// writing or reading one never runs this. Files from older builds are AES-GCM
+// sealed under a 256-bit key in the iCloud-synchronizable keychain, and this
+// decrypts them where that key can be reached. Replacing an older photo reads it
+// first to snapshot it, so a save can log a failure here, which is harmless. Mac
+// Catalyst can't reach the key: the app claims `<TeamID>.` App Groups its
+// provisioning profile doesn't authorize, so the keychain ignores its
+// entitlements and answers -34018.
 //
 // The protocol is injectable so unit tests pass a deterministic in-memory key
 // (`InMemoryBlobCrypto`) and never touch the real keychain; production uses the

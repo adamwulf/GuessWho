@@ -550,9 +550,9 @@ public final class GuessWhoSync: @unchecked Sendable {
     // snapshot never collides with an in-flight older `.dat` mid-sync.
 
     /// Async overload of `setBlobField(at:field:data:contentType:)` that hops
-    /// the write to a background queue: it AES-GCM-encrypts the full payload
-    /// (photos run to megabytes), writes the sealed `.dat` under coordination,
-    /// and read-modify-writes the envelope — none of which belongs on the
+    /// the write to a background queue: it writes the full payload (photos run
+    /// to megabytes) to the `.dat` under coordination, and read-modify-writes
+    /// the envelope — none of which belongs on the
     /// caller's actor / main thread. Same continuation pattern as the async
     /// read overloads.
     @discardableResult

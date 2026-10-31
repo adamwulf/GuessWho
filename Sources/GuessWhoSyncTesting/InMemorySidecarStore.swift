@@ -6,9 +6,8 @@ public final class InMemorySidecarStore: SidecarStoreProtocol {
     private let lock = NSLock()
     private var envelopes: [SidecarKey: SidecarEnvelope] = [:]
     private var scriptedConflicts: [SidecarKey: [Data]] = [:]
-    // Per-key blob payloads: blobId → bytes. No encryption in-memory — the
-    // store's contract is bytes-in / bytes-out (the FS store is where the
-    // AES-GCM `.dat` encryption lives).
+    // Per-key blob payloads: blobId → bytes. The store's contract is
+    // bytes-in / bytes-out.
     private var blobs: [SidecarKey: [String: Data]] = [:]
 
     public init() {}
@@ -33,7 +32,7 @@ public final class InMemorySidecarStore: SidecarStoreProtocol {
         blobs.removeValue(forKey: key)
     }
 
-    // MARK: - Blob payload I/O (bytes-in / bytes-out; no encryption)
+    // MARK: - Blob payload I/O (bytes-in / bytes-out)
 
     public func writeBlob(_ data: Data, blobId: String, for key: SidecarKey) throws {
         lock.lock()

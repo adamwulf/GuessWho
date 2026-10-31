@@ -93,6 +93,22 @@ struct FileSystemSidecarStoreBlobTests {
         #expect(try store.readBlob(blobId: blobId, for: contactKey) == payload)
     }
 
+    // These bytes are a synced format. If they changed, every file already written
+    // would read as an encrypted one. Never update this test to match a new marker.
+    @Test
+    func shippedMarkerBytesStillReadAsPlain() throws {
+        let root = makeRoot()
+        defer { cleanup(root) }
+        let payload = Data([0x01, 0x02])
+        let blobId = UUID().uuidString
+        let directory = root.appendingPathComponent("contacts")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try (Data("GuessWhoPlainBlob1\n".utf8) + payload)
+            .write(to: directory.appendingPathComponent("\(contactKey.id).\(blobId).dat"))
+
+        #expect(try makeStore(root: root).readBlob(blobId: blobId, for: contactKey) == payload)
+    }
+
     // The Mac case: the keychain refuses every call, and saving and reading a new
     // photo must not care.
     @Test

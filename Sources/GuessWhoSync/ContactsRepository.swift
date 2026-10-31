@@ -1427,7 +1427,7 @@ public final class ContactsRepository: NSObject {
         guard let contact = contact(id: id) else { return nil }
 
         do {
-            var unreadableBlobID: String?
+            var storedFileUnreadable = false
             if let sync, let key = SidecarKey.forContact(contact) {
                 // Track pending reads so blob arrival refreshes visible placeholders.
                 if loadedPhotoPointers[key] == nil { loadedPhotoPointers[key] = .null }
@@ -1443,12 +1443,11 @@ public final class ContactsRepository: NSObject {
                     // An older encrypted file this device can't open. Contacts
                     // has the photo, so show that instead of failing.
                     loadedPhotoPointers[key] = unreadable.pointer.jsonValue
-                    unreadableBlobID = unreadable.pointer.blobId
+                    storedFileUnreadable = true
                 }
             }
             var photo = try await systemPhoto(for: contact, kind: kind)
-            // Names the slot's current file, so a re-crop can replace it.
-            photo?.blobID = unreadableBlobID
+            photo?.storedFileUnreadable = storedFileUnreadable
             return photo
         } catch ContactStoreError.contactNotFound(_) {
             return nil
@@ -1718,6 +1717,9 @@ public final class ContactsRepository: NSObject {
         defer { photoWrites.remove(localID) }
         guard let photo = try await contactPhotoData(for: id, kind: .fullSize),
               photo.data == originalData else { throw ContactPhotoEditError.photoChanged }
+        // Replacing the slot deletes its file, and another device may still be able
+        // to read that file, or this one once its key syncs. Keep it.
+        guard !photo.storedFileUnreadable else { throw ContactPhotoEditError.storedPhotoUnreadable }
         let guessWhoID = try await resolveOrMintGuessWhoID(for: id)
         let key = SidecarKey(kind: .contact, id: guessWhoID)
         let systemData = try await systemPhotoBytes(localID: localID)
@@ -1761,8 +1763,8 @@ public final class ContactsRepository: NSObject {
             let key = SidecarKey(kind: .contact, id: guessWhoID)
             // Single-slot upsert: repoints the slot and reclaims the prior
             // `.dat` (orphan sweep is the cross-device backstop). Awaits the
-            // engine's background-hop overload — encrypting and writing a
-            // full-size photo must not stall the main actor mid-import.
+            // engine's background-hop overload — writing a full-size photo
+            // must not stall the main actor mid-import.
             _ = try await sync.setBlobField(
                 at: key,
                 field: Self.previousPhotoFieldName,

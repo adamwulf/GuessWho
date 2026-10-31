@@ -419,7 +419,7 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
 
     // MARK: - Blob payload I/O
 
-    // Encrypt `data` and write it to `<key.id>.<blobId>.dat` in the same
+    // Write `plainBlobMarker` + `data` to `<key.id>.<blobId>.dat` in the same
     // per-kind directory as the envelope, under the SAME iCloud root so it
     // syncs. Reuses the coordinated-write + busy-handler machinery (those
     // compose for any URL).
