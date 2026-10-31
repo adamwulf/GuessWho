@@ -20,6 +20,13 @@ public struct ContactPhoto: Sendable {
     }
 }
 
+/// The contact's stored photo is an older encrypted file this device can't open.
+/// The repository shows the Contacts photo instead; the pointer lets a re-crop
+/// replace the unreadable file.
+struct UnreadableProfilePhotoError: Error {
+    let pointer: BlobPointer
+}
+
 public enum ContactPhotoEditError: LocalizedError {
     case photoChanged
     case saveInProgress

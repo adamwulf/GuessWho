@@ -682,9 +682,9 @@ See [`plans/linkedin-safari-extension.md`](../plans/linkedin-safari-extension.md
 for the overall feature plan.
 
 **Built (2026-06-27):** the `.blob` sidecar field type + previous-photo
-snapshot. A `.blob` field stores a small pointer to an AES-GCM-encrypted `.dat`
-neighbor file under the same iCloud root (the key lives in the synchronizable
-keychain). The contact-image write path (`ContactsRepository.setContactPhoto`)
+snapshot. A `.blob` field stores a small pointer to a `.dat` neighbor file under
+the same iCloud root (see [Profile photos](profile-photos.md) for older encrypted
+files). The contact-image write path (`ContactsRepository.setContactPhoto`)
 snapshots the replaced photo into a single-slot `previousPhoto` `.blob`; a
 reference-counting `sweepOrphanBlobs()` reclaims unreferenced `.dat`s. v1
 guarantees capture only (no revert UI yet).

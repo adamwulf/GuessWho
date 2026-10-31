@@ -4,6 +4,13 @@ import Testing
 @testable import GuessWhoSync
 @_spi(ConflictReconcile) import GuessWhoSync
 
+/// A device whose keychain refuses every call, as Mac Catalyst's does.
+final class NoKeyBlobCrypto: SidecarBlobCrypto {
+    func decrypt(_ ciphertext: Data) throws -> Data {
+        throw SidecarBlobCryptoError.keychainStatus(-34018)
+    }
+}
+
 @Suite("FileSystemSidecarStore + blob payloads")
 struct FileSystemSidecarStoreBlobTests {
     private func makeRoot() -> URL {
@@ -63,52 +70,80 @@ struct FileSystemSidecarStoreBlobTests {
         #expect(try store.readBlob(blobId: UUID().uuidString, for: contactKey) == nil)
     }
 
+    // Writes a `.dat` the way older builds did: AES-GCM sealed, with no marker.
+    private func writeLegacyEncryptedBlob(_ payload: Data, blobId: String, key: SymmetricKey, root: URL) throws {
+        let directory = root.appendingPathComponent("contacts")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let sealed = try InMemoryBlobCrypto(key: key).encrypt(payload)
+        try sealed.write(to: directory.appendingPathComponent("\(contactKey.id).\(blobId).dat"))
+    }
+
     @Test
-    func datOnDiskIsEncryptedNotPlaintext() throws {
+    func newBlobIsNotEncrypted() throws {
         let root = makeRoot()
         defer { cleanup(root) }
         let store = makeStore(root: root)
-        // Recognizable plaintext so a substring scan is meaningful.
-        let payload = Data("SUPER-SECRET-PHOTO-BYTES".utf8)
+        let payload = Data("RECOGNIZABLE-PHOTO-BYTES".utf8)
         let blobId = "abababab-abab-abab-abab-abababababab"
         try store.writeBlob(payload, blobId: blobId, for: contactKey)
 
         let datURL = root.appendingPathComponent("contacts")
             .appendingPathComponent("\(contactKey.id).\(blobId).dat")
-        let onDisk = try Data(contentsOf: datURL)
-        // The raw file must NOT contain the plaintext (it is AES-GCM sealed).
-        #expect(onDisk != payload)
-        #expect(onDisk.range(of: payload) == nil)
-        // And it round-trips back through the store's decrypt path.
+        #expect(try Data(contentsOf: datURL).range(of: payload) != nil)
         #expect(try store.readBlob(blobId: blobId, for: contactKey) == payload)
     }
 
+    // The Mac case: the keychain refuses every call, and saving and reading a new
+    // photo must not care.
     @Test
-    func anotherDeviceWithSameKeyCanDecrypt() throws {
+    func newBlobWritesAndReadsWithNoKey() throws {
         let root = makeRoot()
         defer { cleanup(root) }
-        // Two stores at the SAME root sharing the SAME key model two synced
-        // devices: device B can decrypt the `.dat` device A wrote.
-        let sharedKey = SymmetricKey(size: .bits256)
-        let deviceA = makeStore(root: root, key: sharedKey)
-        let deviceB = makeStore(root: root, key: sharedKey)
+        let store = FileSystemSidecarStore(
+            root: root,
+            ubiquity: FakeUbiquityProvider(),
+            blobCrypto: NoKeyBlobCrypto(),
+            coordinatesUbiquitousAccess: false
+        )
         let payload = Data([0x01, 0x02, 0x03, 0x04])
         let blobId = UUID().uuidString
-        try deviceA.writeBlob(payload, blobId: blobId, for: contactKey)
-        #expect(try deviceB.readBlob(blobId: blobId, for: contactKey) == payload)
+        try store.writeBlob(payload, blobId: blobId, for: contactKey)
+        let read = try #require(try store.readBlob(blobId: blobId, for: contactKey))
+        #expect(read == payload)
+        // Callers index the bytes from zero, so the marker must not leave an offset.
+        #expect(read.startIndex == 0)
     }
 
     @Test
-    func decryptWithWrongKeyThrows() throws {
+    func emptyBlobRoundTrips() throws {
         let root = makeRoot()
         defer { cleanup(root) }
-        let deviceA = makeStore(root: root, key: SymmetricKey(size: .bits256))
+        let store = makeStore(root: root)
         let blobId = UUID().uuidString
-        try deviceA.writeBlob(Data([0xaa, 0xbb]), blobId: blobId, for: contactKey)
-        // A store with a DIFFERENT key cannot open the sealed box.
-        let deviceWrongKey = makeStore(root: root, key: SymmetricKey(size: .bits256))
-        #expect(throws: (any Error).self) {
-            _ = try deviceWrongKey.readBlob(blobId: blobId, for: contactKey)
+        try store.writeBlob(Data(), blobId: blobId, for: contactKey)
+        #expect(try store.readBlob(blobId: blobId, for: contactKey) == Data())
+    }
+
+    @Test
+    func olderEncryptedBlobStillDecryptsWithItsKey() throws {
+        let root = makeRoot()
+        defer { cleanup(root) }
+        let key = SymmetricKey(size: .bits256)
+        let payload = Data([0xaa, 0xbb])
+        let blobId = UUID().uuidString
+        try writeLegacyEncryptedBlob(payload, blobId: blobId, key: key, root: root)
+        #expect(try makeStore(root: root, key: key).readBlob(blobId: blobId, for: contactKey) == payload)
+    }
+
+    @Test
+    func olderEncryptedBlobWithoutItsKeyReportsCannotDecrypt() throws {
+        let root = makeRoot()
+        defer { cleanup(root) }
+        let blobId = UUID().uuidString
+        try writeLegacyEncryptedBlob(Data([0xaa, 0xbb]), blobId: blobId, key: SymmetricKey(size: .bits256), root: root)
+        let wrongKey = makeStore(root: root, key: SymmetricKey(size: .bits256))
+        #expect(throws: SidecarBlobCryptoError.cannotDecrypt) {
+            _ = try wrongKey.readBlob(blobId: blobId, for: contactKey)
         }
     }
 

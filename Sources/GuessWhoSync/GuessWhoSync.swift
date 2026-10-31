@@ -759,7 +759,13 @@ public final class GuessWhoSync: @unchecked Sendable {
                       let field = SidecarField.decode(id: id, from: cell),
                       field.field == ContactsRepository.profilePhotoFieldName, field.type == .blob,
                       let pointer = BlobPointer(from: field.value) else { continue }
-                guard let data = try ctx.readBlob(blobId: pointer.blobId) else {
+                let stored: Data?
+                do {
+                    stored = try ctx.readBlob(blobId: pointer.blobId)
+                } catch SidecarBlobCryptoError.cannotDecrypt {
+                    throw UnreadableProfilePhotoError(pointer: pointer)
+                }
+                guard let data = stored else {
                     throw SidecarStoreError.notYetDownloaded(key)
                 }
                 var photo = ContactPhoto(data: data, kind: .fullSize, crop: pointer.photoCrop)

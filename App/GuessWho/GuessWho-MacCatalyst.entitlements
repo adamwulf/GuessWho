@@ -24,7 +24,10 @@
 		     by code signature, no provisioning/registration, avoids the macOS
 		     "access data from other applications" prompt. iOS uses the
 		     group.-prefixed form (see GuessWho.entitlements). Keep in sync with
-		     GUESSWHO_APP_GROUP[sdk=macosx*] in GuessWho-Release.xcconfig. -->
+		     GUESSWHO_APP_GROUP[sdk=macosx*] in GuessWho-Release.xcconfig.
+		     The provisioning profile does not authorize this form, so macOS makes
+		     the keychain ignore this app's entitlements (error -34018). Anything
+		     needing the keychain will fail on Mac; see docs/profile-photos.md. -->
 		<string>T68Z94627S.com.milestonemade.guesswho</string>
 		<!-- The CLI/MCP App Group shared with the embedded guesswho-cli
 		     helper. Expands at signing time from the ONE shared per-channel

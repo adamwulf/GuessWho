@@ -25,8 +25,8 @@ math validates finite, positive, in-bounds rectangles and constrains square
 crops to the image. Missing crop metadata means the full photo.
 
 `ContactsRepository.setContactPhoto` sends the full input bytes to Contacts and
-preserves those same bytes in the encrypted `profilePhoto` blob beside the
-contact envelope. It never writes the displayed cropped image as the original.
+preserves those same bytes in the `profilePhoto` blob beside the contact
+envelope. It never writes the displayed cropped image as the original.
 The optional `photoCrop` object lives inside that blob pointer, so normal
 whole-cell synchronization keeps the rectangle attached to its original image.
 The active photo uses one fixed cell ID per contact, so simultaneous first edits
@@ -48,6 +48,23 @@ rectangle (using the existing blob replacement path). It does not write to the
 Contacts image property. Editing a photo that predates crop support preserves
 the full image returned by Contacts at that time. If Contacts only has a
 thumbnail, the existing thumbnail fallback supplies the available image.
+
+## Blob files and older encrypted photos
+
+Photo `.dat` files are not encrypted, like everything else in the iCloud folder.
+A file starts with a short marker followed by the image bytes, so saving or
+reading one never touches the keychain. The marker lives in the file, so the
+synced JSON didn't change.
+
+Older builds wrote AES-GCM sealed files under a key in the iCloud keychain, and a
+file with no marker is treated as one of those. It is decrypted where that key can
+be reached. Mac Catalyst can't reach it: the app claims `<TeamID>.` App Groups
+that its provisioning profile doesn't authorize, so macOS ignores the app's
+entitlements for the keychain, which answers `-34018`. The profile can't be changed to allow them:
+`<TeamID>.` groups can't be registered on the Apple Developer site, and the
+Catalyst profiles list only the `group.` ID. On such a device the app shows the
+Contacts photo, and a re-crop replaces the file with a new unencrypted one. A
+build from before this change can't read the new files, so update every device.
 
 ## Changes made in Contacts.app
 
@@ -102,8 +119,9 @@ changes; unrelated notes and timestamp changes retain their inexpensive refresh.
 resolution independence, invalid rectangles, and JSON round trips.
 `ContactPhotoCropPersistenceTests` covers original-byte preservation, repository
 reload, crop changes and reset, replacement/removal, an existing uncropped photo,
-encrypted filesystem storage reopened through a fresh engine, and simultaneous
-first edits and absent-to-present crop races. `ContactPhotoSourceTests` covers external replacement/removal after
+filesystem storage reopened through a fresh engine, saving with no usable keychain,
+an older encrypted file this device can't open, and simultaneous first edits and
+absent-to-present crop races. `ContactPhotoSourceTests` covers external replacement/removal after
 relaunch, unrelated edits, stale crop editors, failed storage writes, pending
 download refresh, and both sync arrival orders. Catalyst rendering tests check
 that large uncropped originals still produce bounded Mail thumbnails after reset.

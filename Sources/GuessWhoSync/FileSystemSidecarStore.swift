@@ -52,11 +52,18 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
     // cannot be triggered against a local filesystem.
     private let ubiquity: SidecarUbiquityProvider
 
-    // Seam over `.blob` `.dat` payload encryption. Production uses a key from
-    // the iCloud-synchronizable keychain (KeychainBlobCrypto); tests inject a
-    // deterministic in-memory key (InMemoryBlobCrypto) to exercise
-    // encrypt/decrypt end-to-end WITHOUT touching the real keychain.
+    // Decrypts `.dat` files that older builds encrypted; new ones aren't encrypted
+    // (see `plainBlobMarker`). Production uses a key from the
+    // iCloud-synchronizable keychain (KeychainBlobCrypto); tests inject a
+    // deterministic in-memory key (InMemoryBlobCrypto) WITHOUT touching the real
+    // keychain.
     private let blobCrypto: SidecarBlobCrypto
+
+    // Starts every `.dat` written without encryption. Older builds wrote only an
+    // AES-GCM sealed box, which begins with a random nonce, so a file without
+    // this marker is an encrypted one. The marker lives in the file so the synced
+    // JSON and the blob pointer don't change.
+    private static let plainBlobMarker = Data("GuessWhoPlainBlob1\n".utf8)
 
     // Background queues the coordinator runs on so the calling thread can
     // wait with a timeout. One serial queue PER KEY (same granularity as
@@ -417,7 +424,7 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
     // syncs. Reuses the coordinated-write + busy-handler machinery (those
     // compose for any URL).
     public func writeBlob(_ data: Data, blobId: String, for key: SidecarKey) throws {
-        let sealed = try blobCrypto.encrypt(data)
+        let contents = Self.plainBlobMarker + data
         try fileLocks.withLock(forKey: key) {
             let url = blobURL(for: key, blobId: blobId)
             try FileManager.default.createDirectory(
@@ -427,7 +434,7 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
             var writeError: Error?
             try coordinatedWrite(key: key, at: url) { safeURL in
                 do {
-                    try sealed.write(to: safeURL, options: [.atomic])
+                    try contents.write(to: safeURL, options: [.atomic])
                 } catch {
                     writeError = error
                 }
@@ -436,7 +443,9 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
         }
     }
 
-    // Read + decrypt the blob for (key, blobId). Returns nil when the `.dat` is
+    // Read the blob for (key, blobId), decrypting an older encrypted file; one
+    // this device can't open throws `SidecarBlobCryptoError.cannotDecrypt`. Returns
+    // nil when the `.dat` is
     // not materialized on this device yet — either truly absent, or present only
     // as an iCloud `.<name>.dat.icloud` placeholder. In the placeholder case we
     // kick off a download (best-effort) and still return nil, so a
@@ -469,19 +478,23 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
         }
 
         switch outcome {
-        case .bytes(let sealed):
+        case .bytes(let contents):
+            if contents.starts(with: Self.plainBlobMarker) {
+                // A fresh `Data`, so callers can index the bytes from zero.
+                return Data(contents.dropFirst(Self.plainBlobMarker.count))
+            }
             do {
-                return try blobCrypto.decrypt(sealed)
+                return try blobCrypto.decrypt(contents)
             } catch {
-                // A `.dat` sealed under another device's key fails here as an
-                // authentication failure.
+                // An older `.dat`: its key is out of reach on this device, or it
+                // was sealed under another device's key.
                 Logger(label: "sync.blob-crypto").error("blob decrypt failed", metadata: error.logMetadata([
                     "kind": .string(String(describing: key.kind)),
                     "id": .string(key.id),
                     "blobId": .string(blobId),
-                    "bytes": .stringConvertible(sealed.count),
+                    "bytes": .stringConvertible(contents.count),
                 ]))
-                throw error
+                throw SidecarBlobCryptoError.cannotDecrypt
             }
         case .placeholderPresent:
             // Materialized bytes aren't here yet; ask iCloud to fetch them and
