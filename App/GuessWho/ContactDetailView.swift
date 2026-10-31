@@ -2020,9 +2020,9 @@ struct ContactDetailView: View {
                 try await repository.highlightEmail(email, for: contactID)
             } catch {
                 Self.highlightedEmailLog.error(
-                    "save email failed: \(error.localizedDescription)"
+                    "save email failed", error.logContext()
                 )
-                service.recordError("save email failed: \(error.localizedDescription)")
+                service.recordError("save email failed", error)
             }
         }
     }
@@ -2038,9 +2038,9 @@ struct ContactDetailView: View {
                 try await repository.removeHighlightedEmail(id: email.id, for: contactID)
             } catch {
                 Self.highlightedEmailLog.error(
-                    "remove highlighted email failed: \(error.localizedDescription)"
+                    "remove highlighted email failed", error.logContext()
                 )
-                service.recordError("remove highlighted email failed: \(error.localizedDescription)")
+                service.recordError("remove highlighted email failed", error)
             }
         }
     }
@@ -2089,9 +2089,9 @@ struct ContactDetailView: View {
                 } catch {
                     // Keep going so one failed message does not drop the rest.
                     Self.highlightedEmailLog.error(
-                        "highlight email failed: \(error.localizedDescription)"
+                        "highlight email failed", error.logContext()
                     )
-                    service.recordError("highlight email failed: \(error.localizedDescription)")
+                    service.recordError("highlight email failed", error)
                 }
             }
             // The rows can show before or after this point, because each
@@ -2158,9 +2158,9 @@ struct ContactDetailView: View {
             Self.logLateFileHeaders("written")
         } catch {
             Self.highlightedEmailLog.error(
-                "highlight email file headers failed: \(error.localizedDescription)"
+                "highlight email file headers failed", error.logContext()
             )
-            service.recordError("highlight email file headers failed: \(error.localizedDescription)")
+            service.recordError("highlight email file headers failed", error)
         }
     }
 
@@ -2182,9 +2182,9 @@ struct ContactDetailView: View {
             added = try await repository.addContactValues(from: urls, for: contactID)
         } catch {
             Self.highlightedEmailLog.error(
-                "add contact values failed: \(error.localizedDescription)"
+                "add contact values failed", error.logContext()
             )
-            service.recordError("add contact values failed: \(error.localizedDescription)")
+            service.recordError("add contact values failed", error)
             return
         }
         guard added.total > 0 else { return }
@@ -2411,7 +2411,7 @@ struct ContactDetailView: View {
                         )
                     } catch {
                         Self.favoriteLog.error(
-                            "department favorite toggle failed: \(error.localizedDescription)"
+                            "department favorite toggle failed", error.logContext()
                         )
                     }
                     favoritesStore.reload()
@@ -3169,7 +3169,7 @@ struct ContactDetailView: View {
                 // Continue through the selection so one failed contact does not
                 // prevent the remaining requested updates. The observable reload
                 // below reflects whichever writes actually landed.
-                service.recordError("toggle favorite failed: \(error.localizedDescription)")
+                service.recordError("toggle favorite failed", error)
             }
         }
 
@@ -3192,7 +3192,7 @@ struct ContactDetailView: View {
             // singular create overload exists).
             _ = try await repository.addEventLink(for: [id], eventUUID: eventUUID, note: note)
         } catch {
-            service.recordError("add contact-event link failed: \(error.localizedDescription)")
+            service.recordError("add contact-event link failed", error)
         }
         // A first link may have minted the UUID, re-keying the cache. Re-resolve
         // the loaded contact off the reconcile-stable `contact(id:)` so
@@ -3254,7 +3254,7 @@ struct ContactDetailView: View {
         do {
             try repository.removeLink(id: id)
         } catch {
-            service.recordError("remove link failed: \(error.localizedDescription)")
+            service.recordError("remove link failed", error)
         }
         // Do NOT refire refreshLinkedEvents. The contact already has a UUID (it
         // had event links to remove), so reading off `loadedContactID` resolves;
@@ -3286,7 +3286,7 @@ struct ContactDetailView: View {
         do {
             try repository.removeLink(id: id)
         } catch {
-            service.recordError("remove place link failed: \(error.localizedDescription)")
+            service.recordError("remove place link failed", error)
         }
         Task {
             let cid = loadedContactID ?? self.id
@@ -3837,7 +3837,7 @@ struct ContactDetailView: View {
                     eventLinks = links
                 }
             } catch {
-                service.recordError("set event-link note failed: \(error.localizedDescription)")
+                service.recordError("set event-link note failed", error)
             }
         } else if placeLinks.contains(where: { $0.id == id }) {
             // Place-link note edit — same shared write (keyed on the link's own
@@ -3855,7 +3855,7 @@ struct ContactDetailView: View {
                     linkedPlaces = places
                 }
             } catch {
-                service.recordError("set place-link note failed: \(error.localizedDescription)")
+                service.recordError("set place-link note failed", error)
             }
         }
     }

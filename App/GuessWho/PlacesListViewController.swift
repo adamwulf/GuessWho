@@ -482,7 +482,7 @@ extension PlacesListViewController: UITableViewDelegate {
         do {
             try service.deletePlace(uuid: place.id.uuidString)
         } catch {
-            service.recordError("delete place failed: \(error.localizedDescription)")
+            service.recordError("delete place failed", error)
             Task { await repository.reload() }
             return
         }
@@ -490,7 +490,7 @@ extension PlacesListViewController: UITableViewDelegate {
             do {
                 try favoritesStore.remove(kind: .place, id: place.id.uuidString)
             } catch {
-                service.recordError("unfavorite deleted place failed: \(error.localizedDescription)")
+                service.recordError("unfavorite deleted place failed", error)
             }
         }
         Task { await repository.reload() }

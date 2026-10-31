@@ -590,7 +590,7 @@ struct GuidePlaceDetailView: View {
                 note: note
             )
         } catch {
-            service.recordError("add contact-place link failed: \(error.localizedDescription)")
+            service.recordError("add contact-place link failed", error)
             return false
         }
         await reloadLinks()
@@ -605,7 +605,7 @@ struct GuidePlaceDetailView: View {
                 note: note
             )
         } catch {
-            service.recordError("add place-event link failed: \(error.localizedDescription)")
+            service.recordError("add place-event link failed", error)
             return
         }
         await reloadLinks()
@@ -615,7 +615,7 @@ struct GuidePlaceDetailView: View {
         do {
             try service.removeLink(id: id)
         } catch {
-            service.recordError("remove place link failed: \(error.localizedDescription)")
+            service.recordError("remove place link failed", error)
         }
         Task { await reloadLinks() }
     }

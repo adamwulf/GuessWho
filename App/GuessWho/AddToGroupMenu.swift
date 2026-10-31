@@ -385,9 +385,10 @@ final class AddToGroupMenu {
         do {
             try await repository.addContacts(contacts, toGroup: group)
         } catch let partial as GroupMembershipPartialFailureError {
-            Self.log.error(
-                "add to group partially failed: \(partial.failures.count) of \(contacts.count) contacts"
-            )
+            Self.log.error("add to group partially failed", [
+                "failed": partial.failures.count,
+                "contacts": contacts.count,
+            ])
             present(.partialFailure(
                 partial,
                 authorization: await repository.contactsAuthorizationStatus()

@@ -28,6 +28,16 @@ struct ErrorLogContextTests {
     }
 
     @Test
+    func rejectedFieldValueStaysOutOfTheContext() throws {
+        let error = SidecarStoreError.typeValueMismatch(expected: .url, got: .string("private-value"))
+        let context = error.logContext()
+
+        let errorCase = try #require(context["errorCase"])
+        #expect(errorCase.contains("typeValueMismatch"))
+        #expect(!context.values.contains { $0.contains("private-value") })
+    }
+
+    @Test
     func nsErrorReportsDomainCodeAndUnderlyingWithoutUserInfo() throws {
         let underlying = NSError(domain: NSPOSIXErrorDomain, code: 1)
         let error = NSError(domain: NSCocoaErrorDomain, code: 134092, userInfo: [

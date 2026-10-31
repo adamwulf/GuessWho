@@ -735,7 +735,7 @@ extension EventsListViewController: UITableViewDelegate {
         do {
             try service.deleteEvent(uuid: event.id.uuidString)
         } catch {
-            service.recordError("delete event failed: \(error.localizedDescription)")
+            service.recordError("delete event failed", error)
         }
         Task { await repository.reload() }
     }

@@ -107,7 +107,9 @@ final class LinkedInLocalhostReceiver: @unchecked Sendable {
         do {
             listener = try NWListener(using: params)
         } catch {
-            Self.log.error("listener create failed on 127.0.0.1:\(port): \(error.localizedDescription)")
+            // Not `error.logContext()`: this class stays free of GuessWhoSync so
+            // it can compile into a standalone harness.
+            Self.log.error("listener create failed", ["port": port, "error": String(describing: error)])
             return
         }
 
@@ -120,7 +122,7 @@ final class LinkedInLocalhostReceiver: @unchecked Sendable {
                 // Most likely the port is already bound (a second app copy —
                 // e.g. a worktree build — or an unrelated process). The Safari
                 // handoff path is unaffected; only the Chrome transport is down.
-                Self.log.error("listener failed on 127.0.0.1:\(self.port): \(error.localizedDescription) — Chrome handoff unavailable")
+                Self.log.error("listener failed — Chrome handoff unavailable", ["port": self.port, "error": String(describing: error)])
             case .cancelled:
                 Self.log.notice("listener cancelled")
             default:

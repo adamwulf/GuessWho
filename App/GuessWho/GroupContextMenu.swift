@@ -385,7 +385,7 @@ final class GroupContextMenu {
                     if let parentFolderID { self.didPlaceItem?(parentFolderID) }
                 } catch let failure as GroupPlacementFailedError {
                     // The group EXISTS; only filing it failed. Never create again.
-                    self.presentPlacementFailure(failure.group, parentFolderID: parentFolderID)
+                    self.presentPlacementFailure(failure.group, parentFolderID: parentFolderID, error: failure.underlying)
                 } catch {
                     await self.presentMutationError(action: "create", error: error)
                 }
@@ -580,8 +580,8 @@ final class GroupContextMenu {
 
     /// The new group was created but could not be filed. It is at the top level
     /// and fully usable; Retry files THAT group, and never creates another.
-    private func presentPlacementFailure(_ group: ContactGroup, parentFolderID: String?) {
-        Self.log.error("created group but couldn't place it in its folder")
+    private func presentPlacementFailure(_ group: ContactGroup, parentFolderID: String?, error: Error) {
+        Self.log.error("created group but couldn't place it in its folder", error.logContext())
         let folderName = parentFolderID
             .flatMap { repository.groupFolderTree.folders[$0]?.name }
             .map(GroupFolderDestination.displayName)
@@ -599,7 +599,7 @@ final class GroupContextMenu {
                     try await self.repository.moveGroup(group, toFolder: parentFolderID)
                     if let parentFolderID { self.didPlaceItem?(parentFolderID) }
                 } catch {
-                    self.presentPlacementFailure(group, parentFolderID: parentFolderID)
+                    self.presentPlacementFailure(group, parentFolderID: parentFolderID, error: error)
                 }
             }
         })

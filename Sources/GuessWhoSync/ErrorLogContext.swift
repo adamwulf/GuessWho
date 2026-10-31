@@ -17,7 +17,9 @@ extension Error {
         context["errorCode"] = String(nsError.code)
         // Only an enum is reflected. NSError and the Foundation wrappers around
         // it (CocoaError, URLError, CNError) would print their userInfo, which
-        // can hold file paths and contact fields.
+        // can hold file paths and contact fields. An enum whose payload can hold
+        // user data must define a `debugDescription` that leaves it out, as
+        // `SidecarStoreError` does.
         if Mirror(reflecting: self).displayStyle == .enum {
             context["errorCase"] = String(reflecting: self)
         }

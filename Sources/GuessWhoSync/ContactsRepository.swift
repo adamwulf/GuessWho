@@ -1097,6 +1097,9 @@ public final class ContactsRepository: NSObject {
                 // others (the same choice `ContactDetailView`'s multi-select
                 // favorite toggle makes). Every failure is reported together
                 // below, after the batch has run to the end.
+                Self.failureLog.error("group membership write failed", metadata: error.logMetadata([
+                    "localID": .string(contact.localID),
+                ]))
                 failures.append(.init(contact: contact, error: error))
             }
         }
@@ -1629,7 +1632,7 @@ public final class ContactsRepository: NSObject {
     /// bytes are captured into a single-slot "previous photo" so a replacement is
     /// recoverable — a general rule on the contact-image write path, so every
     /// caller that replaces a photo gets it for free. Best-effort: it never
-    /// blocks the actual photo write; a failure is recorded in `lastError` only.
+    /// blocks the actual photo write; a failure is logged, not thrown.
     @discardableResult
     public func setContactPhoto(for id: ContactID, imageData: Data?) async throws -> Bool {
         try await setContactPhoto(for: id, imageData: imageData, crop: nil)

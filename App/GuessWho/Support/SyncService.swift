@@ -176,6 +176,7 @@ final class SyncService {
         contactsAuthorization = result.status
         if let description = result.failureDescription {
             lastError = "Contacts access request failed: \(description)"
+            Self.log.error("contacts access request failed", ["error": description])
         }
     }
 
@@ -188,6 +189,7 @@ final class SyncService {
         eventsAuthorization = result.status
         if let description = result.failureDescription {
             lastError = "Events access request failed: \(description)"
+            Self.log.error("events access request failed", ["error": description])
         }
     }
 
@@ -199,7 +201,7 @@ final class SyncService {
         do {
             return try eventsAdapter.fetchEventCalendars()
         } catch {
-            lastError = "Calendar list fetch failed: \(error.localizedDescription)"
+            recordError("Calendar list fetch failed", error)
             throw error
         }
     }
@@ -221,7 +223,7 @@ final class SyncService {
                 }
             }
         } catch {
-            lastError = "Calendar list fetch failed: \(error.localizedDescription)"
+            recordError("Calendar list fetch failed", error)
             return nil
         }
     }
@@ -252,9 +254,8 @@ final class SyncService {
                 try await sync.eventsWindow(from: start, to: end, includeEventKit: includeEventKit)
             )
         } catch {
-            let message = "fetchEvents failed: \(error.localizedDescription)"
-            lastError = message
-            return .failure(message: message)
+            recordError("fetchEvents failed", error)
+            return .failure(message: "fetchEvents failed: \(error.localizedDescription)")
         }
     }
 
@@ -266,7 +267,7 @@ final class SyncService {
         do {
             return try sync.event(at: SidecarKey(kind: .event, id: uuid))
         } catch {
-            lastError = "event fetch failed: \(error.localizedDescription)"
+            recordError("event fetch failed", error)
             return nil
         }
     }
@@ -293,7 +294,7 @@ final class SyncService {
             }
             return result
         } catch {
-            lastError = "event delta fetch failed: \(error.localizedDescription)"
+            recordError("event delta fetch failed", error)
             return nil
         }
     }
@@ -334,7 +335,7 @@ final class SyncService {
                 }
             }
         } catch {
-            lastError = "Calendar event fetch failed: \(error.localizedDescription)"
+            recordError("Calendar event fetch failed", error)
             return nil
         }
     }
@@ -347,7 +348,7 @@ final class SyncService {
         do {
             return try await sync.eventUUID(forEventKitID: ekid)
         } catch {
-            lastError = "eventUUID lookup failed: \(error.localizedDescription)"
+            recordError("eventUUID lookup failed", error)
             return nil
         }
     }
@@ -462,7 +463,7 @@ final class SyncService {
         do {
             try sync.stampEventViewed(at: SidecarKey(kind: .event, id: uuid))
         } catch {
-            lastError = "stamp event viewed failed: \(error.localizedDescription)"
+            recordError("stamp event viewed failed", error)
         }
     }
 
@@ -495,7 +496,7 @@ final class SyncService {
         do {
             _ = try await sync.refreshEventCache(at: key)
         } catch {
-            lastError = "refresh event failed: \(error.localizedDescription)"
+            recordError("refresh event failed", error)
         }
     }
 
@@ -521,7 +522,7 @@ final class SyncService {
         do {
             return try sync.notes(at: SidecarKey(kind: .event, id: uuid))
         } catch {
-            lastError = "event notes read failed: \(error.localizedDescription)"
+            recordError("event notes read failed", error)
             return []
         }
     }
@@ -551,7 +552,7 @@ final class SyncService {
         do {
             return try sync.tags(at: SidecarKey(kind: .event, id: uuid))
         } catch {
-            lastError = "event tags read failed: \(error.localizedDescription)"
+            recordError("event tags read failed", error)
             return []
         }
     }
@@ -596,7 +597,7 @@ final class SyncService {
         do {
             return try await sync.allEvents()
         } catch {
-            lastError = "all events read failed: \(error.localizedDescription)"
+            recordError("all events read failed", error)
             return []
         }
     }
@@ -618,9 +619,8 @@ final class SyncService {
         do {
             return .success(try await sync.allLinkedEvents())
         } catch {
-            let message = "linked events read failed: \(error.localizedDescription)"
-            lastError = message
-            return .failure(message: message)
+            recordError("linked events read failed", error)
+            return .failure(message: "linked events read failed: \(error.localizedDescription)")
         }
     }
 
@@ -632,7 +632,7 @@ final class SyncService {
         do {
             return Set(try await sync.linkedEndpoints(ofKind: kind).map(\.id))
         } catch {
-            lastError = "linked endpoints read failed: \(error.localizedDescription)"
+            recordError("linked endpoints read failed", error)
             return []
         }
     }
@@ -646,7 +646,7 @@ final class SyncService {
             let counts = try await sync.linkCounts(ofKind: kind)
             return Dictionary(uniqueKeysWithValues: counts.map { ($0.key.id, $0.value) })
         } catch {
-            lastError = "link counts read failed: \(error.localizedDescription)"
+            recordError("link counts read failed", error)
             return [:]
         }
     }
@@ -661,7 +661,7 @@ final class SyncService {
         do {
             return try await sync.recentlyLinkedEvents(limit: limit)
         } catch {
-            lastError = "recently linked read failed: \(error.localizedDescription)"
+            recordError("recently linked read failed", error)
             return []
         }
     }
@@ -686,7 +686,7 @@ final class SyncService {
                 limit: limit
             )
         } catch {
-            lastError = "recent events lookup failed: \(error.localizedDescription)"
+            recordError("recent events lookup failed", error)
             return []
         }
     }
@@ -702,9 +702,7 @@ final class SyncService {
             try await sync.prepareRecentEventsIndex()
             return .ready
         } catch {
-            Self.log.warning("recent events index warm-up failed", [
-                "error": error.localizedDescription
-            ])
+            Self.log.warning("recent events index warm-up failed", error.logContext())
             return .failed
         }
     }
@@ -739,7 +737,7 @@ final class SyncService {
         do {
             return try await sync.guides(matchingName: name)
         } catch {
-            lastError = "guide name lookup failed: \(error.localizedDescription)"
+            recordError("guide name lookup failed", error)
             return []
         }
     }
@@ -767,7 +765,7 @@ final class SyncService {
         do {
             return try await sync.allGuides()
         } catch {
-            lastError = "guides read failed: \(error.localizedDescription)"
+            recordError("guides read failed", error)
             return []
         }
     }
@@ -786,7 +784,7 @@ final class SyncService {
             }
             return result
         } catch {
-            lastError = "guide delta fetch failed: \(error.localizedDescription)"
+            recordError("guide delta fetch failed", error)
             return nil
         }
     }
@@ -798,7 +796,7 @@ final class SyncService {
         do {
             return try await sync.allPlaces()
         } catch {
-            lastError = "places read failed: \(error.localizedDescription)"
+            recordError("places read failed", error)
             return []
         }
     }
@@ -817,7 +815,7 @@ final class SyncService {
             }
             return result
         } catch {
-            lastError = "place delta fetch failed: \(error.localizedDescription)"
+            recordError("place delta fetch failed", error)
             return nil
         }
     }
@@ -893,7 +891,7 @@ final class SyncService {
         do {
             return try await sync.places(inGuide: guideID)
         } catch {
-            lastError = "places read failed: \(error.localizedDescription)"
+            recordError("places read failed", error)
             return []
         }
     }
@@ -926,7 +924,7 @@ final class SyncService {
         do {
             try sync.stampGuideViewed(at: SidecarKey(kind: .guide, id: uuid))
         } catch {
-            lastError = "stamp guide viewed failed: \(error.localizedDescription)"
+            recordError("stamp guide viewed failed", error)
         }
     }
 
@@ -938,7 +936,7 @@ final class SyncService {
         do {
             try sync.stampPlaceViewed(at: SidecarKey(kind: .place, id: uuid))
         } catch {
-            lastError = "stamp place viewed failed: \(error.localizedDescription)"
+            recordError("stamp place viewed failed", error)
         }
     }
 
@@ -956,7 +954,7 @@ final class SyncService {
         do {
             try sync.reorderPlaces(inGuide: guideID, orderedIDs: orderedIDs)
         } catch {
-            lastError = "reorder places failed: \(error.localizedDescription)"
+            recordError("reorder places failed", error)
         }
     }
 
@@ -998,7 +996,7 @@ final class SyncService {
         do {
             return try await contactsAdapter.fetchAll()
         } catch {
-            lastError = "fetchAll failed: \(error.localizedDescription)"
+            recordError("fetchAll failed", error)
             return []
         }
     }
@@ -1105,7 +1103,7 @@ final class SyncService {
         do {
             return try await sync.links(at: endpoint).filter { $0.deletedAt == nil }
         } catch {
-            lastError = "links read failed: \(error.localizedDescription)"
+            recordError("links read failed", error)
             return []
         }
     }
@@ -1136,8 +1134,11 @@ final class SyncService {
         link.endpointA == endpoint ? link.endpointB : link.endpointA
     }
 
-    func recordError(_ message: String) {
-        lastError = message
+    /// Notes a failure the caller won't see thrown. No app code outside this
+    /// class reads `lastError`, so the log line is the only visible record of it.
+    func recordError(_ operation: String, _ error: Error) {
+        lastError = "\(operation): \(error.localizedDescription)"
+        Self.log.error("sync operation failed", error.logContext(["op": operation]))
     }
 
     // MARK: - Favorites
@@ -1150,7 +1151,7 @@ final class SyncService {
         do {
             return try favoritesStore.loadAll()
         } catch {
-            lastError = "favorites read failed: \(error.localizedDescription)"
+            recordError("favorites read failed", error)
             return []
         }
     }
@@ -1185,7 +1186,7 @@ final class SyncService {
         do {
             return try favoritesStore.isFavorite(kind: kind, id: id)
         } catch {
-            lastError = "favorites lookup failed: \(error.localizedDescription)"
+            recordError("favorites lookup failed", error)
             return false
         }
     }

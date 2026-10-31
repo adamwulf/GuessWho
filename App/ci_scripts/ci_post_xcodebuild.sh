@@ -52,9 +52,27 @@ get_app_version() {
 # claims, but the keychain then refuses it with -34018. An installed TestFlight
 # app has no embedded profile, so this build log is the place to read it.
 # Prints only the profile's name and entitlements, never its certificates or
-# device list. Diagnostic only: nothing here may fail the build.
+# device list. Diagnostic only: call it with `|| true` so it can't fail the build.
+#
+# The export folder can hold an .ipa or .pkg rather than a bare .app, so unpack
+# those first. Use the export, not the archive: an archive may be signed before
+# export and so may not carry the distribution profile.
 log_signing_details() {
-    find "$1" -maxdepth 1 -name "*.app" | while read -r app_file; do
+    echo "Contents of $1:"
+    ls -la "$1"
+    unpacked=$(mktemp -d) || return 0
+    find "$1" -maxdepth 1 \( -name "*.ipa" -o -name "*.pkg" \) | while read -r export_file; do
+        case "$export_file" in
+            *.ipa) unzip -q "$export_file" -d "$unpacked/ipa" ;;
+            *.pkg) pkgutil --expand-full "$export_file" "$unpacked/pkg" ;;
+        esac
+    done
+    apps=$(find "$1" "$unpacked" -type d -name "*.app" -prune)
+    if [ -z "$apps" ]; then
+        echo "warning: no .app found in the export at $1"
+    fi
+    printf '%s\n' "$apps" | while read -r app_file; do
+        [ -n "$app_file" ] || continue
         echo "Signing details for $app_file"
         codesign -dvv "$app_file" 2>&1 | grep -E '^(Authority|TeamIdentifier)=' || true
         codesign -d --entitlements - --xml "$app_file" 2>/dev/null || true
@@ -73,6 +91,7 @@ log_signing_details() {
             fi
         done
     done
+    rm -rf "$unpacked"
 }
 
 # Next, automatically tag the build in Github
@@ -82,7 +101,7 @@ if [ "$CI_XCODEBUILD_EXIT_CODE" -eq 0 ]; then
     tag="build/$CI_BUILD_NUMBER"
 
     if [ -n "$CI_APP_STORE_SIGNED_APP_PATH" ] && [ -d "$CI_APP_STORE_SIGNED_APP_PATH" ]; then
-        log_signing_details "$CI_APP_STORE_SIGNED_APP_PATH"
+        log_signing_details "$CI_APP_STORE_SIGNED_APP_PATH" || true
     fi
 
     # GITHUB_TOKEN can be configured in github -> account settings -> developer settings -> personal access tokens -> fine grained token -> read/write access to code

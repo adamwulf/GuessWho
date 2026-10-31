@@ -265,9 +265,7 @@ final class NewContactCleanup {
         do {
             return try await repository.isBlankAndUntouched(id)
         } catch {
-            log.error("couldn't tell whether the new record is still blank — keeping it", [
-                "error": error.localizedDescription
-            ])
+            log.error("couldn't tell whether the new record is still blank — keeping it", error.logContext())
             return false
         }
     }
@@ -289,9 +287,7 @@ final class NewContactCleanup {
                 repository.removeContact(id: id)
                 log.notice("never-saved new record already gone from Contacts")
             } else {
-                log.error("couldn't delete the never-saved new record — keeping it", [
-                    "error": error.localizedDescription
-                ])
+                log.error("couldn't delete the never-saved new record — keeping it", error.logContext())
             }
         }
     }
