@@ -1,3 +1,4 @@
+import Contacts
 import Foundation
 import Testing
 @testable import GuessWhoSync
@@ -53,6 +54,47 @@ struct ErrorLogContextTests {
         #expect(context["underlyingCode"] == "1")
         #expect(context["errorCase"] == nil)
         #expect(!context.values.contains { $0.contains("private-file") })
+    }
+
+    @Test
+    func logCodesLeaveOutTheDescriptionThatNamesAFile() {
+        let underlying = NSError(domain: NSPOSIXErrorDomain, code: 2)
+        let error = NSError(domain: NSCocoaErrorDomain, code: NSFileReadNoSuchFileError, userInfo: [
+            NSUnderlyingErrorKey: underlying,
+            NSLocalizedDescriptionKey: "The file “Jane Doe headshot.jpg” couldn’t be opened.",
+        ])
+
+        let codes = error.logCodes(["bytes": "12"])
+
+        #expect(codes["bytes"] == "12")
+        #expect(codes["errorDomain"] == NSCocoaErrorDomain)
+        #expect(codes["errorCode"] == String(NSFileReadNoSuchFileError))
+        #expect(codes["underlyingDomain"] == NSPOSIXErrorDomain)
+        #expect(!codes.values.contains { $0.contains("Jane Doe") })
+    }
+
+    @Test
+    func contactSaveFailureLeavesTheRejectedContactOut() {
+        let contact = CNMutableContact()
+        contact.givenName = "Private"
+        contact.familyName = "Person"
+        contact.phoneNumbers = [CNLabeledValue(label: nil, value: CNPhoneNumber(stringValue: "555-0100"))]
+        let validation = NSError(domain: CNErrorDomain, code: 300)
+        let error = NSError(domain: CNErrorDomain, code: 300, userInfo: [
+            CNErrorUserInfoAffectedRecordsKey: [contact],
+            CNErrorUserInfoKeyPathsKey: ["givenName"],
+            CNErrorUserInfoValidationErrorsKey: [validation],
+        ])
+
+        let metadata = CNContactStoreAdapter.saveFailureMetadata(error)
+        let logged = metadata.values.map(\.description).joined(separator: " ")
+
+        #expect(!logged.contains("Private"))
+        #expect(!logged.contains("Person"))
+        #expect(!logged.contains("555-0100"))
+        #expect(metadata["userInfoKeys"]?.description.contains(CNErrorUserInfoAffectedRecordsKey) == true)
+        #expect(metadata["keyPaths"]?.description == "givenName")
+        #expect(metadata["validationErrors"]?.description == "\(CNErrorDomain)#300")
     }
 
     @Test

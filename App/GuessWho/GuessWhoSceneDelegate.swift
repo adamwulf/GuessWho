@@ -2796,7 +2796,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
             size: CGSize(width: 840, height: 660),
             phase: "diff",
             what: "confirm sheet",
-            metadata: ["contact": contact.displayName, "rows": rows.count]
+            metadata: ["contactID": matchID.logValue, "rows": rows.count]
         )
     }
 
@@ -3052,7 +3052,7 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         var issues: [String] = []
         var failedCount = 0
         var partialCount = 0
-        for (index, selection) in selections.enumerated() {
+        for selection in selections {
             // Reporting must use the roster identity, not the filtered payload:
             // a user may intentionally deselect Name while updating a contact.
             let trimmedName = selection.profile.fullName?
@@ -3108,8 +3108,11 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
                 Self.handoffLog.notice("TLS batch: imported", ["contactID": importedID.logValue])
             } catch {
                 failedCount += 1
-                // No contact exists yet, so identify the row by its batch position.
-                Self.handoffLog.error("TLS batch: import failed", error.logContext(["index": String(index)]))
+                // No contact exists yet, so identify the row by its roster position.
+                Self.handoffLog.error(
+                    "TLS batch: import failed",
+                    error.logContext(["index": String(selection.rosterIndex)])
+                )
                 issues.append("\(name): Contact was not imported: \(error.localizedDescription)")
             }
         }
@@ -3281,17 +3284,28 @@ final class GuessWhoSceneDelegate: UIResponder, UIWindowSceneDelegate {
         return out
     }
 
-    /// The decoded handoff payload for the log: the names of the fields it
-    /// carries, never their values, plus the photo's type and size. A nested
-    /// object's fields read as `contactInfo.emails`.
+    /// The decoded handoff payload for the log: the names of the fields that
+    /// hold something, never their values, plus the photo's type and size. A
+    /// nested object's fields read as `contactInfo.emails`. An empty field is left
+    /// out: the model encodes `emails: []` when the page showed no email.
     private static func payloadContext(_ profile: LinkedInProfile) -> [String: CustomStringConvertible] {
         var elided = profile
         elided.photo = nil
         let object = (try? JSONEncoder().encode(elided))
             .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+        func holdsValue(_ value: Any) -> Bool {
+            switch value {
+            case is NSNull: return false
+            case let string as String: return !string.isEmpty
+            case let array as [Any]: return !array.isEmpty
+            default: return true
+            }
+        }
         let fields = object?.flatMap { key, value -> [String] in
-            guard let nested = value as? [String: Any] else { return [key] }
-            return nested.keys.map { "\(key).\($0)" }
+            guard let nested = value as? [String: Any] else {
+                return holdsValue(value) ? [key] : []
+            }
+            return nested.filter { holdsValue($0.value) }.keys.map { "\(key).\($0)" }
         }
         return [
             "fields": fields?.sorted().joined(separator: ",") ?? "<encode failed>",

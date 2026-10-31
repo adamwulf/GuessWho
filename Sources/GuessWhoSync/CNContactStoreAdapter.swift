@@ -506,35 +506,49 @@ public actor CNContactStoreAdapter: ContactStoreProtocol {
     /// (which names the offending account or field — e.g. the keys behind a
     /// 134092 rejection) is captured alongside the top-level "Cocoa error
     /// <code>". One log line per level (top, then `underlying[0]`, `[1]`, …) for
-    /// independent grepping. The whole `userInfo` dict is dumped (no allowlist)
-    /// since the actionable key is often undocumented; file output escapes the
-    /// OS `<private>` redaction, so it lands in full.
+    /// independent grepping. `userInfo` is logged by key name only, because its
+    /// values can hold the rejected contact; see `saveFailureMetadata`.
     nonisolated static func logSaveFailure(_ error: Error, contactLocalID: String) {
         // Native swift-log metadata form (matches ContactChangeWatcher): this
         // package depends on swift-log directly, NOT GuessWhoLogging, so the
         // positional `[String: CustomStringConvertible]` convenience overload
         // isn't in scope here.
         let ns = error as NSError
-        saveLog.error("contact save failed", metadata: [
-            "localID": .string(contactLocalID),
-            "domain": .string(ns.domain),
-            "code": .stringConvertible(ns.code),
-            "localizedDescription": .string(ns.localizedDescription),
-            "userInfo": .string(String(describing: ns.userInfo)),
-        ])
+        var metadata = saveFailureMetadata(ns)
+        metadata["localID"] = .string(contactLocalID)
+        saveLog.error("contact save failed", metadata: metadata)
         var underlying = ns.userInfo[NSUnderlyingErrorKey] as? NSError
         var depth = 0
         while let u = underlying, depth < 5 {
-            saveLog.error("contact save underlying", metadata: [
-                "depth": .stringConvertible(depth),
-                "domain": .string(u.domain),
-                "code": .stringConvertible(u.code),
-                "localizedDescription": .string(u.localizedDescription),
-                "userInfo": .string(String(describing: u.userInfo)),
-            ])
+            var metadata = saveFailureMetadata(u)
+            metadata["depth"] = .stringConvertible(depth)
+            saveLog.error("contact save underlying", metadata: metadata)
             underlying = u.userInfo[NSUnderlyingErrorKey] as? NSError
             depth += 1
         }
+    }
+
+    /// What one level of a save error may put in the log. `userInfo` values stay
+    /// out: `CNErrorUserInfoAffectedRecordsKey` holds the whole contact, with its
+    /// name, phone numbers, and email addresses. The key names still show whether
+    /// an undocumented key such as `NSUnderlyingException` reached us, and the key
+    /// paths and validation codes name what Contacts rejected.
+    nonisolated static func saveFailureMetadata(_ error: NSError) -> Logger.Metadata {
+        var metadata: Logger.Metadata = [
+            "domain": .string(error.domain),
+            "code": .stringConvertible(error.code),
+            "localizedDescription": .string(error.localizedDescription),
+            "userInfoKeys": .string(error.userInfo.keys.sorted().joined(separator: ",")),
+        ]
+        if let keyPaths = error.userInfo[CNErrorUserInfoKeyPathsKey] as? [String] {
+            metadata["keyPaths"] = .string(keyPaths.joined(separator: ","))
+        }
+        if let validationErrors = error.userInfo[CNErrorUserInfoValidationErrorsKey] as? [NSError] {
+            metadata["validationErrors"] = .string(
+                validationErrors.map { "\($0.domain)#\($0.code)" }.joined(separator: ",")
+            )
+        }
+        return metadata
     }
 
     public func delete(localID: String) async throws {

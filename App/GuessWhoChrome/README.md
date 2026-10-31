@@ -117,7 +117,8 @@ extensions never auto-update.
   categories `app.linkedin-handoff` and `app.linkedin-handoff.chrome`. A
   healthy handoff logs `listening on loopback` (`port=57231`) at launch, then
   `handoff received` (`bytes=<N> origin=chrome-extension://…`), then the shared
-  `processing handoff payload` → `match:` → `diff:` lines.
+  `processing handoff payload` → `match: finished` → `presenting sheet`
+  (`phase=diff`) lines.
 
 ## Pack + upload to the Chrome Web Store
 

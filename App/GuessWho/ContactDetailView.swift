@@ -1363,7 +1363,7 @@ struct ContactDetailView: View {
             let data = try await item.loadTransferable(type: Data.self)
             await applyRawPhotoData(data, loadError: nil)
         } catch {
-            Self.photoLog.error("photo picker load failed", error.logContext())
+            Self.photoLog.error("photo picker load failed", error.logCodes())
             photoSaveError = error.localizedDescription
         }
     }
@@ -1409,7 +1409,7 @@ struct ContactDetailView: View {
     /// Photos, file selection, and drops all use the same non-destructive editor.
     private func applyRawPhotoData(_ rawData: Data?, loadError: Error?) async {
         guard let rawData else {
-            Self.photoLog.error("photo load returned no data", loadError?.logContext() ?? [:])
+            Self.photoLog.error("photo load returned no data", loadError?.logCodes() ?? [:])
             photoSaveError = loadError?.localizedDescription ?? "That photo couldn’t be loaded."
             return
         }

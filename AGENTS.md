@@ -299,7 +299,9 @@ exceptions: the share extension has no App Group to log into, so it uses
   payload (a real keychain `-34018` was lost this way). The context carries
   `error`, `errorDomain`, `errorCode`, an enum's `errorCase`, and the domain and
   code of an `NSUnderlyingErrorKey` error. A struct's own fields aren't captured,
-  so log a wrapper's `underlying` error directly.
+  so log a wrapper's `underlying` error directly. Never dump a whole `userInfo`,
+  because it can hold a whole contact. Use `error.logCodes()` for an error about a
+  file the user chose, because Foundation's description names the file.
 - **These helpers live in `GuessWhoSync`.** The Mail extension doesn't link it and
   logs `LoggedError.fingerprint` instead, so an error's text can't put a path or
   an address in its log. The Safari extension, `GuessWhoLogging`, and

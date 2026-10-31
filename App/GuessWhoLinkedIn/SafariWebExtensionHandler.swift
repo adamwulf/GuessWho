@@ -69,8 +69,8 @@ final class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
 
         // Log only the envelope shape, not the raw object: the final payload can
         // contain a base64 photo and profile PII, neither of which belongs in a
-        // low-level transport breadcrumb. The app logs a compact photo-elided
-        // decoded profile after handoff; web diagnostics are separately bounded.
+        // low-level transport breadcrumb. The app logs which fields arrived after
+        // handoff, never their values; web diagnostics are separately bounded.
         Self.log.notice("EXTENSION resolved App Group", ["id": Self.appGroupID])
         Self.log.notice("EXTENSION build", ["build": Self.buildDescription])
         Self.log.notice("native message received", ["shape": WebExtensionMessageCodec.messageShape(rawMessage)])

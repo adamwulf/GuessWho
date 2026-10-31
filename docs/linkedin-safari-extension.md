@@ -560,7 +560,7 @@ is visible in Console:
 
 - **Extension** — subsystem `com.milestonemade.guesswho.safari`, category
   `handoff`: `EXTENSION resolved App Group` (`id=…`), `park: writing` (`path=…`),
-  `park: wrote N bytes OK …`.
+  `park: wrote OK` (`bytes=… path=…`).
 - **App** — subsystem `com.milestonemade.guesswho`, category `linkedin-handoff`:
   `APP resolved App Group` (`id=…`), `read: looking for parked handoff` (`path=…`).
 
