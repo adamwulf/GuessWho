@@ -272,14 +272,17 @@ per contact, participate in idempotent replay, verify the saved state, and
 append agent activity only after a real write succeeds.
 
 The app preserves the full photo with an optional normalized crop for display.
-Setting a replacement through the CLI/MCP clears the previous crop. Photo reads
-return the original bytes. See [Profile photos](profile-photos.md).
+A new photo set through the CLI/MCP starts with no crop, and bytes already on the
+contact keep their own. Photo reads return the original bytes. See
+[Profile photos](profile-photos.md).
 
-Set, replace, and delete route through `ContactsRepository.setContactPhoto`,
-the app's own photo path. Before replacing or deleting an existing photo that
-path stores the current bytes in the one reserved `previousPhoto` blob slot.
-That reserved attachment remains excluded from `contacts_list_custom_fields`;
-there is no second backup or wire read for it.
+A contact can hold many photos, and these tools work on the current one. Set,
+replace, and delete route through `ContactsRepository.setContactPhoto`, the app's
+own photo path, so replacing a photo keeps the previous one on the contact, and
+`contacts_delete_photo` behaves like Remove Photo in the app: the contact shows no
+photo, and the photo stays in All Photos. Only Delete in All Photos removes a photo
+for good. There are no tools to list, choose, or delete individual photos, and the
+reserved photo cells remain excluded from `contacts_list_custom_fields`.
 
 ### Listing the whole book (`contacts_list`)
 

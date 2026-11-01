@@ -724,7 +724,7 @@ public enum MCPTool: String, CaseIterable, Sendable {
         case .contactsSetPhoto:
             return ToolMetadata(
                 name: rawValue,
-                description: "Set or replace a contact's photo from bounded base64 image data. JPEG, PNG, GIF, HEIC, and WebP are supported. Replacing a photo preserves the prior photo for the app's recovery behavior.",
+                description: "Set or replace a contact's current photo from bounded base64 image data. JPEG, PNG, GIF, HEIC, and WebP are supported. The photo it replaces stays on the contact, under All Photos in the app, and an image already on the contact is reused rather than stored twice.",
                 inputSchema: Self.schema([
                     "contactId": Self.string(Self.contactIdDoc),
                     "mediaType": Self.stringEnum(
@@ -736,7 +736,7 @@ public enum MCPTool: String, CaseIterable, Sendable {
         case .contactsDeletePhoto:
             return ToolMetadata(
                 name: rawValue,
-                description: "Delete a contact's current photo. If there is no photo, this succeeds without changing anything. Deleting a photo preserves the prior photo for the app's recovery behavior.",
+                description: "Remove a contact's current photo, so the contact shows no photo. The photo stays on the contact, under All Photos in the app, where it can be made current again or deleted for good. If there is no current photo, this succeeds without changing anything.",
                 inputSchema: Self.schema([
                     "contactId": Self.string(Self.contactIdDoc),
                     "idempotencyToken": Self.string(Self.idempotencyDoc),

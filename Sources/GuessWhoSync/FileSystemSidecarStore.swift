@@ -451,7 +451,7 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
     // kick off a download (best-effort) and still return nil, so a
     // referenced-but-not-yet-downloaded blob reads as "pending," NOT an error.
     // (Mirrors `read()`'s `.json` placeholder handling but returns nil rather
-    // than throwing — a missing previous-photo is benign.)
+    // than throwing, because a caller can do without one photo file.)
     public func readBlob(blobId: String, for key: SidecarKey) throws -> Data? {
         let url = blobURL(for: key, blobId: blobId)
         let fm = FileManager.default
@@ -543,14 +543,12 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
             // Recover the real `<id>.<blobId>.dat` name from a placeholder, or
             // take the name as-is for a materialized `.dat`.
             let realName: String
+            var isPlaceholder = false
             if fullName.hasSuffix(".dat") {
                 realName = fullName
             } else if let recovered = realBlobNameFromPlaceholder(fullName) {
-                let realURL = directory.appendingPathComponent(recovered)
-                // Surface the blob now so the orphan sweep counts it; kick off
-                // a download so a later read can succeed.
-                try? ubiquity.startDownloading(at: realURL)
                 realName = recovered
+                isPlaceholder = true
             } else {
                 continue
             }
@@ -559,10 +557,63 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
             let middle = realName.dropFirst(prefix.count).dropLast(".dat".count)
             let blobId = String(middle)
             guard !blobId.isEmpty else { continue }
+            // Surface the blob now so the orphan sweep counts it; kick off
+            // a download so a later read can succeed.
+            if isPlaceholder { try? ubiquity.startDownloading(at: directory.appendingPathComponent(realName)) }
             guard seen.insert(blobId).inserted else { continue }
             result.append(blobId)
         }
         return result
+    }
+
+    // `blobIds(for:)` lists placeholders too and starts their downloads, so a
+    // listed blob with no file at its real name is one still on its way.
+    public func pendingBlobIds(for key: SidecarKey) throws -> [String] {
+        try blobIds(for: key).filter {
+            !FileManager.default.fileExists(atPath: blobURL(for: key, blobId: $0).path)
+        }
+    }
+
+    public func blobPresence(blobId: String, for key: SidecarKey) throws -> SidecarBlobPresence {
+        let fm = FileManager.default
+        let url = blobURL(for: key, blobId: blobId)
+        if fm.fileExists(atPath: url.path) { return .local }
+        return fm.fileExists(atPath: placeholderURL(for: url).path) ? .placeholder : .missing
+    }
+
+    // A rename, so an older encrypted file keeps its bytes. An iCloud placeholder
+    // is never renamed: its format is private to the system.
+    public func moveBlob(blobId: String, from source: SidecarKey, to destination: SidecarKey) throws {
+        guard source != destination else { return }
+        // In a fixed order, so two opposite moves can't deadlock.
+        let (first, second) = source.id < destination.id ? (source, destination) : (destination, source)
+        try fileLocks.withLock(forKey: first) {
+            try fileLocks.withLock(forKey: second) {
+                let fm = FileManager.default
+                let sourceURL = blobURL(for: source, blobId: blobId)
+                let destinationURL = blobURL(for: destination, blobId: blobId)
+                guard fm.fileExists(atPath: sourceURL.path) else {
+                    guard fm.fileExists(atPath: placeholderURL(for: sourceURL).path) else { return }
+                    try? ubiquity.startDownloading(at: sourceURL)
+                    throw SidecarStoreError.notYetDownloaded(source)
+                }
+                var moveError: Error?
+                try coordinatedMove(key: source, from: sourceURL, to: destinationURL) { safeSource, safeDestination in
+                    do {
+                        // A blobId never names two different files, so a copy
+                        // already at the destination is this same photo.
+                        if fm.fileExists(atPath: safeDestination.path) {
+                            try fm.removeItem(at: safeSource)
+                        } else {
+                            try fm.moveItem(at: safeSource, to: safeDestination)
+                        }
+                    } catch {
+                        moveError = error
+                    }
+                }
+                if let moveError { throw moveError }
+            }
+        }
     }
 
     @_spi(ConflictReconcile)
@@ -940,6 +991,17 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
         }
     }
 
+    private func coordinatedMove(key: SidecarKey, from source: URL, to destination: URL,
+                                 _ body: @escaping (URL, URL) -> Void) throws {
+        guard coordinatesUbiquitousAccess else {
+            body(source, destination)
+            return
+        }
+        try runWithBusyHandling(key: key) { _ in
+            try self.fileCoordinator.coordinateMoving(from: source, to: destination, body)
+        }
+    }
+
     // Run `operation` on `key`'s coordinator queue with a per-attempt wait of
     // `perAttemptTimeout`. The operation is dispatched ONCE; we never re-issue.
     //
@@ -1057,9 +1119,35 @@ protocol SidecarFileCoordinating: AnyObject {
         options: NSFileCoordinator.WritingOptions,
         _ body: @escaping (URL) -> Void
     ) throws
+    func coordinateMoving(from source: URL, to destination: URL, _ body: @escaping (URL, URL) -> Void) throws
+}
+
+extension SidecarFileCoordinating {
+    // For test coordinators, which only count the single-file claims above.
+    func coordinateMoving(from source: URL, to destination: URL, _ body: @escaping (URL, URL) -> Void) throws {
+        body(source, destination)
+    }
 }
 
 private final class ProductionSidecarFileCoordinator: SidecarFileCoordinating {
+    func coordinateMoving(from source: URL, to destination: URL, _ body: @escaping (URL, URL) -> Void) throws {
+        let coordinator = NSFileCoordinator(filePresenter: nil)
+        var coordinationError: NSError?
+        coordinator.coordinate(
+            writingItemAt: source,
+            options: [.forMoving],
+            writingItemAt: destination,
+            options: [.forReplacing],
+            error: &coordinationError
+        ) { safeSource, safeDestination in
+            body(safeSource, safeDestination)
+            if FileManager.default.fileExists(atPath: safeDestination.path) {
+                coordinator.item(at: safeSource, didMoveTo: safeDestination)
+            }
+        }
+        if let coordinationError { throw coordinationError }
+    }
+
     func coordinateReading(at url: URL, _ body: @escaping (URL) -> Void) throws {
         let coordinator = NSFileCoordinator(filePresenter: nil)
         var coordinationError: NSError?

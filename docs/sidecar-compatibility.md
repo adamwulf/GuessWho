@@ -73,6 +73,19 @@ can't read: they report a photo load error, and the failed read writes nothing.
 Never change the marker bytes, or every file already written would read as an older
 encrypted one. See [Profile photos](profile-photos.md).
 
+**Contact photo cells.** Every stored photo now has a `contactPhoto` `.blob` cell, and
+`previousPhoto` is no longer written. An older build hides `contactPhoto` cells, since
+they're `.blob`, and preserves them like any other cell. But an older build still
+deletes a `.dat` when it overwrites `profilePhoto` or `previousPhoto`, so it can delete
+a file a `contactPhoto` cell still names. That photo then shows as a placeholder that
+never fills in, until someone deletes it.
+
+This is a real loss, because an older build keeps only one previous photo. Each replace
+on it overwrites `previousPhoto`, deleting that file. So the previous photo from before
+the update, and all but the latest photo replaced on that build, are gone for good. Only
+the latest survives, as the older build's `previousPhoto` copy, which a newer build lists
+as a photo of its own. Update every device.
+
 ## Why it holds — three legs
 
 The guarantee is not incidental; it stands on three independent properties.

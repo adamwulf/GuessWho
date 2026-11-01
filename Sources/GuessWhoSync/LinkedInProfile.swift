@@ -207,8 +207,7 @@ public struct BrowserImportPayload: Decodable, Sendable, Equatable {
 /// package-side entry point that owns the merge + save rules.
 ///
 /// `photo` routes through the contact-image write path (`setContactPhoto`), so
-/// replacing an existing photo automatically snapshots the replaced bytes into
-/// the single-slot previous-photo sidecar blob.
+/// replacing an existing photo automatically keeps it on the contact.
 public enum LinkedInField: String, Sendable, CaseIterable {
     case name, nickname, jobTitle, organization
     case emails, phones, websites, linkedInURL

@@ -118,7 +118,7 @@ public struct ContactsSetPhoto: CLIToolCommand {
 
     public static let configuration = CommandConfiguration(
         commandName: "set-photo",
-        abstract: "Set a contact's photo from image bytes on stdin.",
+        abstract: "Set a contact's current photo from image bytes on stdin.",
         discussion: """
             The image is read from stdin. Send the bytes in, or redirect a file:
 
@@ -126,6 +126,8 @@ public struct ContactsSetPhoto: CLIToolCommand {
               guesswho contacts set-photo <contact-id> < headshot.jpg
 
             JPEG, PNG, GIF, HEIC, or WebP, up to 180 KiB.
+
+            The photo it replaces stays on the contact, under All Photos in the app.
             """
     )
 

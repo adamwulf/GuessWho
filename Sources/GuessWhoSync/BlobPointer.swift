@@ -11,11 +11,11 @@ public enum BlobFieldExpectation: Sendable {
 /// a small JSON object — `{ "blobId", "contentType", "byteCount" }` — that
 /// points at a separate synced binary file (`root/<kind>/<id>.<blobId>.dat`),
 /// NOT the bytes themselves. This keeps the synced envelope JSON small while
-/// full-resolution binary payloads (e.g. a previous contact photo) live in the
+/// full-resolution binary payloads (e.g. a contact photo) live in the
 /// neighboring `.dat`.
 ///
-/// The pointer's `blobId` is minted fresh (a UUID string) per write, so a new
-/// snapshot never collides with an in-flight older `.dat` mid-sync.
+/// The pointer's `blobId` is minted fresh (a UUID string) per new file, so a new
+/// photo never collides with an in-flight older `.dat` mid-sync.
 public struct BlobPointer: Equatable, Sendable {
     public let blobId: String
     public let contentType: String

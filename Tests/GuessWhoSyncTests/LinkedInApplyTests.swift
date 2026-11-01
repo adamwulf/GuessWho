@@ -543,9 +543,9 @@ struct LinkedInApplyPhotoTests {
         }
     }
 
-    @Test func replacingExistingPhoto_snapshotsOldBytes() async throws {
+    @Test func replacingExistingPhoto_keepsOldBytes() async throws {
         let oldBytes = Data([0xFF, 0xD8, 0xFF, 0xAA])
-        let (repo, id, sync) = await makeRepo(
+        let (repo, id, _) = await makeRepo(
             Contact(localID: "T", givenName: "Ada", imageDataAvailable: true),
             seedPhoto: oldBytes
         )
@@ -553,31 +553,57 @@ struct LinkedInApplyPhotoTests {
         _ = try await repo.applyLinkedIn(
             profile: profile(photoBytes: newBytes), to: id, fields: [.photo]
         )
-        // New photo is live; the replaced bytes are the previous-photo blob.
+        // New photo is live; the replaced bytes are another photo on the contact.
         let live = try await repo.contactPhotoData(for: id, kind: .fullSize)
         #expect(live?.data == newBytes)
-        let key = try contactKey(repo, localID: "T")
-        #expect(try sync.blobFieldData(at: key, field: ContactsRepository.previousPhotoFieldName) == oldBytes)
+        let freshID = try #require(repo.contact(localID: "T")).contactID
+        let older = try #require(try await repo.contactPhotos(for: freshID).first { !$0.isCurrent })
+        #expect(try await repo.contactPhotoData(for: freshID, photoID: older.id)?.data == oldBytes)
     }
 
-    @Test func unchangedPhoto_reimportIsNoOp_noSnapshot() async throws {
-        let bytes = Data([0xFF, 0xD8, 0xFF, 0xCC])
-        let (repo, id, sync) = await makeRepo(
-            Contact(localID: "T", givenName: "Ada", imageDataAvailable: true),
-            seedPhoto: bytes
-        )
+    /// `repeatingTheCurrentPhotoWritesNothing` covers Contacts handing back
+    /// re-encoded bytes, which is when an import reaches the write path at all.
+    @Test func repeatedImport_addsNoPhoto() async throws {
+        let (repo, id, sync) = await makeRepo(Contact(localID: "T", givenName: "Ada"))
+        let bytes = Data([0xFF, 0xD8, 0xFF, 0xDD])
         _ = try await repo.applyLinkedIn(
             profile: profile(photoBytes: bytes), to: id, fields: [.photo]
         )
-        // Photo untouched, and — the point — NO previous-photo snapshot was
-        // taken: re-importing the same profile must not repoint the slot at a
-        // copy of the live photo.
-        let live = try await repo.contactPhotoData(for: id, kind: .fullSize)
-        #expect(live?.data == bytes)
-        if let guessWhoID = ContactID(contact: try #require(repo.contact(localID: "T"))).guessWhoID {
-            let key = SidecarKey(kind: .contact, id: guessWhoID)
-            #expect(try sync.fields(at: key).filter { $0.field == ContactsRepository.previousPhotoFieldName }.isEmpty)
-        }
+        let key = try contactKey(repo, localID: "T")
+        let photosBefore = try sync.storedContactPhotos(at: key).photos.count
+        let freshID = try #require(repo.contact(localID: "T")).contactID
+
+        _ = try await repo.applyLinkedIn(
+            profile: profile(photoBytes: bytes), to: freshID, fields: [.photo]
+        )
+
+        #expect(photosBefore == 1)
+        #expect(try sync.storedContactPhotos(at: key).photos.count == 1)
+    }
+
+    /// Contacts already holds these bytes: importing them stores no photo and
+    /// doesn't rewrite Contacts.
+    @Test func unchangedPhoto_reimportIsNoOp() async throws {
+        let bytes = Data([0xFF, 0xD8, 0xFF, 0xCC])
+        let store = PhotoFaultContactStore(contacts: [
+            Contact(localID: "T", givenName: "Ada", imageDataAvailable: true),
+        ])
+        await store.seedPhoto(bytes, for: "T")
+        let sync = GuessWhoSync(contacts: store, events: InMemoryEventStore(),
+                                sidecars: InMemorySidecarStore(), deviceID: "device-test")
+        let repo = ContactsRepository(contacts: store, sync: sync)
+        await repo.reload()
+        let id = try #require(repo.contact(localID: "T")).contactID
+
+        _ = try await repo.applyLinkedIn(
+            profile: profile(photoBytes: bytes), to: id, fields: [.photo]
+        )
+
+        #expect(await store.photoWriteCount == 0)
+        let freshID = try #require(repo.contact(localID: "T")).contactID
+        #expect(try await repo.contactPhotoData(for: freshID, kind: .fullSize)?.data == bytes)
+        // Only the photo Contacts holds, and nothing stored beside it.
+        #expect(try await repo.contactPhotos(for: freshID).map(\.isContactsOnly) == [true])
     }
 
     @Test func photoNotChosen_notApplied() async throws {

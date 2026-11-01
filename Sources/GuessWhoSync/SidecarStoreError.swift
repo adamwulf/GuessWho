@@ -20,6 +20,30 @@ public enum SidecarStoreError: Error, Equatable {
     case typeValueMismatch(expected: SidecarFieldType, got: JSONValue)
 }
 
+// These reach alerts, so they stay plain language. A rejected field value is the
+// user's data, so this leaves it out too.
+extension SidecarStoreError: LocalizedError {
+    public var errorDescription: String? {
+        switch self {
+        case .notYetDownloaded:
+            return "This is still downloading. Please try again in a moment."
+        case .timedOut:
+            return "Storage is busy. Please try again."
+        case .typeValueMismatch:
+            return "That value doesn’t fit this field."
+        }
+    }
+}
+
+extension Error {
+    /// `.timedOut` means the store stopped waiting, not that the operation failed. It
+    /// keeps running and can still land, so don't undo anything it depends on.
+    var isSidecarTimeout: Bool {
+        if let error = self as? SidecarStoreError, case .timedOut = error { return true }
+        return false
+    }
+}
+
 // `Error.logContext` reflects an enum error into the log. A rejected field value
 // is the user's data, so this leaves it out.
 extension SidecarStoreError: CustomDebugStringConvertible {

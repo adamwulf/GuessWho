@@ -290,6 +290,8 @@ public final class GuessWhoSync: @unchecked Sendable {
         func readBlob(blobId: String) throws -> Data? { try sidecars.readBlob(blobId: blobId, for: key) }
         func deleteBlob(blobId: String) throws { try sidecars.deleteBlob(blobId: blobId, for: key) }
         func blobIds() throws -> [String] { try sidecars.blobIds(for: key) }
+        func pendingBlobIds() throws -> [String] { try sidecars.pendingBlobIds(for: key) }
+        func blobPresence(blobId: String) throws -> SidecarBlobPresence { try sidecars.blobPresence(blobId: blobId, for: key) }
     }
 
     /// Run `body` holding `key`'s per-key lock, handing it the one
@@ -548,6 +550,8 @@ public final class GuessWhoSync: @unchecked Sendable {
     // (the orphan sweep is the cross-device backstop; delete-on-overwrite is
     // the same-device fast path). A FRESH blobId is minted per write so a new
     // snapshot never collides with an in-flight older `.dat` mid-sync.
+    //
+    // Contact photo fields keep every file instead: see GuessWhoSync+ContactPhotos.
 
     /// Async overload of `setBlobField(at:field:data:contentType:)` that hops
     /// the write to a background queue: it writes the full payload (photos run
@@ -586,6 +590,9 @@ public final class GuessWhoSync: @unchecked Sendable {
     /// new blobId and the OLD `.dat` is deleted (fast-path reclaim). Returns the
     /// new blobId. Throws `typeValueMismatch` if a same-named field of a
     /// different type already exists (a `.blob` slot can't overwrite a `.note`).
+    ///
+    /// A contact photo field never deletes: the superseded photo keeps a
+    /// `contactPhoto` cell, and a new `profilePhoto` gets one in the same write.
     @discardableResult
     public func setBlobField(
         at key: SidecarKey,
@@ -608,25 +615,9 @@ public final class GuessWhoSync: @unchecked Sendable {
         // Capture the superseded blobId (if any) to delete after the envelope
         // write commits the repoint.
         var supersededBlobId: String?
+        let keepsSuperseded = ContactPhotoCells.fieldNames.contains(field)
         try withKeyLocked(key) { ctx in
-            if let expectation {
-                let current = try ctx.read()?.fields.values.first { cell in
-                    guard cell.deletedAt == nil,
-                          case .object(let inner) = cell.value,
-                          inner[SidecarField.innerFieldKey] == .string(field) else { return false }
-                    return true
-                }
-                switch expectation {
-                case .absent:
-                    guard current == nil else { throw ContactPhotoEditError.photoChanged }
-                case .matching(let blobID):
-                    guard let current, case .object(let inner) = current.value,
-                          let value = inner[SidecarField.innerValueKey],
-                          BlobPointer.referencedBlobId(from: value) == blobID else {
-                        throw ContactPhotoEditError.photoChanged
-                    }
-                }
-            }
+            try checkExpectation(expectation, field: field, in: try ctx.read()?.fields ?? [:])
             // Write the bytes FIRST, but INSIDE the per-key lock (the only way to
             // reach `ctx.writeBlob`): the orphan sweep re-reads this key's
             // envelope under the same lock, so committing the `.dat` and the
@@ -641,9 +632,11 @@ public final class GuessWhoSync: @unchecked Sendable {
             var fields = existing?.fields ?? [:]
             let now = Date()
 
-            // Find a live same-named `.blob` cell to repoint (single slot).
+            // Find a live same-named `.blob` cell to repoint (single slot). Each
+            // `contactPhoto` cell belongs to one photo, so it is never a slot.
             let slot = fields.first { (_, cell) in
-                cell.deletedAt == nil
+                field != ContactsRepository.contactPhotoFieldName
+                    && cell.deletedAt == nil
                     && SidecarField.type(of: cell) == .blob
                     && {
                         if case .object(let inner) = cell.value,
@@ -660,7 +653,13 @@ public final class GuessWhoSync: @unchecked Sendable {
                    case .object(let oldPointer) = inner[SidecarField.innerValueKey] ?? .null,
                    case .string(let oldBlobId) = oldPointer[BlobPointer.blobIdKey] ?? .null,
                    oldBlobId != newBlobId {
-                    supersededBlobId = oldBlobId
+                    if keepsSuperseded {
+                        ContactPhotoCells.addLibraryCell(blobID: oldBlobId, value: .object(oldPointer),
+                                                         createdAt: slotCell.modifiedAt, stamp: slotCell.modifiedAt,
+                                                         deviceID: deviceID, to: &fields)
+                    } else {
+                        supersededBlobId = oldBlobId
+                    }
                 }
                 guard let newInner = SidecarField.makeInnerValueForEdit(
                     existingCell: slotCell,
@@ -691,8 +690,12 @@ public final class GuessWhoSync: @unchecked Sendable {
                     throw SidecarStoreError.typeValueMismatch(expected: .blob, got: pointer)
                 }
                 // A stable cell makes simultaneous first photo edits converge.
-                let id = field == ContactsRepository.profilePhotoFieldName
-                    ? "B473DB08-4B5B-42D2-991E-64C487E67C63" : UUID().uuidString
+                let id: String
+                switch field {
+                case ContactsRepository.profilePhotoFieldName: id = ContactPhotoCells.profileCellID
+                case ContactsRepository.contactPhotoFieldName: id = newBlobId.uppercased()
+                default: id = UUID().uuidString
+                }
                 let inner = SidecarField.makeInnerValue(
                     field: field,
                     type: .blob,
@@ -700,6 +703,10 @@ public final class GuessWhoSync: @unchecked Sendable {
                     createdAt: now
                 )
                 fields[id] = SidecarCell(value: inner, modifiedAt: now, modifiedBy: deviceID)
+            }
+            if field == ContactsRepository.profilePhotoFieldName {
+                ContactPhotoCells.addLibraryCell(blobID: newBlobId, value: pointer, createdAt: now, stamp: now,
+                                                 deviceID: deviceID, to: &fields)
             }
 
             let envelope = SidecarEnvelope(
@@ -721,6 +728,34 @@ public final class GuessWhoSync: @unchecked Sendable {
         }
 
         return newBlobId
+    }
+
+    /// A photo commit must still target the original its editor read.
+    func checkExpectation(_ expectation: BlobFieldExpectation?, field: String,
+                          in fields: [String: SidecarCell]) throws {
+        guard let expectation else { return }
+        let current = fields.values.first { cell in
+            guard cell.deletedAt == nil,
+                  case .object(let inner) = cell.value,
+                  inner[SidecarField.innerFieldKey] == .string(field) else { return false }
+            // A photo deleted elsewhere is no longer current, whatever the slot says.
+            if let value = inner[SidecarField.innerValueKey],
+               let blobID = BlobPointer.referencedBlobId(from: value),
+               ContactPhotoCells.isDeleted(blobID: blobID, in: fields) {
+                return false
+            }
+            return true
+        }
+        switch expectation {
+        case .absent:
+            guard current == nil else { throw ContactPhotoEditError.photoChanged }
+        case .matching(let blobID):
+            guard let current, case .object(let inner) = current.value,
+                  let value = inner[SidecarField.innerValueKey],
+                  BlobPointer.referencedBlobId(from: value) == blobID else {
+                throw ContactPhotoEditError.photoChanged
+            }
+        }
     }
 
     /// Read the bytes a single-slot `.blob` field named `field` on `key`
@@ -751,27 +786,34 @@ public final class GuessWhoSync: @unchecked Sendable {
     }
 
     /// Reads the original bytes and crop under one lock, so they always belong together.
-    func profilePhoto(at key: SidecarKey) throws -> (photo: ContactPhoto, pointer: BlobPointer)? {
+    /// A file with a placeholder here throws `.notYetDownloaded`, and one with no
+    /// placeholder either throws `MissingProfilePhotoFileError`.
+    func profilePhoto(at key: SidecarKey) throws -> (photo: ContactPhoto, pointer: BlobPointer, modifiedAt: Date)? {
         try withKeyLocked(key) { ctx in
             guard let envelope = try ctx.read() else { return nil }
             for (rawID, cell) in envelope.fields {
                 guard let id = UUID(uuidString: rawID), cell.deletedAt == nil,
                       let field = SidecarField.decode(id: id, from: cell),
                       field.field == ContactsRepository.profilePhotoFieldName, field.type == .blob,
-                      let pointer = BlobPointer(from: field.value) else { continue }
+                      let pointer = BlobPointer(from: field.value),
+                      !ContactPhotoCells.isDeleted(blobID: pointer.blobId, in: envelope.fields) else { continue }
                 let stored: Data?
                 do {
-                    stored = try ctx.readBlob(blobId: pointer.blobId)
+                    stored = try readPhotoFile(blobID: pointer.blobId, ctx: ctx)
                 } catch SidecarBlobCryptoError.cannotDecrypt {
-                    throw UnreadableProfilePhotoError(pointer: pointer)
+                    throw UnreadableProfilePhotoError(pointer: pointer, modifiedAt: field.modifiedAt)
                 }
                 guard let data = stored else {
+                    if try ctx.blobPresence(blobId: pointer.blobId) == .missing {
+                        throw MissingProfilePhotoFileError(pointer: pointer, modifiedAt: field.modifiedAt)
+                    }
                     throw SidecarStoreError.notYetDownloaded(key)
                 }
                 var photo = ContactPhoto(data: data, kind: .fullSize, crop: pointer.photoCrop)
                 photo.systemPhotoDigest = pointer.systemPhotoDigest
                 photo.blobID = pointer.blobId
-                return (photo, pointer)
+                photo.pointerRevision = "\(pointer.blobId)@\(SidecarISO8601.string(from: field.modifiedAt))"
+                return (photo, pointer, field.modifiedAt)
             }
             return nil
         }
@@ -790,6 +832,11 @@ public final class GuessWhoSync: @unchecked Sendable {
                     throw ContactPhotoEditError.photoChanged
                 }
                 let now = Date()
+                // No longer current, but still on the contact.
+                if let blobID = BlobPointer.referencedBlobId(from: value) {
+                    ContactPhotoCells.addLibraryCell(blobID: blobID, value: value, createdAt: cell.modifiedAt,
+                                                     stamp: cell.modifiedAt, deviceID: deviceID, to: &fields)
+                }
                 fields[id] = SidecarCell(value: cell.value, modifiedAt: now,
                                         modifiedBy: deviceID, deletedAt: now)
             }
@@ -800,11 +847,11 @@ public final class GuessWhoSync: @unchecked Sendable {
     // MARK: - Orphan blob sweep
     //
     // The envelope merge is whole-cell LWW, so a cross-device race — two
-    // devices each snapshot a DIFFERENT previous photo into the same single-slot
-    // `.blob` field — keeps one cell and silently drops the loser's pointer,
-    // leaving the loser's `.dat` on disk unreferenced. Delete-on-overwrite (in
-    // setBlobField) is the same-device fast path; this reference-counting sweep
-    // is the cross-device backstop.
+    // devices each write a DIFFERENT file into the same single-slot `.blob`
+    // field — keeps one cell and silently drops the loser's pointer, leaving the
+    // loser's `.dat` on disk unreferenced. Delete-on-overwrite (in setBlobField)
+    // is the same-device fast path; this reference-counting sweep is the
+    // cross-device backstop.
 
     /// Delete every `.dat` whose blobId is referenced by NO live (non-soft-
     /// deleted) `.blob` field across ALL keys.
@@ -1763,17 +1810,29 @@ public final class GuessWhoSync: @unchecked Sendable {
         var mergedLoserUUIDs: [String] = []
         var errors: [String] = []
         let merged = try withCaseDLocks(uuidsInSortedOrder: sortedUUIDs) { () throws -> SidecarEnvelope in
-            var folded = try sidecars.read(winnerKey)
-                ?? SidecarEnvelope(entityID: winner, fields: [:])
+            var folded = ContactPhotoCells.keepingCurrentPhotos(
+                of: try sidecars.read(winnerKey) ?? SidecarEnvelope(entityID: winner, fields: [:]),
+                deviceID: deviceID)
 
             for loser in losers {
                 let loserKey = SidecarKey(kind: .contact, id: loser)
+                // Like an envelope that hasn't downloaded, a loser's file that
+                // hasn't stops the merge before any write. Nothing is destroyed. This
+                // only runs again while the cached contact has no GuessWho ID.
+                let pending = try sidecars.pendingBlobIds(for: loserKey)
+                guard pending.isEmpty else {
+                    Self.saveLog.notice("contact identity merge waiting on undownloaded files", metadata: [
+                        "winner": .string(winner), "loser": .string(loser),
+                        "pendingFiles": .stringConvertible(pending.count),
+                    ])
+                    throw SidecarStoreError.notYetDownloaded(loserKey)
+                }
                 guard let loserEnvelope = try sidecars.read(loserKey) else { continue }
-                let rebased = SidecarEnvelope(
+                let rebased = ContactPhotoCells.keepingCurrentPhotos(of: SidecarEnvelope(
                     schemaVersion: loserEnvelope.schemaVersion,
                     entityID: winner,
                     fields: loserEnvelope.fields
-                )
+                ), deviceID: deviceID)
                 switch merge(folded, rebased) {
                 case .success(let next):
                     folded = next
@@ -1783,7 +1842,30 @@ public final class GuessWhoSync: @unchecked Sendable {
                 }
             }
 
-            try sidecars.write(folded, at: winnerKey)
+            // A file's name includes its key, and deleting the loser deletes the
+            // loser's files. Move them first, so the winner's cells can find them. On
+            // failure they go back, where the loser's cells still name them.
+            var moved: [(blobId: String, loser: SidecarKey)] = []
+            do {
+                for loser in losers {
+                    let loserKey = SidecarKey(kind: .contact, id: loser)
+                    for blobId in try sidecars.blobIds(for: loserKey) {
+                        try sidecars.moveBlob(blobId: blobId, from: loserKey, to: winnerKey)
+                        moved.append((blobId, loserKey))
+                    }
+                }
+            } catch {
+                moveBack(moved, from: winnerKey, after: error)
+                throw error
+            }
+            do {
+                try sidecars.write(folded, at: winnerKey)
+            } catch {
+                // After a timeout the winner's envelope can still land, and then it
+                // needs the files where they are.
+                if !error.isSidecarTimeout { moveBack(moved, from: winnerKey, after: error) }
+                throw error
+            }
             for loser in losers {
                 try sidecars.delete(SidecarKey(kind: .contact, id: loser))
             }
@@ -1817,6 +1899,23 @@ public final class GuessWhoSync: @unchecked Sendable {
             winnerUUID: winner,
             losers: losers
         )
+    }
+
+    /// Best-effort: a file that won't move back stays under the winner, where nothing
+    /// names it until a later merge. It isn't destroyed.
+    private func moveBack(_ moved: [(blobId: String, loser: SidecarKey)], from winnerKey: SidecarKey, after failure: Error) {
+        Self.saveLog.error("contact identity merge failed, moving files back", metadata: failure.logMetadata([
+            "winner": .string(winnerKey.id), "movedFiles": .stringConvertible(moved.count),
+        ]))
+        for file in moved {
+            do {
+                try sidecars.moveBlob(blobId: file.blobId, from: winnerKey, to: file.loser)
+            } catch {
+                Self.saveLog.error("contact identity merge couldn't move a file back", metadata: error.logMetadata([
+                    "winner": .string(winnerKey.id), "loser": .string(file.loser.id), "blobId": .string(file.blobId),
+                ]))
+            }
+        }
     }
 
     // §13.4 endpoint rewrite. Runs ONCE per reconcile pass, over the union of

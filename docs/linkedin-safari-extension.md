@@ -541,13 +541,12 @@ was reshaped from create-then-edit into the sheet below on 2026-07-26):
   import arrives unannounced from the browser, over whatever the user was
   reading — so it asks in a dialog and gives the screen back.
 - **Photo originals and cropping.** The app preserves the full imported bytes.
-  Importing a replacement clears any previous crop; the user can edit its crop
-  later in the contact photo menu. See [Profile photos](profile-photos.md).
+  An imported new photo starts with no crop; the user can edit its crop later in
+  the contact photo menu. See [Profile photos](profile-photos.md).
 - **Photo write path.** `.photo` routes through
   `ContactsRepository.setContactPhoto` inside `applyLinkedIn`: replacing an
-  existing photo first snapshots the replaced bytes into the single-slot
-  `previousPhoto` `.blob` (see the note at the end), and the write is skipped
-  entirely — no save, no snapshot — when the incoming bytes equal the current
+  existing photo keeps it on the contact, and bytes already on the contact are
+  reused. The write is skipped entirely when the incoming bytes equal the current
   photo (a re-import) or the payload's data URL doesn't decode.
 
 See [`plans/linkedin-match-diff-confirm.md`](../plans/linkedin-match-diff-confirm.md)
@@ -681,10 +680,7 @@ remains:
 See [`plans/linkedin-safari-extension.md`](../plans/linkedin-safari-extension.md)
 for the overall feature plan.
 
-**Built (2026-06-27):** the `.blob` sidecar field type + previous-photo
-snapshot. A `.blob` field stores a small pointer to a `.dat` neighbor file under
-the same iCloud root (see [Profile photos](profile-photos.md) for older encrypted
-files). The contact-image write path (`ContactsRepository.setContactPhoto`)
-snapshots the replaced photo into a single-slot `previousPhoto` `.blob`; a
-reference-counting `sweepOrphanBlobs()` reclaims unreferenced `.dat`s. v1
-guarantees capture only (no revert UI yet).
+**Replaced photos:** a `.blob` field stores a small pointer to a `.dat` neighbor
+file under the same iCloud root. The contact-image write path
+(`ContactsRepository.setContactPhoto`) keeps the replaced photo on the contact,
+where All Photos shows it. See [Profile photos](profile-photos.md).

@@ -56,7 +56,7 @@ struct HarnessInjectedFailure: Error, Equatable {
 ///      one-shot photo-write failure — the latter fires INSIDE
 ///      `setImageData(localID:imageData:)`, i.e. AFTER
 ///      `ContactsRepository.setContactPhoto` has already read the prior bytes
-///      and written the `previousPhoto` snapshot, which is the exact window a
+///      and stored them if only Contacts held them, which is the exact window a
 ///      parity test needs.
 ///
 /// The save ordinal counts EVERY `save(_:)` that crosses the boundary — a
@@ -127,7 +127,7 @@ actor RecordingContactStore: ContactStoreProtocol {
 
     /// Arm a one-shot photo-write failure. The next
     /// `setImageData(localID:imageData:)` throws `error` after the caller has
-    /// already snapshotted the prior image; the fault then disarms.
+    /// already kept the prior image; the fault then disarms.
     func failNextPhotoWrite(with error: Error? = nil) {
         pendingPhotoFailure = true
         pendingPhotoFailureError = error
@@ -589,9 +589,17 @@ struct MCPProductionFixture {
         try sync.fields(at: SidecarKey(kind: .contact, id: id))
     }
 
-    /// The `previousPhoto` snapshot bytes on disk, or nil if none was written.
-    func storedPreviousPhoto(forGuessWhoID id: String) throws -> Data? {
-        try sync.blobFieldData(at: SidecarKey(kind: .contact, id: id), field: "previousPhoto")
+    /// The bytes of every stored photo on the contact, through the repository's own
+    /// reads. A photo only Contacts holds isn't stored, so it isn't here.
+    func storedPhotos(forLocalID localID: String) async throws -> Set<Data> {
+        guard let id = contact(localID: localID)?.contactID else { return [] }
+        var stored: Set<Data> = []
+        for item in try await repository.contactPhotos(for: id) where !item.isContactsOnly {
+            if let photo = try await repository.contactPhotoData(for: id, photoID: item.id) {
+                stored.insert(photo.data)
+            }
+        }
+        return stored
     }
 
     /// The full-size photo bytes currently on the store record.

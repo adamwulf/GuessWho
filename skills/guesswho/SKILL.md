@@ -161,7 +161,7 @@ same folder. If a tool is unavailable in your version, update GuessWho.
 | Data | Command group | Notes |
 |---|---|---|
 | Contacts | `contacts` | Name, phones, emails, URLs, addresses, birthday, organization, and more. |
-| Photos | `contacts get-photo` / `set-photo` | JPEG, PNG, GIF, HEIC, or WebP. Max 180 KiB. `set-photo` reads the image from stdin — send bytes in (`cat headshot.jpg \| guesswho contacts set-photo <id>`) or redirect a file (`... set-photo <id> < headshot.jpg`). |
+| Photos | `contacts get-photo` / `set-photo` / `delete-photo` | JPEG, PNG, GIF, HEIC, or WebP. Max 180 KiB. `set-photo` reads the image from stdin — send bytes in (`cat headshot.jpg \| guesswho contacts set-photo <id>`) or redirect a file (`... set-photo <id> < headshot.jpg`). These work on the current photo. A photo `set-photo` replaces or `delete-photo` removes stays on the contact, under All Photos in the app. |
 | Notes | `contacts add-note` / `list-notes` | Private, dated notes about a contact. These are GuessWho notes, **not** the Apple contact note. |
 | Custom fields | `contacts set-custom-field` / `list-custom-fields` | Named values: text, multiline note, date, checkbox, or url (a web address). |
 | Organizations | `organizations` | A contact whose kind is `organization`. Lists members and departments. |

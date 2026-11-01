@@ -1403,10 +1403,22 @@ public final class ContactsRepository: NSObject {
         Self.failureLog.error("repository operation failed", metadata: error.logMetadata(["op": .string(operation)]))
     }
 
-    private var loadedPhotoPointers: [SidecarKey: JSONValue] = [:]
+    /// What a photo consumer last loaded for a contact, to tell when that went stale.
+    /// `modifiedAt` matters because choosing a photo again can leave the pointer identical.
+    private struct LoadedPhotoPointer: Equatable {
+        var pointer: JSONValue = .null
+        var modifiedAt: Date?
+        /// The file wasn't here, so the Contacts photo was shown. Its arrival counts too.
+        var fileMissing = false
+    }
+
+    private var loadedPhotoPointers: [SidecarKey: LoadedPhotoPointer] = [:]
     private var photoWrites: Set<String> = []
     private var systemPhotoWrites: Set<String> = []
     private let photoSources: ContactPhotoSourceTracker
+    /// Files a read found to be older encrypted ones this device can't open. Reading
+    /// is the only way to learn that, so `contactPhotos` reports it from here.
+    private var unreadablePhotoBlobIDs: Set<String> = []
 
     /// Lazily loads original contact photo bytes and optional normalized framing.
     ///
@@ -1424,30 +1436,58 @@ public final class ContactsRepository: NSObject {
     /// the bytes actually are. The app-side loader caches empty results, so
     /// photo-less books don't re-query the store on every scroll.
     public func contactPhotoData(for id: ContactID, kind: ContactPhotoKind) async throws -> ContactPhoto? {
+        try await readPhoto(for: id, kind: kind, marksPointerLoaded: true)
+    }
+
+    /// `marksPointerLoaded` is for a read whose result a consumer will show. The list
+    /// and a read before a write pass false: marking the pointer loaded there would
+    /// hide its change from `ContactPhotoLoader`, which still holds the old image.
+    private func readPhoto(for id: ContactID, kind: ContactPhotoKind, marksPointerLoaded: Bool) async throws -> ContactPhoto? {
         guard let contact = contact(id: id) else { return nil }
 
         do {
             var storedFileUnreadable = false
+            var missingFileBlobID: String?
             if let sync, let key = SidecarKey.forContact(contact) {
+                func markLoaded(_ loaded: LoadedPhotoPointer) {
+                    if marksPointerLoaded { loadedPhotoPointers[key] = loaded }
+                }
                 // Track pending reads so blob arrival refreshes visible placeholders.
-                if loadedPhotoPointers[key] == nil { loadedPhotoPointers[key] = .null }
+                if loadedPhotoPointers[key] == nil { markLoaded(LoadedPhotoPointer()) }
                 do {
                     let record = try await Task.detached(priority: .userInitiated) {
                         try sync.profilePhoto(at: key)
                     }.value
-                    loadedPhotoPointers[key] = record?.pointer.jsonValue ?? .null
+                    markLoaded(LoadedPhotoPointer(pointer: record?.pointer.jsonValue ?? .null,
+                                                  modifiedAt: record?.modifiedAt))
                     if let record {
+                        unreadablePhotoBlobIDs.remove(record.pointer.blobId)
                         return try await photoAfterCheckingSystemSource(record.photo, key: key, contact: contact)
                     }
                 } catch let unreadable as UnreadableProfilePhotoError {
                     // An older encrypted file this device can't open. Contacts
                     // has the photo, so show that instead of failing.
-                    loadedPhotoPointers[key] = unreadable.pointer.jsonValue
+                    markLoaded(LoadedPhotoPointer(pointer: unreadable.pointer.jsonValue,
+                                                  modifiedAt: unreadable.modifiedAt))
+                    unreadablePhotoBlobIDs.insert(unreadable.pointer.blobId)
                     storedFileUnreadable = true
+                } catch let missing as MissingProfilePhotoFileError {
+                    // Nothing says this file is coming, so don't blank a photo Contacts
+                    // has. Marked loaded, or every delivery would drop the loader's cache.
+                    markLoaded(LoadedPhotoPointer(pointer: missing.pointer.jsonValue,
+                                                  modifiedAt: missing.modifiedAt, fileMissing: true))
+                    Self.photoLog.notice("stored photo file missing, showing the Contacts photo", metadata: [
+                        "localID": .string(contact.localID), "blobId": .string(missing.pointer.blobId),
+                    ])
+                    missingFileBlobID = missing.pointer.blobId
                 }
             }
             var photo = try await systemPhoto(for: contact, kind: kind)
             photo?.storedFileUnreadable = storedFileUnreadable
+            if let missingFileBlobID {
+                photo?.blobID = missingFileBlobID
+                photo?.storedFileMissing = true
+            }
             return photo
         } catch ContactStoreError.contactNotFound(_) {
             return nil
@@ -1505,13 +1545,14 @@ public final class ContactsRepository: NSObject {
     }
 
     private func photoAfterCheckingSystemSource(_ photo: ContactPhoto, key: SidecarKey, contact: Contact) async throws -> ContactPhoto? {
-        guard let blobID = photo.blobID, !systemPhotoWrites.contains(contact.localID) else { return photo }
+        guard let blobID = photo.blobID, let revision = photo.pointerRevision,
+              !systemPhotoWrites.contains(contact.localID) else { return photo }
         let systemData = try await systemPhotoBytes(localID: contact.localID)
         let (original, observed) = await Task.detached(priority: .userInitiated) {
             (ContactPhotoSourceTracker.digest(photo.data), ContactPhotoSourceTracker.digest(systemData))
         }.value
         guard !systemPhotoWrites.contains(contact.localID) else { return photo }
-        if photoSources.usesSystemPhoto(key: key, original: original, blobID: blobID,
+        if photoSources.usesSystemPhoto(key: key, original: original, revision: revision,
                                        expected: photo.systemPhotoDigest, observed: observed) {
             // A read must not author a competing synced value: Contacts can arrive
             // before the matching preserved original/crop on another device.
@@ -1631,66 +1672,376 @@ public final class ContactsRepository: NSObject {
         ContactTimestamps.lastViewedKey,
     ]
 
-    /// Sets (or clears, with `nil`) the contact's photo bytes on its Contacts
-    /// record, addressed by the app-facing `ContactID`. Image bytes go through
-    /// the store's dedicated photo-write path (not `save`), then the one record
-    /// is re-read so its `imageDataAvailable` flag reflects the write. The app
-    /// is responsible for invalidating any cached decoded image afterwards.
-    /// Returns `false` when the id no longer resolves to a contact.
+    /// Sets (or clears, with `nil`) the contact's current photo, addressed by the
+    /// app-facing `ContactID`. Image bytes go through the store's dedicated
+    /// photo-write path (not `save`), then the one record is re-read so its
+    /// `imageDataAvailable` flag reflects the write. The app is responsible for
+    /// invalidating any cached decoded image afterwards. Returns `false` when the id
+    /// no longer resolves to a contact.
     ///
-    /// PREVIOUS-PHOTO SNAPSHOT: before overwriting an EXISTING photo, the current
-    /// bytes are captured into a single-slot "previous photo" so a replacement is
-    /// recoverable — a general rule on the contact-image write path, so every
-    /// caller that replaces a photo gets it for free. Best-effort: it never
-    /// blocks the actual photo write; a failure is logged, not thrown.
+    /// Changing the photo always keeps the previous one on the contact, a general
+    /// rule on this write path, so every caller gets it for free. Clearing keeps it
+    /// too: only `deleteContactPhoto` removes a photo. See docs/profile-photos.md.
     @discardableResult
     public func setContactPhoto(for id: ContactID, imageData: Data?) async throws -> Bool {
         try await setContactPhoto(for: id, imageData: imageData, crop: nil)
     }
 
+    /// With a `nil` crop, bytes already on the contact keep their own crop.
     @discardableResult
     public func setContactPhoto(for id: ContactID, imageData: Data?, crop: ContactPhotoCrop?) async throws -> Bool {
         if crop != nil, sync == nil { throw SidecarUnavailableError() }
         guard let localID = contact(id: id)?.localID else { return false }
         guard photoWrites.insert(localID).inserted else { throw ContactPhotoEditError.saveInProgress }
-        systemPhotoWrites.insert(localID)
-        defer {
-            photoWrites.remove(localID)
-            systemPhotoWrites.remove(localID)
-        }
-        var previousSystemData = try await contactsStore.loadImageData(localID: localID)
-        if previousSystemData == nil {
-            previousSystemData = try await contactsStore.loadThumbnailImageData(localID: localID)
-        }
+        defer { photoWrites.remove(localID) }
+        let previousSystemData = try await systemPhotoBytes(localID: localID)
         let key: SidecarKey?
         if sync != nil {
             key = SidecarKey(kind: .contact, id: try await resolveOrMintGuessWhoID(for: id))
         } else {
             key = nil
         }
-        await snapshotCurrentPhotoIfPresent(for: id, localID: localID)
+        let shown = await shownPhotoIfKnown(for: id)
+        // Only a stored photo can already be current, and then nothing is kept below,
+        // so returning here writes nothing at all. Contacts must still hold what the
+        // pointer says it does: choosing the photo again heals Contacts that drifted.
+        if let imageData, let sync, let key, case .stored = shown {
+            let match = try await Task.detached(priority: .userInitiated) {
+                try sync.contactPhotoMatching(imageData, at: key)
+            }.value
+            if let match, match.isCurrent, crop == nil || crop == match.pointer.photoCrop,
+               await photoDigest(previousSystemData) == match.pointer.systemPhotoDigest {
+                return true
+            }
+        }
+        let kept = await keepShownContactsPhoto(shown, key: key)
         Self.saveLog.notice("contact save requested", metadata: [
             "op": "setContactPhoto", "localID": .string(localID),
             "bytes": .stringConvertible(imageData?.count ?? 0),
         ])
-        try await contactsStore.setImageData(localID: localID, imageData: imageData)
-        do {
-            if let sync, let key {
-                if let imageData {
-                    let systemData = try await systemPhotoBytes(localID: localID)
-                    let observed = ContactPhotoSourceTracker.digest(systemData)
-                    try await sync.setBlobField(at: key, field: Self.profilePhotoFieldName,
-                                                data: imageData, contentType: Self.imageContentType(of: imageData),
-                                                photoCrop: crop, systemPhotoDigest: observed)
-                    photoSources.record(key: key, original: ContactPhotoSourceTracker.digest(imageData), observed: observed)
-                } else {
-                    try sync.removeProfilePhoto(at: key)
-                    photoSources.remove(key: key)
-                }
+        try await changeSystemPhoto(localID: localID, to: imageData, restoring: previousSystemData,
+                                    kept: kept, key: key) {
+            guard let sync, let key else { return }
+            guard let imageData else {
+                try await Task.detached(priority: .userInitiated) { try sync.removeProfilePhoto(at: key) }.value
+                self.photoSources.remove(key: key)
+                return
             }
+            let observed = try await self.systemPhotoDigest(localID: localID)
+            let choice: ContactPhotoCropChoice = crop.map { .exactly($0) } ?? .existingOrNone
+            try await Task.detached(priority: .userInitiated) {
+                try sync.storeContactPhoto(at: key, data: imageData, crop: choice, makeCurrent: true,
+                                           systemPhotoDigest: observed)
+            }.value
+            self.photoSources.record(key: key, original: await self.photoDigest(imageData), observed: observed)
+        }
+        return true
+    }
+
+    /// Reframes the photo that's showing without writing cropped bytes to Contacts.
+    /// A stored photo's file isn't touched. Bytes are written only for a first crop
+    /// of a photo only Contacts holds, or to adopt an external Contacts change, whose
+    /// stored original stays on the contact.
+    public func setContactPhotoCrop(for id: ContactID, crop: ContactPhotoCrop?, originalData: Data) async throws {
+        guard let sync else { throw SidecarUnavailableError() }
+        guard let localID = contact(id: id)?.localID else { throw ContactPhotoEditError.photoChanged }
+        guard photoWrites.insert(localID).inserted else { throw ContactPhotoEditError.saveInProgress }
+        defer { photoWrites.remove(localID) }
+        guard let photo = try await readPhoto(for: id, kind: .fullSize, marksPointerLoaded: false),
+              photo.data == originalData else { throw ContactPhotoEditError.photoChanged }
+        // These bytes are Contacts' copy of a file this device can't open, so
+        // the original isn't here to frame.
+        guard !photo.storedFileUnreadable else { throw ContactPhotoEditError.storedPhotoUnreadable }
+        let guessWhoID = try await resolveOrMintGuessWhoID(for: id)
+        let key = SidecarKey(kind: .contact, id: guessWhoID)
+        let observed = try await systemPhotoDigest(localID: localID)
+        let expected = photo.systemPhotoDigest ?? observed
+        if let blobID = photo.blobID, !photo.usesSystemPhoto, !photo.storedFileMissing {
+            try await Task.detached(priority: .userInitiated) {
+                try sync.setCurrentContactPhotoCrop(at: key, blobID: blobID, crop: crop, systemPhotoDigest: expected)
+            }.value
+        } else {
+            let expectation: BlobFieldExpectation = photo.blobID.map { .matching($0) } ?? .absent
+            try await Task.detached(priority: .userInitiated) {
+                try sync.storeContactPhoto(at: key, data: photo.data, crop: .exactly(crop), makeCurrent: true,
+                                           systemPhotoDigest: expected, expectation: expectation)
+            }.value
+        }
+        photoSources.record(key: key, original: await photoDigest(photo.data), observed: observed)
+        await refreshContact(localID: localID)
+    }
+
+    /// Every photo on the contact, newest first, with the one showing marked.
+    /// Includes the photo only Contacts holds, when no stored photo stands for it.
+    /// Spotting an external Contacts change takes the current photo's bytes and
+    /// Contacts' own. No other photo's bytes are read. A failure reading those doesn't
+    /// hide the rest of the list, which only needs pointers: that photo's own read
+    /// reports it.
+    public func contactPhotos(for id: ContactID) async throws -> [ContactPhotoItem] {
+        guard let contact = contact(id: id) else { return [] }
+        let shown: ShownPhoto
+        var shownFailure: Error?
+        do {
+            shown = try await shownPhoto(for: id)
         } catch {
-            // Contacts and file storage cannot share a transaction. Restore the system
-            // photo if committing the preserved original/crop fails.
+            Self.photoLog.error("current photo read failed while listing", metadata: error.logMetadata([
+                "localID": .string(contact.localID),
+            ]))
+            shown = .stored
+            shownFailure = error
+        }
+        var items: [ContactPhotoItem] = []
+        if case .contacts = shown {
+            items.append(ContactPhotoItem(id: ContactPhotoItem.contactsPhotoID, isCurrent: true, crop: nil,
+                                          addedAt: nil, isAvailable: true))
+        }
+        guard let sync, let key = SidecarKey.forContact(contact) else {
+            if let shownFailure { throw shownFailure }
+            return items
+        }
+        let stored = try await Task.detached(priority: .userInitiated) {
+            try sync.storedContactPhotos(at: key)
+        }.value
+        // With nothing stored to list, an empty list would wrongly say there are no photos.
+        if let shownFailure, stored.photos.isEmpty { throw shownFailure }
+        let currentID = shown.isStoredPhoto ? stored.current?.blobId : nil
+        let sorted = stored.photos.sorted { first, second in
+            if first.addedAt != second.addedAt { return first.addedAt > second.addedAt }
+            let firstIsCurrent = first.pointer.blobId == currentID
+            if firstIsCurrent != (second.pointer.blobId == currentID) { return firstIsCurrent }
+            return first.pointer.blobId < second.pointer.blobId
+        }
+        return items + sorted.map { photo in
+            ContactPhotoItem(id: photo.pointer.blobId, isCurrent: photo.pointer.blobId == currentID,
+                             crop: photo.pointer.photoCrop, addedAt: photo.addedAt,
+                             isAvailable: !unreadablePhotoBlobIDs.contains(photo.pointer.blobId))
+        }
+    }
+
+    /// One photo's full bytes and crop. Returns nil while its file is downloading,
+    /// which this starts, and throws `.storedPhotoUnreadable` for an older encrypted
+    /// file this device can't open, which also marks the item unavailable. A store
+    /// timeout stays `.timedOut`, and any other failed read throws `.photoReadFailed`.
+    public func contactPhotoData(for id: ContactID, photoID: String) async throws -> ContactPhoto? {
+        guard let contact = contact(id: id) else { return nil }
+        do {
+            if photoID == ContactPhotoItem.contactsPhotoID {
+                return try await systemPhoto(for: contact, kind: .fullSize)
+            }
+            guard let sync, let key = SidecarKey.forContact(contact) else { return nil }
+            let photo = try await Task.detached(priority: .userInitiated) {
+                try sync.storedContactPhoto(at: key, blobID: photoID)
+            }.value
+            if photo != nil { unreadablePhotoBlobIDs.remove(photoID) }
+            return photo
+        } catch ContactStoreError.contactNotFound(_) {
+            return nil
+        } catch SidecarBlobCryptoError.cannotDecrypt {
+            unreadablePhotoBlobIDs.insert(photoID)
+            throw ContactPhotoEditError.storedPhotoUnreadable
+        }
+    }
+
+    /// Adds a photo to the contact without changing the current one, unless the
+    /// contact shows no photo. Bytes already on the contact are reused.
+    public func addContactPhoto(for id: ContactID, imageData: Data, crop: ContactPhotoCrop?) async throws {
+        guard let sync else { throw SidecarUnavailableError() }
+        guard let localID = contact(id: id)?.localID else { throw ContactPhotoEditError.photoListChanged }
+        if case .none = try await shownPhoto(for: id) {
+            try await setContactPhoto(for: id, imageData: imageData, crop: crop)
+            return
+        }
+        guard photoWrites.insert(localID).inserted else { throw ContactPhotoEditError.saveInProgress }
+        defer { photoWrites.remove(localID) }
+        let key = SidecarKey(kind: .contact, id: try await resolveOrMintGuessWhoID(for: id))
+        let choice: ContactPhotoCropChoice = crop.map { .exactly($0) } ?? .existingOrNone
+        try await Task.detached(priority: .userInitiated) {
+            try sync.storeContactPhoto(at: key, data: imageData, crop: choice, makeCurrent: false,
+                                       systemPhotoDigest: nil)
+        }.value
+        await refreshContact(localID: localID)
+    }
+
+    /// Makes a photo already on the contact the current one, with its own crop,
+    /// and writes it to Contacts. Keeps the photo it replaces.
+    public func setCurrentContactPhoto(for id: ContactID, photoID: String) async throws {
+        // The photo only Contacts holds is only ever listed as current.
+        guard photoID != ContactPhotoItem.contactsPhotoID else { return }
+        guard let sync else { throw SidecarUnavailableError() }
+        guard let localID = contact(id: id)?.localID else { throw ContactPhotoEditError.photoListChanged }
+        guard photoWrites.insert(localID).inserted else { throw ContactPhotoEditError.saveInProgress }
+        defer { photoWrites.remove(localID) }
+        let key = SidecarKey(kind: .contact, id: try await resolveOrMintGuessWhoID(for: id))
+        let stored = try await Task.detached(priority: .userInitiated) {
+            try sync.storedContactPhotos(at: key)
+        }.value
+        guard stored.photos.contains(where: { $0.pointer.blobId == photoID }) else {
+            throw ContactPhotoEditError.photoListChanged
+        }
+        guard let chosen = try await contactPhotoData(for: id, photoID: photoID) else {
+            throw ContactPhotoEditError.photoPending
+        }
+        let shown = await shownPhotoIfKnown(for: id)
+        let previousSystemData = try await systemPhotoBytes(localID: localID)
+        if case .stored = shown, stored.current?.blobId == photoID,
+           await photoDigest(previousSystemData) == stored.current?.systemPhotoDigest {
+            return
+        }
+        let kept = await keepShownContactsPhoto(shown, key: key)
+        Self.saveLog.notice("contact save requested", metadata: [
+            "op": "setCurrentContactPhoto", "localID": .string(localID),
+            "bytes": .stringConvertible(chosen.data.count),
+        ])
+        try await changeSystemPhoto(localID: localID, to: chosen.data, restoring: previousSystemData,
+                                    kept: kept, key: key) {
+            let observed = try await self.systemPhotoDigest(localID: localID)
+            try await Task.detached(priority: .userInitiated) {
+                try sync.setCurrentContactPhoto(at: key, blobID: photoID, systemPhotoDigest: observed)
+            }.value
+            self.photoSources.record(key: key, original: await self.photoDigest(chosen.data), observed: observed)
+        }
+    }
+
+    /// Removes a photo for good, on every device. Deleting the photo that's showing
+    /// clears it from Contacts too, and no other photo becomes current on its own.
+    /// Throws `.photoPending` and changes nothing while its file is still downloading,
+    /// which this starts. A file that's truly missing doesn't stop the delete, so a
+    /// photo stuck waiting for one can always be cleared.
+    public func deleteContactPhoto(for id: ContactID, photoID: String) async throws {
+        guard let contact = contact(id: id) else { throw ContactPhotoEditError.photoListChanged }
+        let localID = contact.localID
+        guard photoWrites.insert(localID).inserted else { throw ContactPhotoEditError.saveInProgress }
+        defer { photoWrites.remove(localID) }
+        let shown = try await shownPhoto(for: id)
+        if photoID == ContactPhotoItem.contactsPhotoID {
+            guard case .contacts = shown else { throw ContactPhotoEditError.photoListChanged }
+            let previousSystemData = try await systemPhotoBytes(localID: localID)
+            Self.saveLog.notice("contact save requested", metadata: [
+                "op": "deleteContactPhoto", "localID": .string(localID), "bytes": "0",
+            ])
+            try await changeSystemPhoto(localID: localID, to: nil, restoring: previousSystemData,
+                                        kept: nil, key: nil) {}
+            return
+        }
+        guard let sync else { throw SidecarUnavailableError() }
+        guard let key = SidecarKey.forContact(contact) else { throw ContactPhotoEditError.photoListChanged }
+        // Another device may still read an older encrypted file, so it stays. A read
+        // that fails can't rule that out, so it refuses too.
+        _ = try await contactPhotoData(for: id, photoID: photoID)
+        // Before clearing Contacts, so a refusal leaves everything as it was.
+        let isPending = try await Task.detached(priority: .userInitiated) {
+            try sync.isContactPhotoFilePending(at: key, blobID: photoID)
+        }.value
+        guard !isPending else { throw ContactPhotoEditError.photoPending }
+        let stored = try await Task.detached(priority: .userInitiated) {
+            try sync.storedContactPhotos(at: key)
+        }.value
+        let delete = { @Sendable in try sync.deleteContactPhoto(at: key, blobID: photoID) }
+        if shown.isStoredPhoto, stored.current?.blobId == photoID {
+            let previousSystemData = try await systemPhotoBytes(localID: localID)
+            Self.saveLog.notice("contact save requested", metadata: [
+                "op": "deleteContactPhoto", "localID": .string(localID), "bytes": "0",
+            ])
+            try await changeSystemPhoto(localID: localID, to: nil, restoring: previousSystemData,
+                                        kept: nil, key: key) {
+                try await Task.detached(priority: .userInitiated, operation: delete).value
+                self.photoSources.remove(key: key)
+            }
+        } else {
+            try await Task.detached(priority: .userInitiated, operation: delete).value
+            await refreshContact(localID: localID)
+        }
+    }
+
+    /// What the contact shows right now.
+    private enum ShownPhoto {
+        case none
+        /// Contacts' own bytes, which no stored photo stands for.
+        case contacts(Data)
+        /// The `profilePhoto` cell's photo, even while its file is downloading or
+        /// can't be read here.
+        case stored
+        /// The `profilePhoto` cell's photo, with Contacts' bytes showing because its
+        /// file isn't here. It may be gone for good, so those bytes are worth keeping.
+        case storedFileMissing(contactsCopy: Data)
+        case unknown
+
+        var isStoredPhoto: Bool {
+            switch self {
+            case .stored, .storedFileMissing: return true
+            case .none, .contacts, .unknown: return false
+            }
+        }
+    }
+
+    private func shownPhoto(for id: ContactID) async throws -> ShownPhoto {
+        do {
+            guard let photo = try await readPhoto(for: id, kind: .fullSize, marksPointerLoaded: false) else {
+                return .none
+            }
+            if photo.storedFileMissing { return .storedFileMissing(contactsCopy: photo.data) }
+            if photo.usesSystemPhoto { return .contacts(photo.data) }
+            return photo.blobID != nil || photo.storedFileUnreadable ? .stored : .contacts(photo.data)
+        } catch SidecarStoreError.notYetDownloaded {
+            return .stored
+        }
+    }
+
+    /// For a change that goes ahead anyway when this can't be determined.
+    private func shownPhotoIfKnown(for id: ContactID) async -> ShownPhoto {
+        do {
+            return try await shownPhoto(for: id)
+        } catch {
+            recordFailure("reading the contact's photo before a change failed", error)
+            return .unknown
+        }
+    }
+
+    /// A photo only Contacts holds would be lost when Contacts is overwritten, so it
+    /// becomes a stored photo first. Best-effort: this never blocks the change. Returns
+    /// its blob ID when this stored a new photo, so a failed change can undo it.
+    private func keepShownContactsPhoto(_ shown: ShownPhoto, key: SidecarKey?) async -> String? {
+        let data: Data
+        switch shown {
+        case .contacts(let bytes), .storedFileMissing(let bytes): data = bytes
+        case .none, .stored, .unknown: return nil
+        }
+        guard let sync, let key, !data.isEmpty else { return nil }
+        do {
+            let write = try await Task.detached(priority: .userInitiated) {
+                try sync.storeContactPhoto(at: key, data: data, crop: .existingOrNone, makeCurrent: false,
+                                           systemPhotoDigest: nil)
+            }.value
+            return write.isNew ? write.pointer.blobId : nil
+        } catch {
+            recordFailure("keeping the Contacts photo failed", error)
+            return nil
+        }
+    }
+
+    /// Writes Contacts, then commits. The two can't share a transaction, so a failed
+    /// commit restores the photo Contacts had. Either failure also removes `kept`,
+    /// because Contacts still holds those bytes. If the restore fails it doesn't,
+    /// because then this is the only copy left.
+    private func changeSystemPhoto(
+        localID: String,
+        to imageData: Data?,
+        restoring previousSystemData: Data?,
+        kept: String?,
+        key: SidecarKey?,
+        commit: () async throws -> Void
+    ) async throws {
+        systemPhotoWrites.insert(localID)
+        defer { systemPhotoWrites.remove(localID) }
+        do {
+            try await contactsStore.setImageData(localID: localID, imageData: imageData)
+        } catch {
+            await discardKeptPhoto(kept, key: key)
+            throw error
+        }
+        do {
+            try await commit()
+        } catch {
             Self.saveLog.error("contact photo commit failed, restoring previous photo",
                                metadata: error.logMetadata(["localID": .string(localID)]))
             do {
@@ -1702,104 +2053,59 @@ public final class ContactsRepository: NSObject {
                 throw ContactPhotoEditError.restoreFailed(save: error.localizedDescription,
                                                          restore: restoreError.localizedDescription)
             }
+            await discardKeptPhoto(kept, key: key)
             await refreshContact(localID: localID)
             throw error
         }
         await refreshContact(localID: localID)
-        return true
     }
 
-    /// Reframes the preserved original without writing cropped bytes to Contacts.
-    public func setContactPhotoCrop(for id: ContactID, crop: ContactPhotoCrop?, originalData: Data) async throws {
-        guard let sync else { throw SidecarUnavailableError() }
-        guard let localID = contact(id: id)?.localID else { throw ContactPhotoEditError.photoChanged }
-        guard photoWrites.insert(localID).inserted else { throw ContactPhotoEditError.saveInProgress }
-        defer { photoWrites.remove(localID) }
-        guard let photo = try await contactPhotoData(for: id, kind: .fullSize),
-              photo.data == originalData else { throw ContactPhotoEditError.photoChanged }
-        // Replacing the slot deletes its file, and another device may still be able
-        // to read that file, or this one once its key syncs. Keep it.
-        guard !photo.storedFileUnreadable else { throw ContactPhotoEditError.storedPhotoUnreadable }
-        let guessWhoID = try await resolveOrMintGuessWhoID(for: id)
-        let key = SidecarKey(kind: .contact, id: guessWhoID)
-        let systemData = try await systemPhotoBytes(localID: localID)
-        let observed = ContactPhotoSourceTracker.digest(systemData)
-        if photo.usesSystemPhoto {
-            // Keep the ignored full original recoverable when explicitly adopting
-            // an external image. The active-pointer precondition below still applies.
-            guard let previous = try sync.profilePhoto(at: key),
-                  previous.photo.blobID == photo.blobID else { throw ContactPhotoEditError.photoChanged }
-            try await sync.setBlobField(at: key, field: Self.previousPhotoFieldName,
-                                        data: previous.photo.data,
-                                        contentType: Self.imageContentType(of: previous.photo.data))
-        }
-        try await sync.setBlobField(at: key,
-                                    field: Self.profilePhotoFieldName, data: photo.data,
-                                    contentType: Self.imageContentType(of: photo.data), photoCrop: crop,
-                                    systemPhotoDigest: photo.systemPhotoDigest ?? observed,
-                                    expectation: photo.blobID.map { .matching($0) } ?? .absent)
-        photoSources.record(key: key, original: ContactPhotoSourceTracker.digest(photo.data), observed: observed)
-        await refreshContact(localID: localID)
-    }
-
-    /// Read-before-write: if the contact currently HAS a photo, snapshot those
-    /// bytes into a single-slot `previousPhoto` `.blob` before the caller
-    /// overwrites them. No current photo → snapshot nothing. The snapshot is a
-    /// sidecar write, so a nil engine silently skips it — the photo write still
-    /// proceeds.
-    ///
-    /// Resolving the GuessWho UUID can MINT one for a previously-unreconciled
-    /// contact (the same resolve-or-mint path the other sidecar writes use), so
-    /// the cache is refreshed if that happens.
-    private func snapshotCurrentPhotoIfPresent(for id: ContactID, localID: String) async {
-        guard let sync else { return }
+    private func discardKeptPhoto(_ blobID: String?, key: SidecarKey?) async {
+        guard let sync, let key, let blobID else { return }
         do {
-            // Read the CURRENT full-size bytes that are about to be replaced.
-            guard let currentBytes = try await contactPhotoData(for: id, kind: .fullSize)?.data,
-                  !currentBytes.isEmpty else { return }
-
-            let minted = id.guessWhoID == nil
-            let guessWhoID = try await resolveOrMintGuessWhoID(for: id)
-            let key = SidecarKey(kind: .contact, id: guessWhoID)
-            // Single-slot upsert: repoints the slot and reclaims the prior
-            // `.dat` (orphan sweep is the cross-device backstop). Awaits the
-            // engine's background-hop overload — writing a full-size photo
-            // must not stall the main actor mid-import.
-            _ = try await sync.setBlobField(
-                at: key,
-                field: Self.previousPhotoFieldName,
-                data: currentBytes,
-                contentType: Self.imageContentType(of: currentBytes)
-            )
-            await refreshCacheIfMinted(minted, localID: localID)
+            try await Task.detached(priority: .userInitiated) {
+                try sync.deleteContactPhoto(at: key, blobID: blobID)
+            }.value
         } catch {
-            // Best-effort: the snapshot must never block the photo write.
-            recordFailure("previous-photo snapshot failed", error)
+            Self.saveLog.error("kept contact photo could not be undone",
+                               metadata: error.logMetadata(["id": .string(key.id), "blobId": .string(blobID)]))
         }
     }
 
-    /// The single-slot field name the previous-photo snapshot lives under. An
-    /// INTERNAL identifier, NOT a display string: `fields(for:)` excludes its
-    /// `.blob` field from the user-visible custom-fields list, so the raw
-    /// "previousPhoto" token never reaches the UI. A future "previous photo"
-    /// feature would render its own plain-language label and read the bytes via
-    /// `GuessWhoSync.blobFieldData`, not surface this name. v1 only guarantees
-    /// capture.
+    private func systemPhotoDigest(localID: String) async throws -> String {
+        await photoDigest(try await systemPhotoBytes(localID: localID))
+    }
+
+    private func photoDigest(_ data: Data?) async -> String {
+        await Task.detached(priority: .userInitiated) { ContactPhotoSourceTracker.digest(data) }.value
+    }
+
+    // INTERNAL identifiers, NOT display strings: `fields(for:)` excludes `.blob`
+    // fields from the user-visible custom-fields list, so these tokens never reach
+    // the UI.
+
+    /// The fixed cell naming the current photo. Holds a copy of its pointer.
     nonisolated static let profilePhotoFieldName = "profilePhoto"
 
-    static let previousPhotoFieldName = "previousPhoto"
+    /// Every stored photo has one of these cells, keyed by its blobId.
+    nonisolated static let contactPhotoFieldName = "contactPhoto"
+
+    /// The single previous photo older builds kept. A live one is just another photo
+    /// on the contact. This build reads it and never writes it, apart from deleting it.
+    nonisolated static let previousPhotoFieldName = "previousPhoto"
 
     /// Field NAMES that external writers (the CLI/MCP write tools, imports)
     /// must never create or replace via the upsert-by-name path. The upsert
     /// REPLACES an existing same-name field of a different type, so a caller
-    /// writing a field named "previousPhoto" would clobber the photo-restore
-    /// snapshot, and one named "note" would overwrite a user note in place
+    /// writing a field named "previousPhoto" would clobber a stored photo's
+    /// pointer, and one named "note" would overwrite a user note in place
     /// (`notes(at:)` selects on `field == "note"`). Centralized here, next to
     /// `previousPhotoFieldName`, so a new internal name gets added in one
     /// place (plans/cli-mcp.md Phase 2 custom-field guardrails).
     public nonisolated static let reservedFieldNames: Set<String> = [
         ContactsRepository.previousPhotoFieldName,
         ContactsRepository.profilePhotoFieldName,
+        ContactsRepository.contactPhotoFieldName,
         GuessWhoSync.contactNoteFieldName,
         GuessWhoSync.eventTagFieldName,
     ]
@@ -1815,10 +2121,10 @@ public final class ContactsRepository: NSObject {
         }
     }
 
-    /// Best-effort MIME sniff for the snapshot pointer's `contentType`. CN
+    /// Best-effort MIME sniff for a photo pointer's `contentType`. CN
     /// usually hands back JPEG, sometimes PNG; anything else is recorded as a
     /// generic octet-stream (the bytes are stored faithfully regardless).
-    static func imageContentType(of data: Data) -> String {
+    nonisolated static func imageContentType(of data: Data) -> String {
         if data.starts(with: [0xFF, 0xD8, 0xFF]) { return "image/jpeg" }
         if data.starts(with: [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]) { return "image/png" }
         if data.starts(with: [0x47, 0x49, 0x46, 0x38]) { return "image/gif" }
@@ -1839,10 +2145,9 @@ public final class ContactsRepository: NSObject {
     /// - Sidecar fields (headline/about/location) are stored as notes prefixed
     ///   with "LinkedIn …: " so the source is obvious to the user.
     /// - `photo` routes through `setContactPhoto`, so replacing an existing
-    ///   photo snapshots the replaced bytes into the single-slot previous-photo
-    ///   sidecar blob first. Skipped entirely — no write, no snapshot — when
-    ///   the incoming bytes equal the contact's current photo (re-import) or
-    ///   the payload's data URL doesn't decode.
+    ///   photo keeps it on the contact. Skipped entirely when the incoming bytes
+    ///   equal the contact's current photo (re-import) or the payload's data URL
+    ///   doesn't decode.
     ///
     /// Throws if the contact can't be fetched/saved. Returns the refreshed
     /// `Contact` (CNContact fields; sidecar notes are read separately).
@@ -2028,11 +2333,10 @@ public final class ContactsRepository: NSObject {
             }
         }
 
-        // Photo: route through the contact-image write path so replacing an
-        // existing photo snapshots the replaced bytes into the previous-photo
-        // slot for free. Compare against the CURRENT bytes first — a re-import
-        // of the same profile must be a no-op, not a snapshot that repoints
-        // the previous-photo slot at a copy of the live photo.
+        // Photo: route through the contact-image write path, which keeps the
+        // replaced photo. A re-import of the same profile must be a no-op: this
+        // catches bytes Contacts returns as given, and the write path catches
+        // the rest by matching the stored original.
         if fields.contains(.photo),
            let incoming = profile.photo?.decodedData(), !incoming.isEmpty {
             let current = try await contactsStore.loadImageData(localID: edited.localID)
@@ -2413,8 +2717,12 @@ public final class ContactsRepository: NSObject {
     /// surfaces (effectively only Catalyst multi-window). See the "CONCURRENCY
     /// (decision: ACCEPT double-mint...)" paragraph in
     /// `plans/package-vended-contact-identity.md` for the full rationale,
-    /// including why single-device last-write-wins orphans a sidecar (harmless)
-    /// and only the multi-device case self-heals via Case-D.
+    /// including why single-device last-write-wins orphans a sidecar (harmless).
+    ///
+    /// A merge of two IDs (Case D) only runs from the mint path below. Once the cached
+    /// contact has a GuessWho ID, the fast path skips it, so a contact carrying two
+    /// IDs keeps using one, and nothing retries a merge that stopped. Nothing is
+    /// destroyed, but the other ID's photos and notes stay out of view.
     internal func resolveOrMintGuessWhoID(for id: ContactID) async throws -> String {
         // Fast path: already reconciled — return the stable UUID, mint nothing.
         if let existing = id.guessWhoID {
@@ -4157,12 +4465,11 @@ public final class ContactsRepository: NSObject {
     /// All live (non-deleted) USER-VISIBLE sidecar fields on the contact, by
     /// `ContactID`. Returns empty for an unreconciled id (no mint on read).
     ///
-    /// `.blob` fields are EXCLUDED: they are internal infrastructure (e.g. the
-    /// `previousPhoto` snapshot), not user-editable fields. Surfacing one would
-    /// render a phantom row (literally "previousPhoto") in the custom-fields UI
-    /// — a product-principle violation. The surface is text/date/checkbox/url
-    /// only; blobs are read through their own typed accessors
-    /// (`GuessWhoSync.blobFieldData`).
+    /// `.blob` fields are EXCLUDED: they are internal infrastructure (a contact's
+    /// photo cells), not user-editable fields. Surfacing one would render a
+    /// phantom row (literally "contactPhoto") in the custom-fields UI — a
+    /// product-principle violation. The surface is text/date/checkbox/url only;
+    /// blobs are read through their own typed accessors (`contactPhotos(for:)`).
     ///
     /// Fields whose NAME is reserved are likewise EXCLUDED. A user note is
     /// physically a cell named `contactNoteFieldName` ("note") and an event
@@ -5392,9 +5699,15 @@ public final class ContactsRepository: NSObject {
     private func refreshFromSidecarChange(_ changeSet: SidecarChangeSet, generation: Int) async {
         // Only a changed photo pointer invalidates photo consumers; notes and timestamps
         // keep their existing presentation-only refresh behavior.
-        let photosChanged = cachedPhotoPointersChanged(changeSet)
+        let changedPhotoKeys = cachedPhotoPointersChanged(changeSet)
         defer {
-            if photosChanged, generation == refreshGeneration { postDidReload() }
+            // Dropped only when the post fires: a superseded pass skips it, and the
+            // pass that replaced it still needs to find these changes. A consumer
+            // that reloads adds its entry back, so one off screen stops invalidating.
+            if !changedPhotoKeys.isEmpty, generation == refreshGeneration {
+                for key in changedPhotoKeys { loadedPhotoPointers[key] = nil }
+                postDidReload()
+            }
         }
 
         guard let changedKeys = changeSet.changedKeys else {
@@ -5495,20 +5808,26 @@ public final class ContactsRepository: NSObject {
         postContactCellsDidChange(forContactKeys: contactKeys)
     }
 
-    private func cachedPhotoPointersChanged(_ changeSet: SidecarChangeSet) -> Bool {
-        guard let sync else { return false }
-        var changed = false
+    /// The loaded entries this change makes stale.
+    private func cachedPhotoPointersChanged(_ changeSet: SidecarChangeSet) -> Set<SidecarKey> {
+        guard let sync else { return [] }
+        var changed: Set<SidecarKey> = []
         for (key, previous) in loadedPhotoPointers {
             if let keys = changeSet.changedKeys, !keys.contains(key) { continue }
             if let kinds = changeSet.changedKinds, !kinds.contains(.contact) { continue }
             do {
-                let pointer = try sync.fields(at: key).first {
-                    $0.field == Self.profilePhotoFieldName && $0.type == .blob
-                }?.value ?? .null
-                if pointer != previous { changed = true }
+                let current = try sync.currentContactPhotoCell(at: key)
+                if current?.pointer.jsonValue ?? .null != previous.pointer || current?.modifiedAt != previous.modifiedAt {
+                    changed.insert(key)
+                } else if previous.fileMissing, let current,
+                          try sync.hasContactPhotoFile(at: key, blobID: current.pointer.blobId) {
+                    changed.insert(key)
+                }
             } catch {
                 // A failed read must not certify a cached image as current.
-                changed = true
+                Self.photoLog.error("photo cell read failed, treating the loaded photo as stale",
+                                    metadata: error.logMetadata(["id": .string(key.id)]))
+                changed.insert(key)
             }
         }
         return changed

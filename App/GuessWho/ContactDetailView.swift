@@ -179,11 +179,17 @@ struct ContactDetailView: View {
     // shows the same image the header does. Boxed as Identifiable because
     // `.fullScreenCover(item:)` requires it and UIImage isn't.
     @State private var fullscreenPhoto: FullscreenPhoto?
+    @State private var showingAllPhotos = false
+    // All Photos opens once the viewer has finished closing, since a sheet can't
+    // start from a cover that's on its way out.
+    @State private var showAllPhotosAfterViewer = false
     // Edit-mode photo change. Presents the system PhotosPicker on iOS/iPadOS, or
     // a native macOS file Open panel on Catalyst — driven in-process by the
     // AppKitBridge bundle, NOT a document-picker sheet (see `PhotoChangeModifier`)
     // `photoPickerItem` binds the iOS/iPadOS selection before opening the crop editor.
     @State private var presentingPhotoPicker = false
+    // The Mac file panel is modeless, so All Photos could otherwise open behind it.
+    @State private var isPhotoFilePanelOpen = false
     @State private var photoPickerItem: PhotosPickerItem?
     @State private var photoSaveError: String?
     @State private var photoCropRequest: PhotoCropRequest?
@@ -450,9 +456,11 @@ struct ContactDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         #endif
         .toolbar { toolbarContent }
-        .fullScreenCover(item: $fullscreenPhoto) { photo in
-            ContactPhotoViewer(image: photo.image)
+        .fullScreenCover(item: $fullscreenPhoto, onDismiss: openAllPhotosAfterViewer) { photo in
+            ContactPhotoViewer(image: photo.image,
+                               onShowAllPhotos: isPhotoFilePanelOpen ? nil : { showAllPhotosAfterViewer = true })
         }
+        .sheet(isPresented: $showingAllPhotos) { allPhotosSheet }
         // Photo-change UI (picker + error) lives in one modifier to keep the
         // body's modifier chain within the type-checker's budget.
         .sheet(item: $photoCropRequest) { request in
@@ -474,6 +482,7 @@ struct ContactDetailView: View {
             presentingPhotoPicker: $presentingPhotoPicker,
             photoPickerItem: $photoPickerItem,
             photoSaveError: $photoSaveError,
+            isFilePanelOpen: $isPhotoFilePanelOpen,
             onPick: { item in Task { await applyPickedPhoto(item) } },
             onPickFileData: { data, loadError in Task { await applyRawPhotoData(data, loadError: loadError) } }
         ))
@@ -1360,12 +1369,29 @@ struct ContactDetailView: View {
     private func applyPickedPhoto(_ item: PhotosPickerItem) async {
         defer { photoPickerItem = nil }
         do {
-            let data = try await item.loadTransferable(type: Data.self)
-            await applyRawPhotoData(data, loadError: nil)
+            requestCrop(of: try await PickedPhoto.load(item))
         } catch {
-            Self.photoLog.error("photo picker load failed", error.logCodes())
             photoSaveError = error.localizedDescription
         }
+    }
+
+    private func openAllPhotosAfterViewer() {
+        guard showAllPhotosAfterViewer else { return }
+        showAllPhotosAfterViewer = false
+        showingAllPhotos = true
+    }
+
+    private var allPhotosSheet: some View {
+        ContactPhotosView(
+            repository: repository,
+            contactID: id,
+            onWillChange: { newContactCleanup?.recordDidGetUserData() },
+            onDidChange: {
+                photoLoader.invalidate(loadedContactID ?? id)
+                await loadContact(preferFresh: true)
+                await loadHeaderPhoto()
+            }
+        )
     }
 
     private func editPhotoCrop() async {
@@ -1413,18 +1439,15 @@ struct ContactDetailView: View {
 
     /// Photos, file selection, and drops all use the same non-destructive editor.
     private func applyRawPhotoData(_ rawData: Data?, loadError: Error?) async {
-        guard let rawData else {
-            Self.photoLog.error("photo load returned no data", loadError?.logCodes() ?? [:])
-            photoSaveError = loadError?.localizedDescription ?? "That photo couldn’t be loaded."
-            return
+        do {
+            requestCrop(of: try await PickedPhoto.decode(rawData, loadError: loadError))
+        } catch {
+            photoSaveError = error.localizedDescription
         }
-        let image = await Task.detached(priority: .userInitiated) { UIImage(data: rawData) }.value
-        guard let image else {
-            Self.photoLog.error("photo decode failed", ["bytes": rawData.count])
-            photoSaveError = "That photo couldn’t be processed."
-            return
-        }
-        photoCropRequest = PhotoCropRequest(contactID: id, data: rawData, image: image,
+    }
+
+    private func requestCrop(of photo: PickedPhoto) {
+        photoCropRequest = PhotoCropRequest(contactID: id, data: photo.data, image: photo.image,
                                             crop: nil, isReplacement: true)
     }
 
@@ -1472,8 +1495,8 @@ struct ContactDetailView: View {
     }
 
     /// The circular profile image (photo or monogram fallback). Tap behavior
-    /// depends on state: edit mode offers choose, reframe, reset, and remove;
-    /// in view mode with a photo it opens the
+    /// depends on state: edit mode offers choose, reframe, reset, remove, and
+    /// all photos; in view mode with a photo it opens the
     /// fullscreen zoom/pan viewer; in view mode WITHOUT a photo it jumps to the
     /// picker so a first photo can be added without entering the editor.
     @ViewBuilder
@@ -1513,11 +1536,14 @@ struct ContactDetailView: View {
             // Reframing always starts from the preserved full photo.
             Menu {
                 Button("Choose Photo") { presentingPhotoPicker = true }
+                    .disabled(isPhotoFilePanelOpen)
                 if headerPhoto != nil {
                     Button("Edit Crop") { Task { await editPhotoCrop() } }
                     Button("Reset Crop") { Task { await resetPhotoCrop() } }
                     Button("Remove Photo", role: .destructive) { Task { await removePhoto() } }
                 }
+                Button("All Photos") { showingAllPhotos = true }
+                    .disabled(isPhotoFilePanelOpen)
             } label: {
                 circle
             }
@@ -3986,101 +4012,6 @@ private extension Array {
     func stablePartitionedByOldLabel(_ label: (Element) -> String) -> [Element] {
         filter { !label($0).isOldFieldLabel } + filter { label($0).isOldFieldLabel }
     }
-}
-
-/// Bundles the edit-mode photo-change surfaces — the platform picker
-/// (`PhotosPicker` on iOS/iPadOS, a file Open panel on Catalyst) and the failure
-/// alert — into one modifier, extracted from `ContactDetailView.body` to keep
-/// that view's modifier chain within the type-checker's budget.
-///
-/// Catalyst gets a real file-system Open panel, not the Photos picker: Catalyst
-/// users expect to browse the filesystem (Finder, AirDropped files, external
-/// drives), and `PhotosPicker` only surfaces the Photos library grid there.
-private struct PhotoChangeModifier: ViewModifier {
-    @Binding var presentingPhotoPicker: Bool
-    @Binding var photoPickerItem: PhotosPickerItem?
-    @Binding var photoSaveError: String?
-    let onPick: (PhotosPickerItem) -> Void
-    let onPickFileData: (Data?, Error?) -> Void
-
-    func body(content: Content) -> some View {
-        content
-            #if targetEnvironment(macCatalyst)
-            // Catalyst drives a native, in-process `NSOpenPanel` through the
-            // AppKitBridge bundle rather than a `UIDocumentPickerViewController`:
-            // the latter's presenter detaches from the window mid-present on
-            // Catalyst, so the powerbox never shows and the whole window
-            // deadlocks (no dialog, frozen to mouse input). The bundle runs the
-            // panel modelessly on the main thread and calls back with the URLs.
-            //
-            // Hung off `onChange(of: presentingPhotoPicker)` rather than a
-            // `.sheet` so existing call sites that just set
-            // `presentingPhotoPicker = true` keep working. Reset the flag
-            // immediately (the panel is its own window, not a SwiftUI
-            // presentation) so the next tap re-triggers.
-            .onChange(of: presentingPhotoPicker) { _, isPresenting in
-                guard isPresenting else { return }
-                presentingPhotoPicker = false
-                presentOpenPanelForPhoto()
-            }
-            #else
-            .photosPicker(isPresented: $presentingPhotoPicker, selection: $photoPickerItem,
-                          matching: .images, preferredItemEncoding: .current)
-            .onChange(of: photoPickerItem) { _, newItem in
-                guard let newItem else { return }
-                onPick(newItem)
-            }
-            #endif
-            .alert(
-                "Couldn't update photo",
-                isPresented: Binding(
-                    get: { photoSaveError != nil },
-                    set: { if !$0 { photoSaveError = nil } }
-                )
-            ) {
-                Button("OK", role: .cancel) { photoSaveError = nil }
-            } message: {
-                Text(photoSaveError ?? "")
-            }
-    }
-
-    #if targetEnvironment(macCatalyst)
-    /// Drives the native macOS file Open panel (via the in-process AppKitBridge
-    /// bundle) and feeds the picked image's bytes into the shared crop editor
-    /// tail as raw `Data`, matching the `NSItemProvider` shape the drag-and-drop
-    /// path uses. The panel's completion fires on the main thread; we read the
-    /// file off it so a large image can't stall the UI, then hop back.
-    private func presentOpenPanelForPhoto() {
-        guard let bridge = AppKitBridgeLoader.shared else {
-            // Bundle failed to load — surface a plain-language error rather than
-            // silently no-op'ing the tap. (AppKitBridgeLoader logs the debug
-            // breadcrumbs.)
-            photoSaveError = "The photo picker couldn't be opened."
-            return
-        }
-        bridge.presentOpenPanel(
-            allowedExtensions: ["png", "jpg", "jpeg", "heic", "heif", "gif", "tiff", "bmp", "webp"],
-            allowsMultiple: false
-        ) { urls in
-            // Main thread; an empty array means the user cancelled.
-            guard let url = urls.first else { return }
-            // The in-process panel selection is already blessed against the
-            // sandbox, so a same-launch read needs no security-scoped bracket;
-            // we keep the defensive start/stop anyway (harmless) and read off
-            // the main thread so a large file doesn't stall the UI.
-            let didStartAccessing = url.startAccessingSecurityScopedResource()
-            DispatchQueue.global(qos: .userInitiated).async {
-                defer { if didStartAccessing { url.stopAccessingSecurityScopedResource() } }
-                do {
-                    let data = try Data(contentsOf: url)
-                    DispatchQueue.main.async { onPickFileData(data, nil) }
-                } catch {
-                    DispatchQueue.main.async { onPickFileData(nil, error) }
-                }
-            }
-        }
-    }
-    #endif
 }
 
 private struct InfoRowData: Identifiable {
