@@ -14,6 +14,7 @@ actor PhotoFaultContactStore: ContactStoreProtocol {
     private var failuresLeft = 0
     private var failsAfter = 0
     private var reencodes = false
+    private var failsImageReads = false
 
     init(contacts: [Contact]) { base = InMemoryContactStore(contacts: contacts) }
 
@@ -23,6 +24,7 @@ actor PhotoFaultContactStore: ContactStoreProtocol {
         failsAfter = skipping
     }
     func reencodeWrites() { reencodes = true }
+    func failImageReads() { failsImageReads = true }
     func seedPhoto(_ data: Data?, thumbnail: Data? = nil, for localID: String) async {
         await base.setImageData(data, thumbnail: thumbnail ?? data, for: localID)
     }
@@ -52,9 +54,13 @@ actor PhotoFaultContactStore: ContactStoreProtocol {
     }
     func requestContactsAccess() async -> StoreAccessResult { await base.requestContactsAccess() }
     func changes(since token: Data?) async throws -> ContactChangeSet { try await base.changes(since: token) }
-    func loadImageData(localID: String) async throws -> Data? { try await base.loadImageData(localID: localID) }
+    func loadImageData(localID: String) async throws -> Data? {
+        if failsImageReads { throw InjectedPhotoWriteFailure() }
+        return try await base.loadImageData(localID: localID)
+    }
     func loadThumbnailImageData(localID: String) async throws -> Data? {
-        try await base.loadThumbnailImageData(localID: localID)
+        if failsImageReads { throw InjectedPhotoWriteFailure() }
+        return try await base.loadThumbnailImageData(localID: localID)
     }
     func fetchAllGroups() async throws -> [ContactGroup] { try await base.fetchAllGroups() }
     func fetchGroup(localID: String) async throws -> ContactGroup? { try await base.fetchGroup(localID: localID) }
@@ -87,9 +93,15 @@ private final class CommitFailingSidecarStore: SidecarStoreProtocol, @unchecked 
     let base: SidecarStoreProtocol
     private let lock = NSLock()
     private var failing = false
+    private var failingFile: (blobID: String, error: Error)?
     var failsPhotoCommits: Bool {
         get { lock.withLock { failing } }
         set { lock.withLock { failing = newValue } }
+    }
+    /// Reading this photo's file throws this error.
+    var failingFileRead: (blobID: String, error: Error)? {
+        get { lock.withLock { failingFile } }
+        set { lock.withLock { failingFile = newValue } }
     }
 
     init(base: SidecarStoreProtocol) { self.base = base }
@@ -110,7 +122,10 @@ private final class CommitFailingSidecarStore: SidecarStoreProtocol, @unchecked 
     func writeBlob(_ data: Data, blobId: String, for key: SidecarKey) throws {
         try base.writeBlob(data, blobId: blobId, for: key)
     }
-    func readBlob(blobId: String, for key: SidecarKey) throws -> Data? { try base.readBlob(blobId: blobId, for: key) }
+    func readBlob(blobId: String, for key: SidecarKey) throws -> Data? {
+        if let failingFileRead, failingFileRead.blobID == blobId { throw failingFileRead.error }
+        return try base.readBlob(blobId: blobId, for: key)
+    }
     func deleteBlob(blobId: String, for key: SidecarKey) throws { try base.deleteBlob(blobId: blobId, for: key) }
     func blobIds(for key: SidecarKey) throws -> [String] { try base.blobIds(for: key) }
     func pendingBlobIds(for key: SidecarKey) throws -> [String] { try base.pendingBlobIds(for: key) }
@@ -1229,6 +1244,43 @@ struct ContactPhotoLibraryTests {
         let message = ContactPhotoEditError.photoPending.localizedDescription
         #expect(message.contains("still downloading"))
         #expect(message.contains("try again"))
+    }
+
+    // MARK: - A read that fails
+
+    /// The list only needs pointers, so one bad file mustn't hide every photo.
+    @Test(arguments: [false, true]) func aFailedReadOfTheCurrentPhotoStillListsEveryPhoto(timesOut: Bool) async throws {
+        let fixture = try await Fixture(onDisk: false)
+        defer { fixture.cleanUp() }
+        try await fixture.repo.setContactPhoto(for: fixture.id, imageData: photoA)
+        try await tick()
+        try await fixture.repo.setContactPhoto(for: fixture.id, imageData: photoB)
+        let older = try await fixture.item(with: photoA)
+        let current = try #require(try await fixture.current())
+        let failure: Error = timesOut ? SidecarStoreError.timedOut(fixture.key) : CommitFailingSidecarStore.Failure()
+        fixture.store.failingFileRead = (current.id, failure)
+
+        let items = try await fixture.items()
+
+        #expect(items.map(\.id) == [current.id, older.id])
+        #expect(items.first?.isCurrent == true)
+        #expect(!items.contains { $0.isContactsOnly })
+        // Its own read is what reports the failure, and the other photo is unaffected.
+        await #expect(throws: (any Error).self) {
+            _ = try await fixture.repo.contactPhotoData(for: fixture.id, photoID: current.id)
+        }
+        #expect(try await fixture.bytes(older) == photoA)
+    }
+
+    /// With nothing stored, an empty list would wrongly say there are no photos.
+    @Test func aFailedContactsReadWithNothingStoredStillReportsIt() async throws {
+        let fixture = try await Fixture(onDisk: false, contactsPhoto: photoA)
+        defer { fixture.cleanUp() }
+        await fixture.contacts.failImageReads()
+
+        await #expect(throws: InjectedPhotoWriteFailure.self) {
+            _ = try await fixture.items()
+        }
     }
 
     // MARK: - What an alert says

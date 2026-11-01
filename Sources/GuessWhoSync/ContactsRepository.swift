@@ -1774,19 +1774,36 @@ public final class ContactsRepository: NSObject {
     /// Every photo on the contact, newest first, with the one showing marked.
     /// Includes the photo only Contacts holds, when no stored photo stands for it.
     /// Spotting an external Contacts change takes the current photo's bytes and
-    /// Contacts' own. No other photo's bytes are read.
+    /// Contacts' own. No other photo's bytes are read. A failure reading those doesn't
+    /// hide the rest of the list, which only needs pointers: that photo's own read
+    /// reports it.
     public func contactPhotos(for id: ContactID) async throws -> [ContactPhotoItem] {
         guard let contact = contact(id: id) else { return [] }
-        let shown = try await shownPhoto(for: id)
+        let shown: ShownPhoto
+        var shownFailure: Error?
+        do {
+            shown = try await shownPhoto(for: id)
+        } catch {
+            Self.photoLog.error("current photo read failed while listing", metadata: error.logMetadata([
+                "localID": .string(contact.localID),
+            ]))
+            shown = .stored
+            shownFailure = error
+        }
         var items: [ContactPhotoItem] = []
         if case .contacts = shown {
             items.append(ContactPhotoItem(id: ContactPhotoItem.contactsPhotoID, isCurrent: true, crop: nil,
                                           addedAt: nil, isAvailable: true))
         }
-        guard let sync, let key = SidecarKey.forContact(contact) else { return items }
+        guard let sync, let key = SidecarKey.forContact(contact) else {
+            if let shownFailure { throw shownFailure }
+            return items
+        }
         let stored = try await Task.detached(priority: .userInitiated) {
             try sync.storedContactPhotos(at: key)
         }.value
+        // With nothing stored to list, an empty list would wrongly say there are no photos.
+        if let shownFailure, stored.photos.isEmpty { throw shownFailure }
         let currentID = shown.isStoredPhoto ? stored.current?.blobId : nil
         let sorted = stored.photos.sorted { first, second in
             if first.addedAt != second.addedAt { return first.addedAt > second.addedAt }
