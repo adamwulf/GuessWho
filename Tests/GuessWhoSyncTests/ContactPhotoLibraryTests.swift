@@ -1684,6 +1684,40 @@ struct ContactPhotoLibraryTests {
         #expect(try await !fixture.deliverChange())
     }
 
+    /// The order a file really arrives in: the JSON, then its placeholder, then the file.
+    /// Each post is what makes a visible photo read again, so each step reads again too.
+    @Test func aFileArrivingThroughItsPlaceholderKeepsConsumersTold() async throws {
+        let fixture = try await Fixture(onDisk: true)
+        defer { fixture.cleanUp() }
+        try await fixture.repo.setContactPhoto(for: fixture.id, imageData: photoA, crop: cropA)
+        let blobID = try #require(try fixture.store.blobIds(for: fixture.key).first)
+        let directory = fixture.root.appendingPathComponent("contacts")
+        let file = directory.appendingPathComponent("\(fixture.key.id).\(blobID).dat")
+        let placeholder = directory.appendingPathComponent(".\(fixture.key.id).\(blobID).dat.icloud")
+
+        // Only the JSON is here: the Contacts photo shows, and nothing keeps invalidating.
+        try FileManager.default.removeItem(at: file)
+        #expect(try await fixture.repo.contactPhotoData(for: fixture.id, kind: .fullSize)?.crop == nil)
+        #expect(try await !fixture.deliverChange())
+        #expect(try await !fixture.deliverChange())
+
+        // The placeholder lands: consumers are told, and a read now waits on the file.
+        try Data().write(to: placeholder)
+        #expect(try await fixture.deliverChange())
+        await #expect(throws: SidecarStoreError.notYetDownloaded(fixture.key)) {
+            _ = try await fixture.repo.contactPhotoData(for: fixture.id, kind: .fullSize)
+        }
+
+        // The file lands: consumers are told, the crop is back, and it settles.
+        try FileManager.default.removeItem(at: placeholder)
+        try fixture.store.writeBlob(photoA, blobId: blobID, for: fixture.key)
+        #expect(try await fixture.deliverChange())
+        let shown = try #require(try await fixture.repo.contactPhotoData(for: fixture.id, kind: .fullSize))
+        #expect(shown.data == photoA)
+        #expect(shown.crop == cropA)
+        #expect(try await !fixture.deliverChange())
+    }
+
     /// Reading a photo happens on display paths, so it must not ask iCloud for every
     /// contact's files. The folder holds all of them.
     @Test func readingAPhotoRequestsOnlyItsOwnDownload() async throws {
