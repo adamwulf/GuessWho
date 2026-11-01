@@ -6,6 +6,13 @@ import GuessWhoSyncTesting
 @Suite("Photo source changes and failed saves")
 @MainActor
 struct ContactPhotoSourceTests {
+    /// Whether a stored photo on the contact has these bytes.
+    private func hasStoredPhoto(_ sync: GuessWhoSync, key: SidecarKey, _ data: Data) throws -> Bool {
+        try sync.storedContactPhotos(at: key).photos.contains {
+            try sync.storedContactPhoto(at: key, blobID: $0.pointer.blobId)?.data == data
+        }
+    }
+
     private func fixture() async throws -> (ContactsRepository, InMemoryContactStore, PhotoTestStore, GuessWhoSync, ContactID, UserDefaults) {
         let localID = UUID().uuidString
         let contacts = InMemoryContactStore(contacts: [Contact(localID: localID, givenName: "Ada")])
@@ -46,7 +53,7 @@ struct ContactPhotoSourceTests {
         #expect(try await relaunched.contactPhotoData(for: id, kind: .fullSize)?.crop == nil)
 
         try await reopened.setContactPhotoCrop(for: id, crop: crop, originalData: replacement)
-        #expect(try sync.blobFieldData(at: key, field: ContactsRepository.previousPhotoFieldName) == original)
+        #expect(try hasStoredPhoto(sync, key: key, original))
         try await contacts.setImageData(localID: contact.localID, imageData: nil)
         await reopened.reload()
         #expect(try await reopened.contactPhotoData(for: id, kind: .fullSize) == nil)
@@ -56,7 +63,7 @@ struct ContactPhotoSourceTests {
         #expect(try await afterRemoval.contactPhotoData(for: id, kind: .fullSize) == nil)
         try await afterRemoval.setContactPhoto(for: id, imageData: nil)
         #expect(try sync.profilePhoto(at: key) == nil)
-        #expect(try sync.blobFieldData(at: key, field: ContactsRepository.previousPhotoFieldName) == replacement)
+        #expect(try hasStoredPhoto(sync, key: key, replacement))
     }
 
     @Test func staleCropEditorCannotOverwriteReplacement() async throws {
@@ -84,7 +91,8 @@ struct ContactPhotoSourceTests {
         try await contacts.setImageData(localID: contact.localID, imageData: Data([3, 4]))
         #expect(try await repo.contactPhotoData(for: id, kind: .fullSize)?.data == Data([3, 4]))
         try await repo.setContactPhoto(for: id, imageData: Data([5, 6]))
-        #expect(try sync.blobFieldData(at: key, field: ContactsRepository.previousPhotoFieldName) == original)
+        #expect(try hasStoredPhoto(sync, key: key, original))
+        #expect(try hasStoredPhoto(sync, key: key, Data([3, 4])))
         #expect(try await repo.contactPhotoData(for: id, kind: .fullSize)?.data == Data([5, 6]))
     }
 
@@ -166,14 +174,14 @@ struct ContactPhotoSourceTests {
         let tracker = ContactPhotoSourceTracker(defaults: defaults)
         let key = SidecarKey(kind: .contact, id: UUID().uuidString.lowercased())
         tracker.record(key: key, original: "original", observed: "system")
-        #expect(tracker.usesSystemPhoto(key: key, original: "original", blobID: "first", expected: "system", observed: "external"))
+        #expect(tracker.usesSystemPhoto(key: key, original: "original", revision: "first", expected: "system", observed: "external"))
         // Replacing the system photo with identical bytes alone cannot revive an old crop.
-        #expect(tracker.usesSystemPhoto(key: key, original: "original", blobID: "first", expected: "system", observed: "system"))
+        #expect(tracker.usesSystemPhoto(key: key, original: "original", revision: "first", expected: "system", observed: "system"))
         // A newer crop may arrive before its expected Contacts representation.
         for _ in 0..<2 {
-            #expect(tracker.usesSystemPhoto(key: key, original: "original", blobID: "second", expected: "new-system", observed: "system"))
+            #expect(tracker.usesSystemPhoto(key: key, original: "original", revision: "second", expected: "new-system", observed: "system"))
         }
-        #expect(!tracker.usesSystemPhoto(key: key, original: "original", blobID: "second", expected: "new-system", observed: "new-system"))
+        #expect(!tracker.usesSystemPhoto(key: key, original: "original", revision: "second", expected: "new-system", observed: "new-system"))
     }
 }
 

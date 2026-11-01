@@ -1,0 +1,365 @@
+import Foundation
+import Logging
+
+// The photos on a contact. Each stored photo has one add-only `contactPhoto` cell,
+// keyed by its blobId, and the `profilePhoto` cell holds a copy of the current
+// one's pointer. Merge is whole-cell last-writer-wins, so moving pointers between
+// cells could lose a photo in a race. With one cell per photo, the worst a race
+// does is pick a different current photo. See docs/profile-photos.md.
+
+/// What a photo write does to the crop of a photo it finds already stored.
+enum ContactPhotoCropChoice: Sendable {
+    /// A new photo has no crop, and a stored one keeps its own.
+    case existingOrNone
+    case exactly(ContactPhotoCrop?)
+}
+
+/// One stored photo, from its cells alone.
+struct StoredContactPhoto: Sendable {
+    let pointer: BlobPointer
+    let addedAt: Date
+}
+
+struct StoredContactPhotos: Sendable {
+    let photos: [StoredContactPhoto]
+    /// What the `profilePhoto` cell points at.
+    let current: BlobPointer?
+}
+
+struct ContactPhotoMatch: Sendable {
+    let pointer: BlobPointer
+    let isCurrent: Bool
+}
+
+struct ContactPhotoWrite: Sendable {
+    let pointer: BlobPointer
+    /// False when the bytes matched a photo already on the contact.
+    let isNew: Bool
+}
+
+/// The cell-level rules, shared by every write.
+enum ContactPhotoCells {
+    /// A fixed cell, so simultaneous first photos on two devices converge.
+    static let profileCellID = "B473DB08-4B5B-42D2-991E-64C487E67C63"
+
+    static let fieldNames: Set<String> = [
+        ContactsRepository.profilePhotoFieldName,
+        ContactsRepository.contactPhotoFieldName,
+        ContactsRepository.previousPhotoFieldName,
+    ]
+
+    struct Cell {
+        let id: String
+        let name: String
+        let cell: SidecarCell
+        let blobID: String
+        let value: JSONValue
+
+        var createdAt: Date? {
+            guard case .object(let inner) = cell.value,
+                  case .string(let raw) = inner[SidecarField.innerCreatedAtKey] ?? .null else { return nil }
+            return SidecarISO8601.date(from: raw)
+        }
+    }
+
+    /// Every live photo cell. The blobId is read leniently, so a partly malformed
+    /// pointer still counts as naming its file.
+    static func live(in fields: [String: SidecarCell]) -> [Cell] {
+        fields.compactMap { id, cell in
+            guard cell.deletedAt == nil, SidecarField.type(of: cell) == .blob,
+                  case .object(let inner) = cell.value,
+                  case .string(let name) = inner[SidecarField.innerFieldKey] ?? .null,
+                  fieldNames.contains(name),
+                  let value = inner[SidecarField.innerValueKey],
+                  let blobID = BlobPointer.referencedBlobId(from: value) else { return nil }
+            return Cell(id: id, name: name, cell: cell, blobID: blobID, value: value)
+        }
+    }
+
+    /// The cell whose pointer speaks for a photo: `profilePhoto` is what's showing,
+    /// and `previousPhoto` is never written, so it never holds a newer crop.
+    static func preferred(_ cells: [Cell]) -> Cell? {
+        func rank(_ cell: Cell) -> Int {
+            switch cell.name {
+            case ContactsRepository.profilePhotoFieldName: return 0
+            case ContactsRepository.contactPhotoFieldName: return 1
+            default: return 2
+            }
+        }
+        return cells.min { (rank($0), $0.id) < (rank($1), $1.id) }
+    }
+
+    static func addedAt(_ cells: [Cell]) -> Date {
+        // The `profilePhoto` cell keeps the createdAt of the contact's first photo
+        // across repoints, so its modifiedAt is when this photo became current.
+        if let added = cells.first(where: { $0.name == ContactsRepository.contactPhotoFieldName }) {
+            return added.createdAt ?? added.cell.modifiedAt
+        }
+        if let previous = cells.first(where: { $0.name == ContactsRepository.previousPhotoFieldName }) {
+            return previous.createdAt ?? previous.cell.modifiedAt
+        }
+        return cells.first?.cell.modifiedAt ?? Date()
+    }
+
+    /// Adds the photo's `contactPhoto` cell unless the key is taken. A tombstone
+    /// counts as taken: that photo was deleted on another device, and stays deleted.
+    static func addLibraryCell(blobID: String, value: JSONValue, createdAt: Date, now: Date,
+                               deviceID: String, to fields: inout [String: SidecarCell]) {
+        let id = blobID.uppercased()
+        guard fields[id] == nil else { return }
+        let inner = SidecarField.makeInnerValue(field: ContactsRepository.contactPhotoFieldName, type: .blob,
+                                                value: value, createdAt: createdAt)
+        fields[id] = SidecarCell(value: inner, modifiedAt: now, modifiedBy: deviceID)
+    }
+
+    /// Points `profilePhoto` at `pointer`. The photo it stops showing keeps a cell
+    /// of its own, so it stays on the contact.
+    static func setCurrent(_ pointer: BlobPointer, now: Date, deviceID: String,
+                           in fields: inout [String: SidecarCell]) {
+        let slots = live(in: fields).filter { $0.name == ContactsRepository.profilePhotoFieldName }
+        for slot in slots where slot.blobID != pointer.blobId {
+            addLibraryCell(blobID: slot.blobID, value: slot.value, createdAt: slot.cell.modifiedAt,
+                           now: now, deviceID: deviceID, to: &fields)
+        }
+        if let slot = slots.first,
+           let inner = SidecarField.makeInnerValueForEdit(existingCell: slot.cell,
+                                                          newField: ContactsRepository.profilePhotoFieldName,
+                                                          newValue: pointer.jsonValue) {
+            fields[slot.id] = SidecarCell(value: inner, modifiedAt: now, modifiedBy: deviceID)
+        } else {
+            let inner = SidecarField.makeInnerValue(field: ContactsRepository.profilePhotoFieldName, type: .blob,
+                                                    value: pointer.jsonValue, createdAt: now)
+            fields[profileCellID] = SidecarCell(value: inner, modifiedAt: now, modifiedBy: deviceID)
+        }
+    }
+
+    /// Rewrites the pointer in the photo's `contactPhoto` cell, and in `profilePhoto`
+    /// when that names it. `previousPhoto` isn't touched, and loses to both on reads.
+    static func updatePointer(_ pointer: BlobPointer, now: Date, deviceID: String,
+                              in fields: inout [String: SidecarCell]) {
+        let cells = live(in: fields).filter { $0.blobID == pointer.blobId }
+        for cell in cells where cell.name != ContactsRepository.previousPhotoFieldName {
+            guard let inner = SidecarField.makeInnerValueForEdit(existingCell: cell.cell, newField: cell.name,
+                                                                 newValue: pointer.jsonValue) else { continue }
+            fields[cell.id] = SidecarCell(value: inner, modifiedAt: now, modifiedBy: deviceID)
+        }
+        addLibraryCell(blobID: pointer.blobId, value: pointer.jsonValue, createdAt: addedAt(cells),
+                       now: now, deviceID: deviceID, to: &fields)
+    }
+
+    static func tombstone(blobID: String, now: Date, deviceID: String, in fields: inout [String: SidecarCell]) -> Bool {
+        var changed = false
+        for cell in live(in: fields) where cell.blobID == blobID {
+            fields[cell.id] = SidecarCell(value: cell.cell.value, modifiedAt: now, modifiedBy: deviceID, deletedAt: now)
+            changed = true
+        }
+        return changed
+    }
+}
+
+extension GuessWhoSync {
+    private static let photoLog = Logger(label: "sync.contact-photo")
+
+    /// The photos on a contact, from their pointers. Reads no photo file.
+    func storedContactPhotos(at key: SidecarKey) throws -> StoredContactPhotos {
+        try withKeyLocked(key) { ctx in
+            guard let envelope = try ctx.read() else { return StoredContactPhotos(photos: [], current: nil) }
+            let cells = ContactPhotoCells.live(in: envelope.fields)
+            let photos: [StoredContactPhoto] = Dictionary(grouping: cells, by: \.blobID).values.compactMap { group in
+                guard let preferred = ContactPhotoCells.preferred(group),
+                      let pointer = BlobPointer(from: preferred.value) else { return nil }
+                return StoredContactPhoto(pointer: pointer, addedAt: ContactPhotoCells.addedAt(group))
+            }
+            let current = cells
+                .filter { $0.name == ContactsRepository.profilePhotoFieldName }
+                .max { $0.cell.modifiedAt < $1.cell.modifiedAt }
+                .flatMap { BlobPointer(from: $0.value) }
+            return StoredContactPhotos(photos: photos, current: current)
+        }
+    }
+
+    /// The photo's bytes and crop under one lock, or nil when it isn't on the contact
+    /// or its file hasn't downloaded yet. Asking starts the download.
+    func storedContactPhoto(at key: SidecarKey, blobID: String) throws -> ContactPhoto? {
+        try withKeyLocked(key) { ctx in
+            guard let envelope = try ctx.read(),
+                  let preferred = ContactPhotoCells.preferred(
+                    ContactPhotoCells.live(in: envelope.fields).filter { $0.blobID == blobID }),
+                  let pointer = BlobPointer(from: preferred.value),
+                  let data = try ctx.readBlob(blobId: blobID) else { return nil }
+            var photo = ContactPhoto(data: data, kind: .fullSize, crop: pointer.photoCrop)
+            photo.blobID = blobID
+            return photo
+        }
+    }
+
+    /// The readable photo on this contact with the same bytes, if any.
+    func contactPhotoMatching(_ data: Data, at key: SidecarKey) throws -> ContactPhotoMatch? {
+        try withKeyLocked(key) { ctx in
+            guard let envelope = try ctx.read(),
+                  let cell = matchingCell(for: data, in: envelope.fields, ctx: ctx),
+                  let pointer = BlobPointer(from: cell.value) else { return nil }
+            let isCurrent = ContactPhotoCells.live(in: envelope.fields).contains {
+                $0.name == ContactsRepository.profilePhotoFieldName && $0.blobID == pointer.blobId
+            }
+            return ContactPhotoMatch(pointer: pointer, isCurrent: isCurrent)
+        }
+    }
+
+    /// Only a photo the same size can match, so most photos on a contact are never read.
+    private func matchingCell(for data: Data, in fields: [String: SidecarCell],
+                              ctx: KeyLockedContext) -> ContactPhotoCells.Cell? {
+        var incoming: String?
+        for group in Dictionary(grouping: ContactPhotoCells.live(in: fields), by: \.blobID).values {
+            guard let preferred = ContactPhotoCells.preferred(group),
+                  BlobPointer(from: preferred.value)?.byteCount == data.count else { continue }
+            do {
+                guard let stored = try ctx.readBlob(blobId: preferred.blobID) else { continue }
+                let digest = incoming ?? ContactPhotoSourceTracker.digest(data)
+                incoming = digest
+                if ContactPhotoSourceTracker.digest(stored) == digest { return preferred }
+            } catch SidecarBlobCryptoError.cannotDecrypt {
+                continue
+            } catch {
+                // Treated as no match: the worst case is one more photo.
+                Self.photoLog.error("contact photo read failed during match", metadata: error.logMetadata([
+                    "id": .string(ctx.key.id), "blobId": .string(preferred.blobID),
+                ]))
+            }
+        }
+        return nil
+    }
+
+    /// Stores `data` on the contact, reusing a photo with the same bytes. A new
+    /// photo's cell and any `profilePhoto` update land in one envelope write, after
+    /// its file, so a racing device can't lose it.
+    @discardableResult
+    func storeContactPhoto(
+        at key: SidecarKey,
+        data: Data,
+        crop: ContactPhotoCropChoice,
+        makeCurrent: Bool,
+        systemPhotoDigest: String?,
+        expectation: BlobFieldExpectation? = nil
+    ) throws -> ContactPhotoWrite {
+        try withKeyLocked(key) { ctx in
+            let existing = try ctx.read()
+            var fields = existing?.fields ?? [:]
+            try checkExpectation(expectation, field: ContactsRepository.profilePhotoFieldName, in: fields)
+            let now = Date()
+
+            var pointer: BlobPointer
+            let isNew: Bool
+            var cropChanged = false
+            if let matched = matchingCell(for: data, in: fields, ctx: ctx),
+               let found = BlobPointer(from: matched.value) {
+                isNew = false
+                let newCrop: ContactPhotoCrop?
+                switch crop {
+                case .existingOrNone: newCrop = found.photoCrop
+                case .exactly(let chosen): newCrop = chosen
+                }
+                pointer = found.with(photoCrop: newCrop, systemPhotoDigest: found.systemPhotoDigest)
+                if newCrop != found.photoCrop {
+                    cropChanged = true
+                    ContactPhotoCells.updatePointer(pointer, now: now, deviceID: deviceID, in: &fields)
+                }
+            } else {
+                isNew = true
+                var newCrop: ContactPhotoCrop?
+                if case .exactly(let chosen) = crop { newCrop = chosen }
+                pointer = BlobPointer(blobId: UUID().uuidString.lowercased(),
+                                      contentType: ContactsRepository.imageContentType(of: data),
+                                      byteCount: data.count, photoCrop: newCrop, systemPhotoDigest: systemPhotoDigest)
+                try ctx.writeBlob(data, blobId: pointer.blobId)
+                ContactPhotoCells.addLibraryCell(blobID: pointer.blobId, value: pointer.jsonValue, createdAt: now,
+                                                 now: now, deviceID: deviceID, to: &fields)
+            }
+            if makeCurrent {
+                pointer = pointer.with(photoCrop: pointer.photoCrop, systemPhotoDigest: systemPhotoDigest)
+                ContactPhotoCells.setCurrent(pointer, now: now, deviceID: deviceID, in: &fields)
+            }
+            guard isNew || makeCurrent || cropChanged else {
+                return ContactPhotoWrite(pointer: pointer, isNew: false)
+            }
+            do {
+                try ctx.write(SidecarEnvelope(schemaVersion: 1, entityID: existing?.entityID ?? key.id, fields: fields))
+            } catch {
+                if isNew { removeFile(blobID: pointer.blobId, ctx: ctx) }
+                throw error
+            }
+            return ContactPhotoWrite(pointer: pointer, isNew: isNew)
+        }
+    }
+
+    /// Makes a photo already on the contact current, with its own crop.
+    func setCurrentContactPhoto(at key: SidecarKey, blobID: String, systemPhotoDigest: String?) throws {
+        try withKeyLocked(key) { ctx in
+            guard let envelope = try ctx.read(),
+                  let preferred = ContactPhotoCells.preferred(
+                    ContactPhotoCells.live(in: envelope.fields).filter { $0.blobID == blobID }),
+                  let pointer = BlobPointer(from: preferred.value) else {
+                throw ContactPhotoEditError.photoChanged
+            }
+            var fields = envelope.fields
+            ContactPhotoCells.setCurrent(pointer.with(photoCrop: pointer.photoCrop, systemPhotoDigest: systemPhotoDigest),
+                                         now: Date(), deviceID: deviceID, in: &fields)
+            try ctx.write(SidecarEnvelope(schemaVersion: envelope.schemaVersion, entityID: envelope.entityID, fields: fields))
+        }
+    }
+
+    /// Reframes the current photo without touching its file. Refuses if another
+    /// photo became current after the editor read this one.
+    func setCurrentContactPhotoCrop(at key: SidecarKey, blobID: String, crop: ContactPhotoCrop?,
+                                    systemPhotoDigest: String?) throws {
+        try withKeyLocked(key) { ctx in
+            guard let envelope = try ctx.read() else { throw ContactPhotoEditError.photoChanged }
+            var fields = envelope.fields
+            try checkExpectation(.matching(blobID), field: ContactsRepository.profilePhotoFieldName, in: fields)
+            let cells = ContactPhotoCells.live(in: fields).filter { $0.blobID == blobID }
+            guard let preferred = ContactPhotoCells.preferred(cells),
+                  let pointer = BlobPointer(from: preferred.value) else { throw ContactPhotoEditError.photoChanged }
+            ContactPhotoCells.updatePointer(pointer.with(photoCrop: crop, systemPhotoDigest: systemPhotoDigest),
+                                            now: Date(), deviceID: deviceID, in: &fields)
+            try ctx.write(SidecarEnvelope(schemaVersion: envelope.schemaVersion, entityID: envelope.entityID, fields: fields))
+        }
+    }
+
+    /// Removes a photo for good: every cell naming it, then its file.
+    func deleteContactPhoto(at key: SidecarKey, blobID: String) throws {
+        try withKeyLocked(key) { ctx in
+            if let envelope = try ctx.read() {
+                var fields = envelope.fields
+                if ContactPhotoCells.tombstone(blobID: blobID, now: Date(), deviceID: deviceID, in: &fields) {
+                    try ctx.write(SidecarEnvelope(schemaVersion: envelope.schemaVersion, entityID: envelope.entityID, fields: fields))
+                }
+            }
+            removeFile(blobID: blobID, ctx: ctx)
+        }
+    }
+
+    /// The cells are already gone or never landed, so a failure here only leaves
+    /// a file nothing names. It isn't worth failing the change over.
+    private func removeFile(blobID: String, ctx: KeyLockedContext) {
+        do {
+            // Like an envelope delete, this leaves an iCloud placeholder alone.
+            if try ctx.pendingBlobIds().contains(blobID) {
+                Self.photoLog.notice("photo file left in storage: not downloaded here", metadata: [
+                    "id": .string(ctx.key.id), "blobId": .string(blobID),
+                ])
+            }
+            try ctx.deleteBlob(blobId: blobID)
+        } catch {
+            Self.photoLog.error("photo file could not be removed", metadata: error.logMetadata([
+                "id": .string(ctx.key.id), "blobId": .string(blobID),
+            ]))
+        }
+    }
+}
+
+extension BlobPointer {
+    func with(photoCrop: ContactPhotoCrop?, systemPhotoDigest: String?) -> BlobPointer {
+        BlobPointer(blobId: blobId, contentType: contentType, byteCount: byteCount,
+                    photoCrop: photoCrop, systemPhotoDigest: systemPhotoDigest)
+    }
+}

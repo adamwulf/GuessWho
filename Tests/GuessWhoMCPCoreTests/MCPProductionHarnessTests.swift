@@ -11,7 +11,7 @@ import GuessWhoMCPWire
 /// surface reads the REAL on-disk `FavoritesStore`, and the substituted OS
 /// boundary (`RecordingContactStore`) injects its two one-shot faults at the
 /// exact points a parity test needs — a save at a chosen ordinal, and a photo
-/// write AFTER the repository has snapshotted the prior image. The deep
+/// write AFTER the repository has kept the prior image. The deep
 /// per-tool parity assertions live in the feature suites; this file only
 /// guards the harness itself.
 @MainActor
@@ -199,11 +199,11 @@ final class MCPProductionHarnessTests: XCTestCase {
     }
 
     /// The one-shot photo fault fires INSIDE the boundary's `setImageData`,
-    /// i.e. AFTER `setContactPhoto` has already read the prior bytes and written
-    /// the `previousPhoto` snapshot: the snapshot is durable on disk, the live
+    /// i.e. AFTER `setContactPhoto` has already stored the bytes only Contacts
+    /// held: that store is undone, since Contacts still holds them, the live
     /// photo bytes are unchanged, and the boundary recorded the attempt without
     /// committing it.
-    func testPhotoFaultFiresAfterPriorImageSnapshot() async throws {
+    func testPhotoFaultLeavesStorageAndLivePhotoUnchanged() async throws {
         let fixture = try await MCPProductionFixture.make()
         defer { fixture.cleanUp() }
 
@@ -221,9 +221,9 @@ final class MCPProductionHarnessTests: XCTestCase {
             XCTAssertEqual(error.site, .photo)
         }
 
-        // The prior image was snapshotted to disk BEFORE the fault.
-        let snapshot = try fixture.storedPreviousPhoto(forGuessWhoID: MCPProductionFixture.adaGuessWhoID)
-        XCTAssertEqual(snapshot, oldBytes, "the previousPhoto snapshot is durable")
+        // A failed Contacts write leaves storage unchanged.
+        let stored = try await fixture.storedPhotos(forLocalID: MCPProductionFixture.adaLocalID)
+        XCTAssertEqual(stored, [], "the store of the Contacts photo was undone")
 
         // The live photo bytes never changed — the write was rejected.
         let live = try await fixture.storedPhoto(forLocalID: MCPProductionFixture.adaLocalID)

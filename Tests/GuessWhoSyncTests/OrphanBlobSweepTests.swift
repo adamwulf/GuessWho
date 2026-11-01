@@ -53,9 +53,10 @@ struct OrphanBlobSweepTests {
 
     @Test
     func setBlobFieldOverwriteDeletesSupersededDatAndRepointsSlot() throws {
+        // Any field but a contact photo's, which keep every file (next test).
         let (sync, sidecars) = makeOrchestrator()
-        let firstID = try sync.setBlobField(at: contactKey, field: "previousPhoto", data: Data([0x01]), contentType: "image/jpeg")
-        let secondID = try sync.setBlobField(at: contactKey, field: "previousPhoto", data: Data([0x02]), contentType: "image/jpeg")
+        let firstID = try sync.setBlobField(at: contactKey, field: "attachment", data: Data([0x01]), contentType: "image/jpeg")
+        let secondID = try sync.setBlobField(at: contactKey, field: "attachment", data: Data([0x02]), contentType: "image/jpeg")
 
         // Single slot: still exactly ONE live `.blob` field, repointed.
         let live = try sync.fields(at: contactKey).filter { $0.deletedAt == nil }
@@ -67,7 +68,31 @@ struct OrphanBlobSweepTests {
         let onDisk = try sidecars.blobIds(for: contactKey)
         #expect(onDisk == [secondID])
         #expect(firstID != secondID)
-        #expect(try sync.blobFieldData(at: contactKey, field: "previousPhoto") == Data([0x02]))
+        #expect(try sync.blobFieldData(at: contactKey, field: "attachment") == Data([0x02]))
+    }
+
+    @Test(arguments: [ContactsRepository.profilePhotoFieldName, ContactsRepository.previousPhotoFieldName])
+    func setBlobFieldOverwriteOfAPhotoFieldKeepsTheSupersededPhoto(field: String) throws {
+        let (sync, sidecars) = makeOrchestrator()
+        let firstID = try sync.setBlobField(at: contactKey, field: field, data: Data([0x01]), contentType: "image/jpeg")
+        let secondID = try sync.setBlobField(at: contactKey, field: field, data: Data([0x02]), contentType: "image/jpeg")
+
+        #expect(Set(try sidecars.blobIds(for: contactKey)) == [firstID, secondID])
+        #expect(try sidecars.read(contactKey)?.fields[firstID.uppercased()]?.deletedAt == nil)
+        #expect(try sync.storedContactPhotos(at: contactKey).photos.count == 2)
+        // Sweeping can't take a photo that is still on the contact.
+        #expect(try sync.sweepOrphanBlobs().deleted.isEmpty)
+    }
+
+    @Test
+    func setBlobFieldOnContactPhotoAddsACellRatherThanRepointingOne() throws {
+        let (sync, sidecars) = makeOrchestrator()
+        let field = ContactsRepository.contactPhotoFieldName
+        let firstID = try sync.setBlobField(at: contactKey, field: field, data: Data([0x01]), contentType: "image/jpeg")
+        let secondID = try sync.setBlobField(at: contactKey, field: field, data: Data([0x02]), contentType: "image/jpeg")
+
+        #expect(Set(try sidecars.blobIds(for: contactKey)) == [firstID, secondID])
+        #expect(Set(try sync.storedContactPhotos(at: contactKey).photos.map(\.pointer.blobId)) == [firstID, secondID])
     }
 
     @Test

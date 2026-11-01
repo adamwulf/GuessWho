@@ -11,6 +11,9 @@ public struct ContactPhoto: Sendable {
     public let crop: ContactPhotoCrop?
     package var systemPhotoDigest: String?
     package var blobID: String?
+    /// Changes with every explicit write to the `profilePhoto` cell, including one
+    /// that picks the same file again.
+    package var pointerRevision: String?
     package var usesSystemPhoto = false
     /// These bytes came from Contacts because the stored file couldn't be read
     /// here. Another device may be able to read that file, so it must not be replaced
@@ -24,6 +27,25 @@ public struct ContactPhoto: Sendable {
     }
 }
 
+/// One photo on a contact: stored, or the photo only Contacts holds.
+public struct ContactPhotoItem: Identifiable, Equatable, Sendable {
+    /// Opaque. Pass it back to the repository's photo methods.
+    public let id: String
+    public let isCurrent: Bool
+    public let crop: ContactPhotoCrop?
+    /// Nil for the photo only Contacts holds.
+    public let addedAt: Date?
+    /// False once reading the file here has failed because it's an older encrypted
+    /// one this device can't open. Another device may still read it.
+    public let isAvailable: Bool
+
+    /// The `id` of the photo only Contacts holds.
+    package static let contactsPhotoID = "contacts"
+
+    /// True for the photo only Contacts holds.
+    package var isContactsOnly: Bool { id == Self.contactsPhotoID }
+}
+
 /// The contact's stored photo is an older encrypted file this device can't open.
 /// The repository shows the Contacts photo instead, and keeps the pointer so it
 /// can tell when the stored photo changes.
@@ -35,6 +57,7 @@ public enum ContactPhotoEditError: LocalizedError {
     case photoChanged
     case saveInProgress
     case storedPhotoUnreadable
+    case photoPending
     case restoreFailed(save: String, restore: String)
 
     public var errorDescription: String? {
@@ -43,6 +66,7 @@ public enum ContactPhotoEditError: LocalizedError {
         case .saveInProgress: return "A photo is being saved. Please try again."
         case .storedPhotoUnreadable:
             return "This photo was saved on another device and can’t be edited here. Choose a new photo to replace it."
+        case .photoPending: return "This photo is still downloading. Please try again in a moment."
         case .restoreFailed(let save, let restore):
             return "The photo could not be saved or restored. Save: \(save) Restore: \(restore)"
         }

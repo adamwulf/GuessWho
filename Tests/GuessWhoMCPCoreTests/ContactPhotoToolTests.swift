@@ -6,9 +6,9 @@ import GuessWhoMCPWire
 
 /// Contact-photo tool parity tests over the PRODUCTION dispatch stack
 /// (`MCPProductionFixture`): a real `ContactsRepository` + `GuessWhoSync` over a
-/// real on-disk `FileSystemSidecarStore` supply the previous-photo snapshot,
-/// and the substituted OS boundary (`RecordingContactStore`) injects the photo
-/// write fault the failure test needs AFTER the snapshot has landed.
+/// real on-disk `FileSystemSidecarStore` keep the previous photo, and the
+/// substituted OS boundary (`RecordingContactStore`) injects the photo write fault
+/// the failure test needs AFTER the bytes only Contacts held have been stored.
 ///
 /// Adapter quirks (read faults, Contacts transcoding, and empty-byte deletion)
 /// are injected at `RecordingContactStore`, the OS boundary, so every photo
@@ -67,23 +67,25 @@ final class ContactPhotoToolTests: XCTestCase {
         }
         XCTAssertEqual(replaceMessage, WireAckMessage.photoSet)
 
-        // The prior photo (jpegA) was snapshotted to the on-disk sidecar before
-        // the replacement (jpegB) — real GuessWhoSync previous-photo behavior.
-        let prior = try fixture.storedPreviousPhoto(forGuessWhoID: ada)
-        XCTAssertEqual(prior, jpegA)
+        // The prior photo (jpegA) stays on the contact beside the replacement
+        // (jpegB) — real GuessWhoSync behavior.
+        let stored = try await fixture.storedPhotos(forLocalID: MCPProductionFixture.adaLocalID)
+        XCTAssertEqual(stored, [jpegA, jpegB])
         let internalFields = try fixture.storedFields(forGuessWhoID: ada)
         XCTAssertTrue(internalFields.contains {
-            $0.field == "previousPhoto" && $0.type == .blob
+            $0.field == "contactPhoto" && $0.type == .blob
         })
+        XCTAssertFalse(internalFields.contains { $0.field == "previousPhoto" })
 
-        // …yet the reserved snapshot field never surfaces in the user list.
+        // …yet the reserved photo fields never surface in the user list.
         let visible = await fixture.dispatcher.handle(.contactsListCustomFields(
             helperId: MCPProductionFixture.helper, messageId: TestMessageID.next(),
             contactId: ada, limit: nil, cursor: nil))
         guard case .customFieldPage(_, _, let page) = visible else {
             return XCTFail("expected custom-field page")
         }
-        XCTAssertFalse(page.items.contains { $0.name == "previousPhoto" })
+        XCTAssertFalse(page.items.contains { $0.name == "contactPhoto" })
+        XCTAssertFalse(page.items.contains { $0.name == "profilePhoto" })
 
         let audit = await fixture.storedAuditEntries()
         XCTAssertEqual(audit.filter { $0.action == .editContact }.count, 2)
@@ -102,9 +104,9 @@ final class ContactPhotoToolTests: XCTestCase {
             return XCTFail("expected photo-delete acknowledgement")
         }
         XCTAssertEqual(deletedMessage, WireAckMessage.photoDeleted)
-        // The just-deleted photo was snapshotted before removal.
-        let prior = try fixture.storedPreviousPhoto(forGuessWhoID: ada)
-        XCTAssertEqual(prior, jpegA)
+        // Like Remove Photo: the contact shows no photo, and the photo stays on it.
+        let stored = try await fixture.storedPhotos(forLocalID: MCPProductionFixture.adaLocalID)
+        XCTAssertEqual(stored, [jpegA])
         let committedAfterDelete = await fixture.store.committedPhotoWrites
         XCTAssertEqual(committedAfterDelete.count, 1)
         XCTAssertEqual(committedAfterDelete.last?.cleared, true)
@@ -313,14 +315,13 @@ final class ContactPhotoToolTests: XCTestCase {
         XCTAssertEqual(auditAfterIntrinsicReplay, auditAfterFirst)
     }
 
-    /// The NEW production-backed snapshot-then-fault coverage. Ada already has a
-    /// photo; the store rejects the write (the Cocoa 134092 store-rejection
-    /// family) AFTER `setContactPhoto` has snapshotted the prior bytes. The
-    /// snapshot must be durable through GuessWhoSync, the live photo must be
-    /// untouched, the cache/reload must stay honest, the returned error must be
-    /// typed + non-leaking + unaudited, and a retry (a failed write is never
-    /// idempotency-cached) must apply the new photo.
-    func testSetPhotoSnapshotSurvivesInjectedWriteFailureAndRetries() async throws {
+    /// The production-backed store-then-fault coverage. Only Contacts holds Ada's
+    /// photo; the store rejects the write (the Cocoa 134092 store-rejection family)
+    /// AFTER `setContactPhoto` has stored those bytes. That store must be undone,
+    /// the live photo must be untouched, the cache/reload must stay honest, the
+    /// returned error must be typed + non-leaking + unaudited, and a retry (a failed
+    /// write is never idempotency-cached) must apply the new photo and keep the old.
+    func testSetPhotoLeavesStorageUnchangedOnInjectedWriteFailureAndRetries() async throws {
         let fixture = try await productionFixture()
         defer { fixture.cleanUp() }
         let ada = MCPProductionFixture.adaGuessWhoID
@@ -338,10 +339,9 @@ final class ContactPhotoToolTests: XCTestCase {
         XCTAssertEqual(errorCode(response), .writeFailed)
         XCTAssertEqual(response?.errorPayload?.message, WireErrorMessage.writeFailed)
 
-        // Snapshot durable through sync: the prior image reached the on-disk
-        // sidecar BEFORE the write was rejected.
-        let snapshot = try fixture.storedPreviousPhoto(forGuessWhoID: ada)
-        XCTAssertEqual(snapshot, jpegA, "the previousPhoto snapshot is durable through sync")
+        // A failed Contacts write leaves storage unchanged.
+        let stored = try await fixture.storedPhotos(forLocalID: MCPProductionFixture.adaLocalID)
+        XCTAssertEqual(stored, [], "the store of the Contacts photo was undone")
 
         // Live photo unchanged: the rejected write left the bytes intact.
         let live = try await fixture.storedPhoto(forLocalID: MCPProductionFixture.adaLocalID)
@@ -370,7 +370,7 @@ final class ContactPhotoToolTests: XCTestCase {
 
         // Idempotency retry: the failed write was NOT cached, so re-sending the
         // same token re-executes (the one-shot fault has cleared) and the new
-        // photo finally lands, while the snapshot still holds the original.
+        // photo finally lands, with the original kept beside it.
         let retry = await fixture.dispatcher.handle(.contactsSetPhoto(
             helperId: MCPProductionFixture.helper, messageId: TestMessageID.next(),
             contactId: ada, mediaType: "image/jpeg",
@@ -381,8 +381,8 @@ final class ContactPhotoToolTests: XCTestCase {
         XCTAssertEqual(retryMessage, WireAckMessage.photoSet)
         let healed = try await fixture.storedPhoto(forLocalID: MCPProductionFixture.adaLocalID)
         XCTAssertEqual(healed, jpegB, "the retry applies the new photo")
-        let snapshotAfter = try fixture.storedPreviousPhoto(forGuessWhoID: ada)
-        XCTAssertEqual(snapshotAfter, jpegA, "the retry snapshots the still-current prior photo")
+        let storedAfter = try await fixture.storedPhotos(forLocalID: MCPProductionFixture.adaLocalID)
+        XCTAssertEqual(storedAfter, [jpegA, jpegB], "the retry keeps the still-current prior photo")
         let attemptsAfterRetry = await fixture.store.photoWriteAttempts
         let commitsAfterRetry = await fixture.store.committedPhotoWrites
         XCTAssertEqual(attemptsAfterRetry.count, 2)

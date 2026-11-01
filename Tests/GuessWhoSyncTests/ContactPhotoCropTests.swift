@@ -67,8 +67,16 @@ struct ContactPhotoCropPersistenceTests {
         let b = try #require(try secondStore.read(key))
         let ab = try merge(a, b).get()
         let ba = try merge(b, a).get()
-        #expect(ab.fields.count == 1)
-        #expect(ba.fields.count == 1)
+        // One current photo, and each device's photo keeps its own cell.
+        for merged in [ab, ba] {
+            let current = ContactPhotoCells.live(in: merged.fields).filter {
+                $0.name == ContactsRepository.profilePhotoFieldName
+            }
+            #expect(current.count == 1)
+            #expect(merged.fields[blobA.uppercased()] != nil)
+            #expect(merged.fields[blobB.uppercased()] != nil)
+            #expect(merged.fields.count == 3)
+        }
         // Simulate both blob arrivals as well as the merged envelope.
         try firstStore.writeBlob(Data([2]), blobId: blobB, for: key)
         try secondStore.writeBlob(Data([1]), blobId: blobA, for: key)
@@ -155,7 +163,9 @@ struct ContactPhotoCropPersistenceTests {
         let replacement = Data([7, 8, 9])
         try await reopened.setContactPhoto(for: reopenedID, imageData: replacement)
         #expect(try await reopened.contactPhotoData(for: reopenedID, kind: .fullSize)?.crop == nil)
-        #expect(try sync.blobFieldData(at: key, field: ContactsRepository.previousPhotoFieldName) == original)
+        let items = try await reopened.contactPhotos(for: reopenedID)
+        let older = try #require(items.first { !$0.isCurrent })
+        #expect(try await reopened.contactPhotoData(for: reopenedID, photoID: older.id)?.data == original)
         try await reopened.setContactPhoto(for: reopenedID, imageData: nil)
         #expect(try await reopened.contactPhotoData(for: reopenedID, kind: .fullSize) == nil)
     }
@@ -288,9 +298,12 @@ struct ContactPhotoCropPersistenceTests {
         #expect(shown.data == replacement)
         #expect(shown.crop == crop)
         #expect(shown.storedFileUnreadable == false)
-        // What the doc promises: the Contacts photo is kept, and the older file goes.
-        #expect(try setup.sync.blobFieldData(at: setup.key, field: ContactsRepository.previousPhotoFieldName) == systemPhoto)
-        #expect(!FileManager.default.fileExists(atPath: setup.datURL.path))
+        // What the doc promises: another device may read the older file, so it stays
+        // on the contact, and Contacts' copy of it isn't stored as well.
+        #expect(FileManager.default.fileExists(atPath: setup.datURL.path))
+        let stored = try setup.sync.storedContactPhotos(at: setup.key)
+        #expect(stored.photos.count == 2)
+        #expect(try setup.store.blobIds(for: setup.key).count == 2)
     }
 
     @Test @MainActor func existingPhotoHasNoCropAndIsPreservedWhenFirstCropped() async throws {

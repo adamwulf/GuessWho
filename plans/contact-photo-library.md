@@ -84,6 +84,12 @@ as `setBlobField` does today.
   these fields.
 - **Any new photo gets its library cell and its `profilePhoto` update in the same
   envelope write**, so a racing device can't lose it.
+- **A library cell's `createdAt`** is when the photo was added. The `profilePhoto` slot
+  keeps the `createdAt` of the contact's first photo across repoints, so a superseded
+  pointer's new library cell takes that slot's `modifiedAt`, and the list does the same
+  for a pointer with no library cell yet.
+- **A library tombstone stays.** A superseded pointer whose library key holds a tombstone
+  gets no new cell: that photo was deleted on another device.
 
 ### Operations
 
@@ -92,14 +98,25 @@ as `setBlobField` does today.
   1. If what's showing is a Contacts photo with no stored original, or an external
      Contacts change overrode the stored one (`usesSystemPhoto`), store those Contacts
      bytes as a photo first (deduplicated). Replaces `snapshotCurrentPhotoIfPresent`,
-     and this stays best-effort.
+     and this stays best-effort. If the change then fails and Contacts ends up holding
+     those bytes again, this store is undone, so a failed write leaves storage as it was.
+     The undo leaves one tombstoned cell, which nothing shows. If restoring Contacts
+     fails too, the stored copy stays, because it's the only one left. A current photo
+     this device can't read gets no Contacts copy: a stored original exists, and it
+     stays on the contact.
   2. SHA-256 the incoming bytes and compare against the readable photos on the contact.
      On a match, reuse that photo, with `crop ?? its existing crop`. Otherwise store new.
+     Only a photo with the same `byteCount` is read and hashed.
   3. If the match is already current and the crop is unchanged, return without writing
      to Contacts. This stops a repeated LinkedIn import from churning.
   4. Write Contacts, then commit, restoring Contacts on failure, as today.
 - Nil image: as step 1, then clear Contacts and tombstone `profilePhoto`. Library
-  cells stay. `removeProfilePhoto` keeps its current meaning.
+  cells stay. `removeProfilePhoto` keeps its current meaning, and a pointer with no
+  library cell gets one in the same write.
+
+Dedup covers new writes. Existing data can hold the same bytes under two blobIds, from
+an old repeat import, and the list can't see that without reading bytes, so both show.
+Two devices adding the same image at the same moment also mint two photos.
 
 **`setContactPhotoCrop`** no longer writes a new `.dat` for a stored photo. It updates
 the pointer's crop in `profilePhoto` and in that photo's library cell, keeping the
@@ -110,11 +127,15 @@ in the second case stays as a library photo. The `storedFileUnreadable` refusal 
 **New: list.** `contactPhotos(for: ContactID) async throws -> [ContactPhotoItem]`,
 newest first by the cell's `createdAt`, with the current one marked. Add a Contacts-only
 item when Contacts has a photo that no stored photo stands for: no stored current, or
-`usesSystemPhoto`. Reads pointers only, no image bytes.
+`usesSystemPhoto`. Reads pointers only, with one exception: spotting an external Contacts
+change needs the current photo's digest, so the list reads that one file and the Contacts
+image. No other photo's bytes are read.
 
 **New: bytes.** `contactPhotoData(for: ContactID, photoID:) async throws -> ContactPhoto?`.
 A pending `.dat` returns nil and starts its download, and the item shows a placeholder
-until reload. An unreadable older file marks the item unavailable.
+until reload. An unreadable older file throws `storedPhotoUnreadable` and marks the item
+unavailable. Only a read can detect that, so `isAvailable` stays true until one fails, and
+the mark lives in memory. The grid reads every photo, so it flips right away.
 
 **New: add.** `addContactPhoto(for:imageData:crop:) async throws`. Stores it
 (deduplicated). If the contact has no current photo, it also becomes current,
@@ -129,14 +150,28 @@ Restores Contacts on failure. Refuses a photo whose file is pending or unreadabl
 cell naming that blobId, then deletes the `.dat`. If it was current, also clear
 Contacts first, restoring on failure. The Contacts-only item clears Contacts. This is
 now the immediate delete from the sweep discussion, so a deleted photo doesn't linger
-in iCloud. `sweepOrphanBlobs` stays uncalled.
+in iCloud. `sweepOrphanBlobs` stays uncalled. It refuses an older file this device can't
+read, since another device may still read it.
+
+One exception to "doesn't linger": `deleteBlob` follows the envelope delete, which leaves
+an iCloud placeholder alone. So a photo deleted on a device its file never reached loses
+its cells, but the file stays in iCloud with nothing naming it. This logs, and nothing
+shows it.
 
 All of these post the same refresh `setContactPhoto` does. A failed Contacts write
 leaves storage unchanged. `sync == nil`: the list shows only the Contacts photo, and
 add, swap, and delete of stored photos throw `SidecarUnavailableError`.
 
 `ContactPhotoItem` is public and opaque: `id` (a `String`; a blobId, or a fixed value
-for the Contacts-only item), `isCurrent`, `crop`, `addedAt`, and `isAvailable`.
+for the Contacts-only item), `isCurrent`, `crop`, `addedAt` (nil for the Contacts-only
+item), and `isAvailable`.
+
+**`ContactPhotoSourceTracker`** needs one change after all. It cleared an override only
+when the blobId changed, and choosing a photo again reuses its blobId. So if Contacts.app
+changed a photo and one device picked the old photo again, another device stayed on the
+uncropped Contacts copy indefinitely. It now takes a revision: the blobId plus the
+`profilePhoto` cell's `modifiedAt`. The revision lives in local preferences only, and the
+synced cell doesn't change.
 
 Add `contactPhotoFieldName` to `reservedFieldNames`. `.blob` cells are already hidden
 from custom fields. Check every other walker of `.blob` cells.

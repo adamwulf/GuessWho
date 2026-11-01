@@ -543,9 +543,9 @@ struct LinkedInApplyPhotoTests {
         }
     }
 
-    @Test func replacingExistingPhoto_snapshotsOldBytes() async throws {
+    @Test func replacingExistingPhoto_keepsOldBytes() async throws {
         let oldBytes = Data([0xFF, 0xD8, 0xFF, 0xAA])
-        let (repo, id, sync) = await makeRepo(
+        let (repo, id, _) = await makeRepo(
             Contact(localID: "T", givenName: "Ada", imageDataAvailable: true),
             seedPhoto: oldBytes
         )
@@ -553,11 +553,32 @@ struct LinkedInApplyPhotoTests {
         _ = try await repo.applyLinkedIn(
             profile: profile(photoBytes: newBytes), to: id, fields: [.photo]
         )
-        // New photo is live; the replaced bytes are the previous-photo blob.
+        // New photo is live; the replaced bytes are another photo on the contact.
         let live = try await repo.contactPhotoData(for: id, kind: .fullSize)
         #expect(live?.data == newBytes)
+        let freshID = try #require(repo.contact(localID: "T")).contactID
+        let older = try #require(try await repo.contactPhotos(for: freshID).first { !$0.isCurrent })
+        #expect(try await repo.contactPhotoData(for: freshID, photoID: older.id)?.data == oldBytes)
+    }
+
+    /// `repeatingTheCurrentPhotoWritesNothing` covers Contacts handing back
+    /// re-encoded bytes, which is when an import reaches the write path at all.
+    @Test func repeatedImport_addsNoPhoto() async throws {
+        let (repo, id, sync) = await makeRepo(Contact(localID: "T", givenName: "Ada"))
+        let bytes = Data([0xFF, 0xD8, 0xFF, 0xDD])
+        _ = try await repo.applyLinkedIn(
+            profile: profile(photoBytes: bytes), to: id, fields: [.photo]
+        )
         let key = try contactKey(repo, localID: "T")
-        #expect(try sync.blobFieldData(at: key, field: ContactsRepository.previousPhotoFieldName) == oldBytes)
+        let photosBefore = try sync.storedContactPhotos(at: key).photos.count
+        let freshID = try #require(repo.contact(localID: "T")).contactID
+
+        _ = try await repo.applyLinkedIn(
+            profile: profile(photoBytes: bytes), to: freshID, fields: [.photo]
+        )
+
+        #expect(photosBefore == 1)
+        #expect(try sync.storedContactPhotos(at: key).photos.count == 1)
     }
 
     @Test func unchangedPhoto_reimportIsNoOp_noSnapshot() async throws {
