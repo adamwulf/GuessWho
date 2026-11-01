@@ -200,7 +200,8 @@ any write:
   An older build may have deleted it, but a file still on its way looks identical, because
   the JSON can land before the file's placeholder does. That file arrives later, named by
   nothing, and stays in iCloud, because nothing calls `sweepOrphanBlobs`. So here the
-  promise holds for the photo, which no device lists again, but not for that file.
+  promise holds for the photo, which no device lists again apart from the crop race above,
+  but not for that file.
 
 All of these post the same refresh `setContactPhoto` does. A failed Contacts write
 leaves storage unchanged. With no storage (`sync == nil`), the list shows only the
