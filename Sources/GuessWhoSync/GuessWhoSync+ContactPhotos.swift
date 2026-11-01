@@ -4,8 +4,7 @@ import Logging
 // The photos on a contact. Each stored photo has one add-only `contactPhoto` cell,
 // keyed by its blobId, and the `profilePhoto` cell holds a copy of the current
 // one's pointer. Merge is whole-cell last-writer-wins, so moving pointers between
-// cells could lose a photo in a race. With one cell per photo, the worst a race
-// does is pick a different current photo. See docs/profile-photos.md.
+// cells could lose a photo in a race. docs/profile-photos.md says what races do.
 
 /// What a photo write does to the crop of a photo it finds already stored.
 enum ContactPhotoCropChoice: Sendable {
@@ -62,8 +61,15 @@ enum ContactPhotoCells {
         }
     }
 
-    /// Every live photo cell. The blobId is read leniently, so a partly malformed
-    /// pointer still counts as naming its file.
+    /// A tombstone at a photo's `contactPhoto` key means it was deleted, whatever else
+    /// still names it. A device that hadn't seen the delete can still repoint
+    /// `profilePhoto` at it, with a later stamp than the delete.
+    static func isDeleted(blobID: String, in fields: [String: SidecarCell]) -> Bool {
+        fields[blobID.uppercased()]?.deletedAt != nil
+    }
+
+    /// Every live cell of a photo that hasn't been deleted. The blobId is read
+    /// leniently, so a partly malformed pointer still counts as naming its file.
     static func live(in fields: [String: SidecarCell]) -> [Cell] {
         fields.compactMap { id, cell in
             guard cell.deletedAt == nil, SidecarField.type(of: cell) == .blob,
@@ -71,7 +77,8 @@ enum ContactPhotoCells {
                   case .string(let name) = inner[SidecarField.innerFieldKey] ?? .null,
                   fieldNames.contains(name),
                   let value = inner[SidecarField.innerValueKey],
-                  let blobID = BlobPointer.referencedBlobId(from: value) else { return nil }
+                  let blobID = BlobPointer.referencedBlobId(from: value),
+                  !isDeleted(blobID: blobID, in: fields) else { return nil }
             return Cell(id: id, name: name, cell: cell, blobID: blobID, value: value)
         }
     }
@@ -103,13 +110,16 @@ enum ContactPhotoCells {
 
     /// Adds the photo's `contactPhoto` cell unless the key is taken. A tombstone
     /// counts as taken: that photo was deleted on another device, and stays deleted.
-    static func addLibraryCell(blobID: String, value: JSONValue, createdAt: Date, now: Date,
+    ///
+    /// A photo already on the contact gets a stamp from before this write, its
+    /// pointer's own, so a delete this device hasn't seen still beats the new cell.
+    static func addLibraryCell(blobID: String, value: JSONValue, createdAt: Date, stamp: Date,
                                deviceID: String, to fields: inout [String: SidecarCell]) {
         let id = blobID.uppercased()
         guard fields[id] == nil else { return }
         let inner = SidecarField.makeInnerValue(field: ContactsRepository.contactPhotoFieldName, type: .blob,
                                                 value: value, createdAt: createdAt)
-        fields[id] = SidecarCell(value: inner, modifiedAt: now, modifiedBy: deviceID)
+        fields[id] = SidecarCell(value: inner, modifiedAt: stamp, modifiedBy: deviceID)
     }
 
     /// Points `profilePhoto` at `pointer`. The photo it stops showing keeps a cell
@@ -119,7 +129,7 @@ enum ContactPhotoCells {
         let slots = live(in: fields).filter { $0.name == ContactsRepository.profilePhotoFieldName }
         for slot in slots where slot.blobID != pointer.blobId {
             addLibraryCell(blobID: slot.blobID, value: slot.value, createdAt: slot.cell.modifiedAt,
-                           now: now, deviceID: deviceID, to: &fields)
+                           stamp: slot.cell.modifiedAt, deviceID: deviceID, to: &fields)
         }
         if let slot = slots.first,
            let inner = SidecarField.makeInnerValueForEdit(existingCell: slot.cell,
@@ -144,13 +154,25 @@ enum ContactPhotoCells {
             fields[cell.id] = SidecarCell(value: inner, modifiedAt: now, modifiedBy: deviceID)
         }
         addLibraryCell(blobID: pointer.blobId, value: pointer.jsonValue, createdAt: addedAt(cells),
-                       now: now, deviceID: deviceID, to: &fields)
+                       stamp: cells.first?.cell.modifiedAt ?? now, deviceID: deviceID, to: &fields)
     }
 
+    /// Tombstones every cell naming the photo, and its `contactPhoto` key even when
+    /// there's no cell there yet. Older data has none, and without a tombstone a device
+    /// that replaces this photo would add a cell naming a file that's gone.
     static func tombstone(blobID: String, now: Date, deviceID: String, in fields: inout [String: SidecarCell]) -> Bool {
         var changed = false
-        for cell in live(in: fields) where cell.blobID == blobID {
+        let cells = live(in: fields).filter { $0.blobID == blobID }
+        for cell in cells {
             fields[cell.id] = SidecarCell(value: cell.cell.value, modifiedAt: now, modifiedBy: deviceID, deletedAt: now)
+            changed = true
+        }
+        let libraryKey = blobID.uppercased()
+        if fields[libraryKey] == nil {
+            let value = cells.first?.value ?? .object([BlobPointer.blobIdKey: .string(blobID)])
+            let inner = SidecarField.makeInnerValue(field: ContactsRepository.contactPhotoFieldName, type: .blob,
+                                                    value: value, createdAt: now)
+            fields[libraryKey] = SidecarCell(value: inner, modifiedAt: now, modifiedBy: deviceID, deletedAt: now)
             changed = true
         }
         return changed
@@ -176,6 +198,22 @@ extension GuessWhoSync {
                 .flatMap { BlobPointer(from: $0.value) }
             return StoredContactPhotos(photos: photos, current: current)
         }
+    }
+
+    /// What the `profilePhoto` cell says now, for telling when a cached photo went
+    /// stale. One read is atomic, so this takes no lock.
+    func currentContactPhotoCell(at key: SidecarKey) throws -> (pointer: BlobPointer, modifiedAt: Date)? {
+        guard let envelope = try sidecars.read(key) else { return nil }
+        let cell = ContactPhotoCells.live(in: envelope.fields)
+            .filter { $0.name == ContactsRepository.profilePhotoFieldName }
+            .max { $0.cell.modifiedAt < $1.cell.modifiedAt }
+        guard let cell, let pointer = BlobPointer(from: cell.value) else { return nil }
+        return (pointer, cell.cell.modifiedAt)
+    }
+
+    /// Whether this photo's file, or a placeholder for it, has reached this device.
+    func hasContactPhotoFile(at key: SidecarKey, blobID: String) throws -> Bool {
+        try sidecars.blobIds(for: key).contains(blobID)
     }
 
     /// The photo's bytes and crop under one lock, or nil when it isn't on the contact
@@ -273,7 +311,7 @@ extension GuessWhoSync {
                                       byteCount: data.count, photoCrop: newCrop, systemPhotoDigest: systemPhotoDigest)
                 try ctx.writeBlob(data, blobId: pointer.blobId)
                 ContactPhotoCells.addLibraryCell(blobID: pointer.blobId, value: pointer.jsonValue, createdAt: now,
-                                                 now: now, deviceID: deviceID, to: &fields)
+                                                 stamp: now, deviceID: deviceID, to: &fields)
             }
             if makeCurrent {
                 pointer = pointer.with(photoCrop: pointer.photoCrop, systemPhotoDigest: systemPhotoDigest)

@@ -219,6 +219,8 @@ private final class PhotoTestStore: SidecarStoreProtocol {
     func requestDownload(_ key: SidecarKey) throws {}
     func writeBlob(_ data: Data, blobId: String, for key: SidecarKey) throws { try base.writeBlob(data, blobId: blobId, for: key) }
     func readBlob(blobId: String, for key: SidecarKey) throws -> Data? { try hideBlobs ? nil : base.readBlob(blobId: blobId, for: key) }
+    // A hidden file is on its way, as an iCloud placeholder would say.
+    func pendingBlobIds(for key: SidecarKey) throws -> [String] { try hideBlobs ? base.blobIds(for: key) : [] }
     func deleteBlob(blobId: String, for key: SidecarKey) throws { try base.deleteBlob(blobId: blobId, for: key) }
     func blobIds(for key: SidecarKey) throws -> [String] { try base.blobIds(for: key) }
 }

@@ -72,15 +72,36 @@ All three are reserved and hidden from custom fields.
 
 Merge is whole-cell last-writer-wins, so moving pointers between cells could lose a
 photo in a race: one device's pointer could overwrite another's. With one add-only
-cell per photo, the worst a race does is pick a different current photo. No migration
-is needed.
+cell per photo, a race over which photo is current can't lose one. No migration is
+needed.
 
 Every write happens under the key's lock, with the `.dat` first and then one envelope
 write. A new photo's cell and any `profilePhoto` update land in that one write, so a
 racing device can't lose it. Writing these fields never deletes a superseded `.dat`.
 Before `profilePhoto` is repointed or removed, a pointer with no `contactPhoto` cell
-gets one. A key holding a tombstone gets no new cell, because that photo was deleted
-on another device.
+gets one, stamped with the pointer's own `modifiedAt` so a delete this device hasn't
+seen still beats it. A key holding a tombstone gets no new cell, because that photo was
+deleted on another device. A photo whose `contactPhoto` key holds a tombstone counts as
+deleted, whatever else still names it: it isn't listed, and it isn't current.
+
+### What races do
+
+- **Two devices change the current photo.** The later stamp wins, and both photos stay
+  on the contact.
+- **One device deletes a photo while another makes it current.** The photo stays
+  deleted in either order. The later swap can leave `profilePhoto` naming it, but it
+  counts as deleted, so the contact has no stored current photo and shows whatever
+  Contacts holds.
+- **One device deletes older data that another replaces.** It stays deleted in either
+  order, because the delete writes a tombstone at the `contactPhoto` key even with no
+  cell there. If the delete has the later stamp it also tombstones `profilePhoto`, so
+  the replacement stays on the contact but isn't current.
+- **One device deletes a photo while another crops it.** A crop with the earlier stamp
+  loses. A crop with the later stamp wins the cell, so the photo comes back with its
+  file gone. It shows as a placeholder, and deleting it again clears it.
+- **One device crops a photo while another changes the current one.** The crop stays
+  with its photo. If the crop has the later stamp it also makes that photo current
+  again, because a crop writes `profilePhoto`.
 
 **The same image is never stored twice** by a new write. Identity is the bytes'
 SHA-256, compared against the readable photos on the contact, reading only those with
@@ -239,6 +260,13 @@ stored originals take precedence over system thumbnails, whose framing may
 already differ. The pointer and bytes are read
 under the same storage lock. A pending original download remains retryable.
 
+A current photo whose file isn't here, with no iCloud placeholder either, shows the
+Contacts photo, uncropped, rather than going blank. The file may still arrive, because
+the JSON can land before the file's placeholder does, or may be gone for good, as when
+an older build deleted it. Its item stays current in All Photos as a placeholder. Because
+Contacts' copy could be the last one, changing the photo stores it first, and Edit Crop
+adopts it as a new photo. When the file does arrive, photo consumers are told.
+
 The shared `ContactPhotoLoader` renders the rectangle for avatars, lists, and
 contact details. `ContactPhotoRendering` draws in upright image coordinates,
 including rotated and mirrored source images, without altering persisted data.
@@ -247,9 +275,12 @@ Thumbnail rendering is bounded to 256 pixels. A full-screen photo opened from
 the header shows the same crop; Edit Crop always retrieves the original.
 
 Photo writes refresh the contact-data revision. Remote envelope changes compare
-previously loaded photo pointers and invalidate photo consumers when a pointer
-changes, or when the current photo is removed; unrelated notes and timestamp changes
-retain their inexpensive refresh.
+the pointer and `modifiedAt` a photo consumer last loaded, and invalidate photo
+consumers when either changes, when the current photo is removed, or when a missing
+file arrives. The stamp matters because choosing a photo again can leave the pointer
+identical. Unrelated notes and timestamp changes retain their inexpensive refresh. The
+list and the reads before a write don't count as loading: they'd hide a change from
+`ContactPhotoLoader`, which still holds the old image.
 
 ## Verification
 

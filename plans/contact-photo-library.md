@@ -52,8 +52,11 @@ A photo is a `.dat` file plus a pointer, as today.
 
 Why not move pointers between cells: envelope merge is whole-cell last-writer-wins.
 If two devices each moved pointers at once, one pointer could be overwritten by the
-other and that photo lost. With an add-only cell per photo, the worst a race does is
-pick a different current photo. No migration is needed.
+other and that photo lost. With an add-only cell per photo, a race over which photo is
+current can't lose one. No migration is needed. Races with a delete or a crop have other
+outcomes, listed under "What races do" in `docs/profile-photos.md`. One can't be prevented
+with this design: a crop stamped later than a delete on another device wins the cell, so
+the photo comes back with its file gone, as a placeholder that deleting again clears.
 
 ### Identity merges
 
@@ -89,7 +92,11 @@ as `setBlobField` does today.
   pointer's new library cell takes that slot's `modifiedAt`, and the list does the same
   for a pointer with no library cell yet.
 - **A library tombstone stays.** A superseded pointer whose library key holds a tombstone
-  gets no new cell: that photo was deleted on another device.
+  gets no new cell: that photo was deleted on another device. A superseded pointer's new
+  cell takes the pointer's own older stamp, so a delete this device hasn't seen beats it.
+- **A library tombstone means deleted.** Delete writes one at the library key even with no
+  cell there. A `profilePhoto` naming a photo whose library key is tombstoned isn't a stored
+  current photo, and that photo isn't listed.
 
 ### Operations
 
@@ -136,6 +143,11 @@ A pending `.dat` returns nil and starts its download, and the item shows a place
 until reload. An unreadable older file throws `storedPhotoUnreadable` and marks the item
 unavailable. Only a read can detect that, so `isAvailable` stays true until one fails, and
 the mark lives in memory. The grid reads every photo, so it flips right away.
+
+A current photo whose file is truly missing, with no placeholder, shows the Contacts copy
+instead of a blank avatar, and changing or cropping it keeps that copy. A real placeholder
+stays pending. `loadedPhotoPointers` holds the pointer and `modifiedAt` a consumer last
+loaded, and only a read a consumer will show updates it: the list and pre-write reads don't.
 
 **New: add.** `addContactPhoto(for:imageData:crop:) async throws`. Stores it
 (deduplicated). If the contact has no current photo, it also becomes current,

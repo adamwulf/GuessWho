@@ -1403,7 +1403,16 @@ public final class ContactsRepository: NSObject {
         Self.failureLog.error("repository operation failed", metadata: error.logMetadata(["op": .string(operation)]))
     }
 
-    private var loadedPhotoPointers: [SidecarKey: JSONValue] = [:]
+    /// What a photo consumer last loaded for a contact, to tell when that went stale.
+    /// `modifiedAt` matters because choosing a photo again can leave the pointer identical.
+    private struct LoadedPhotoPointer: Equatable {
+        var pointer: JSONValue = .null
+        var modifiedAt: Date?
+        /// The file wasn't here, so the Contacts photo was shown. Its arrival counts too.
+        var fileMissing = false
+    }
+
+    private var loadedPhotoPointers: [SidecarKey: LoadedPhotoPointer] = [:]
     private var photoWrites: Set<String> = []
     private var systemPhotoWrites: Set<String> = []
     private let photoSources: ContactPhotoSourceTracker
@@ -1427,18 +1436,30 @@ public final class ContactsRepository: NSObject {
     /// the bytes actually are. The app-side loader caches empty results, so
     /// photo-less books don't re-query the store on every scroll.
     public func contactPhotoData(for id: ContactID, kind: ContactPhotoKind) async throws -> ContactPhoto? {
+        try await readPhoto(for: id, kind: kind, marksPointerLoaded: true)
+    }
+
+    /// `marksPointerLoaded` is for a read whose result a consumer will show. The list
+    /// and a read before a write pass false: marking the pointer loaded there would
+    /// hide its change from `ContactPhotoLoader`, which still holds the old image.
+    private func readPhoto(for id: ContactID, kind: ContactPhotoKind, marksPointerLoaded: Bool) async throws -> ContactPhoto? {
         guard let contact = contact(id: id) else { return nil }
 
         do {
             var storedFileUnreadable = false
+            var missingFileBlobID: String?
             if let sync, let key = SidecarKey.forContact(contact) {
+                func markLoaded(_ loaded: LoadedPhotoPointer) {
+                    if marksPointerLoaded { loadedPhotoPointers[key] = loaded }
+                }
                 // Track pending reads so blob arrival refreshes visible placeholders.
-                if loadedPhotoPointers[key] == nil { loadedPhotoPointers[key] = .null }
+                if loadedPhotoPointers[key] == nil { markLoaded(LoadedPhotoPointer()) }
                 do {
                     let record = try await Task.detached(priority: .userInitiated) {
                         try sync.profilePhoto(at: key)
                     }.value
-                    loadedPhotoPointers[key] = record?.pointer.jsonValue ?? .null
+                    markLoaded(LoadedPhotoPointer(pointer: record?.pointer.jsonValue ?? .null,
+                                                  modifiedAt: record?.modifiedAt))
                     if let record {
                         unreadablePhotoBlobIDs.remove(record.pointer.blobId)
                         return try await photoAfterCheckingSystemSource(record.photo, key: key, contact: contact)
@@ -1446,13 +1467,27 @@ public final class ContactsRepository: NSObject {
                 } catch let unreadable as UnreadableProfilePhotoError {
                     // An older encrypted file this device can't open. Contacts
                     // has the photo, so show that instead of failing.
-                    loadedPhotoPointers[key] = unreadable.pointer.jsonValue
+                    markLoaded(LoadedPhotoPointer(pointer: unreadable.pointer.jsonValue,
+                                                  modifiedAt: unreadable.modifiedAt))
                     unreadablePhotoBlobIDs.insert(unreadable.pointer.blobId)
                     storedFileUnreadable = true
+                } catch let missing as MissingProfilePhotoFileError {
+                    // Nothing says this file is coming, so don't blank a photo Contacts
+                    // has. Marked loaded, or every delivery would drop the loader's cache.
+                    markLoaded(LoadedPhotoPointer(pointer: missing.pointer.jsonValue,
+                                                  modifiedAt: missing.modifiedAt, fileMissing: true))
+                    Self.photoLog.notice("stored photo file missing, showing the Contacts photo", metadata: [
+                        "localID": .string(contact.localID), "blobId": .string(missing.pointer.blobId),
+                    ])
+                    missingFileBlobID = missing.pointer.blobId
                 }
             }
             var photo = try await systemPhoto(for: contact, kind: kind)
             photo?.storedFileUnreadable = storedFileUnreadable
+            if let missingFileBlobID {
+                photo?.blobID = missingFileBlobID
+                photo?.storedFileMissing = true
+            }
             return photo
         } catch ContactStoreError.contactNotFound(_) {
             return nil
@@ -1708,7 +1743,7 @@ public final class ContactsRepository: NSObject {
         guard let localID = contact(id: id)?.localID else { throw ContactPhotoEditError.photoChanged }
         guard photoWrites.insert(localID).inserted else { throw ContactPhotoEditError.saveInProgress }
         defer { photoWrites.remove(localID) }
-        guard let photo = try await contactPhotoData(for: id, kind: .fullSize),
+        guard let photo = try await readPhoto(for: id, kind: .fullSize, marksPointerLoaded: false),
               photo.data == originalData else { throw ContactPhotoEditError.photoChanged }
         // These bytes are Contacts' copy of a file this device can't open, so
         // the original isn't here to frame.
@@ -1717,7 +1752,7 @@ public final class ContactsRepository: NSObject {
         let key = SidecarKey(kind: .contact, id: guessWhoID)
         let observed = try await systemPhotoDigest(localID: localID)
         let expected = photo.systemPhotoDigest ?? observed
-        if let blobID = photo.blobID, !photo.usesSystemPhoto {
+        if let blobID = photo.blobID, !photo.usesSystemPhoto, !photo.storedFileMissing {
             try await Task.detached(priority: .userInitiated) {
                 try sync.setCurrentContactPhotoCrop(at: key, blobID: blobID, crop: crop, systemPhotoDigest: expected)
             }.value
@@ -1748,8 +1783,7 @@ public final class ContactsRepository: NSObject {
         let stored = try await Task.detached(priority: .userInitiated) {
             try sync.storedContactPhotos(at: key)
         }.value
-        var currentID: String?
-        if case .stored = shown { currentID = stored.current?.blobId }
+        let currentID = shown.isStoredPhoto ? stored.current?.blobId : nil
         let sorted = stored.photos.sorted { first, second in
             if first.addedAt != second.addedAt { return first.addedAt > second.addedAt }
             let firstIsCurrent = first.pointer.blobId == currentID
@@ -1877,7 +1911,7 @@ public final class ContactsRepository: NSObject {
             try sync.storedContactPhotos(at: key)
         }.value
         let delete = { @Sendable in try sync.deleteContactPhoto(at: key, blobID: photoID) }
-        if case .stored = shown, stored.current?.blobId == photoID {
+        if shown.isStoredPhoto, stored.current?.blobId == photoID {
             let previousSystemData = try await systemPhotoBytes(localID: localID)
             Self.saveLog.notice("contact save requested", metadata: [
                 "op": "deleteContactPhoto", "localID": .string(localID), "bytes": "0",
@@ -1901,12 +1935,25 @@ public final class ContactsRepository: NSObject {
         /// The `profilePhoto` cell's photo, even while its file is downloading or
         /// can't be read here.
         case stored
+        /// The `profilePhoto` cell's photo, with Contacts' bytes showing because its
+        /// file isn't here. It may be gone for good, so those bytes are worth keeping.
+        case storedFileMissing(contactsCopy: Data)
         case unknown
+
+        var isStoredPhoto: Bool {
+            switch self {
+            case .stored, .storedFileMissing: return true
+            case .none, .contacts, .unknown: return false
+            }
+        }
     }
 
     private func shownPhoto(for id: ContactID) async throws -> ShownPhoto {
         do {
-            guard let photo = try await contactPhotoData(for: id, kind: .fullSize) else { return .none }
+            guard let photo = try await readPhoto(for: id, kind: .fullSize, marksPointerLoaded: false) else {
+                return .none
+            }
+            if photo.storedFileMissing { return .storedFileMissing(contactsCopy: photo.data) }
             if photo.usesSystemPhoto { return .contacts(photo.data) }
             return photo.blobID != nil || photo.storedFileUnreadable ? .stored : .contacts(photo.data)
         } catch SidecarStoreError.notYetDownloaded {
@@ -1928,7 +1975,12 @@ public final class ContactsRepository: NSObject {
     /// becomes a stored photo first. Best-effort: this never blocks the change. Returns
     /// its blob ID when this stored a new photo, so a failed change can undo it.
     private func keepShownContactsPhoto(_ shown: ShownPhoto, key: SidecarKey?) async -> String? {
-        guard let sync, let key, case .contacts(let data) = shown, !data.isEmpty else { return nil }
+        let data: Data
+        switch shown {
+        case .contacts(let bytes), .storedFileMissing(let bytes): data = bytes
+        case .none, .stored, .unknown: return nil
+        }
+        guard let sync, let key, !data.isEmpty else { return nil }
         do {
             let write = try await Task.detached(priority: .userInitiated) {
                 try sync.storeContactPhoto(at: key, data: data, crop: .existingOrNone, makeCurrent: false,
@@ -5728,11 +5780,13 @@ public final class ContactsRepository: NSObject {
             if let keys = changeSet.changedKeys, !keys.contains(key) { continue }
             if let kinds = changeSet.changedKinds, !kinds.contains(.contact) { continue }
             do {
-                // A tombstone keeps its value, so it must not read as still set.
-                let pointer = try sync.fields(at: key).first {
-                    $0.deletedAt == nil && $0.field == Self.profilePhotoFieldName && $0.type == .blob
-                }?.value ?? .null
-                if pointer != previous { changed = true }
+                let current = try sync.currentContactPhotoCell(at: key)
+                if current?.pointer.jsonValue ?? .null != previous.pointer || current?.modifiedAt != previous.modifiedAt {
+                    changed = true
+                } else if previous.fileMissing, let current,
+                          try sync.hasContactPhotoFile(at: key, blobID: current.pointer.blobId) {
+                    changed = true
+                }
             } catch {
                 // A failed read must not certify a cached image as current.
                 changed = true

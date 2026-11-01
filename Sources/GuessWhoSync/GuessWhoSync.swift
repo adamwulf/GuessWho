@@ -654,7 +654,7 @@ public final class GuessWhoSync: @unchecked Sendable {
                    oldBlobId != newBlobId {
                     if keepsSuperseded {
                         ContactPhotoCells.addLibraryCell(blobID: oldBlobId, value: .object(oldPointer),
-                                                         createdAt: slotCell.modifiedAt, now: now,
+                                                         createdAt: slotCell.modifiedAt, stamp: slotCell.modifiedAt,
                                                          deviceID: deviceID, to: &fields)
                     } else {
                         supersededBlobId = oldBlobId
@@ -704,7 +704,7 @@ public final class GuessWhoSync: @unchecked Sendable {
                 fields[id] = SidecarCell(value: inner, modifiedAt: now, modifiedBy: deviceID)
             }
             if field == ContactsRepository.profilePhotoFieldName {
-                ContactPhotoCells.addLibraryCell(blobID: newBlobId, value: pointer, createdAt: now, now: now,
+                ContactPhotoCells.addLibraryCell(blobID: newBlobId, value: pointer, createdAt: now, stamp: now,
                                                  deviceID: deviceID, to: &fields)
             }
 
@@ -737,6 +737,12 @@ public final class GuessWhoSync: @unchecked Sendable {
             guard cell.deletedAt == nil,
                   case .object(let inner) = cell.value,
                   inner[SidecarField.innerFieldKey] == .string(field) else { return false }
+            // A photo deleted elsewhere is no longer current, whatever the slot says.
+            if let value = inner[SidecarField.innerValueKey],
+               let blobID = BlobPointer.referencedBlobId(from: value),
+               ContactPhotoCells.isDeleted(blobID: blobID, in: fields) {
+                return false
+            }
             return true
         }
         switch expectation {
@@ -779,28 +785,34 @@ public final class GuessWhoSync: @unchecked Sendable {
     }
 
     /// Reads the original bytes and crop under one lock, so they always belong together.
-    func profilePhoto(at key: SidecarKey) throws -> (photo: ContactPhoto, pointer: BlobPointer)? {
+    /// A file with a placeholder here throws `.notYetDownloaded`, and one with no
+    /// placeholder either throws `MissingProfilePhotoFileError`.
+    func profilePhoto(at key: SidecarKey) throws -> (photo: ContactPhoto, pointer: BlobPointer, modifiedAt: Date)? {
         try withKeyLocked(key) { ctx in
             guard let envelope = try ctx.read() else { return nil }
             for (rawID, cell) in envelope.fields {
                 guard let id = UUID(uuidString: rawID), cell.deletedAt == nil,
                       let field = SidecarField.decode(id: id, from: cell),
                       field.field == ContactsRepository.profilePhotoFieldName, field.type == .blob,
-                      let pointer = BlobPointer(from: field.value) else { continue }
+                      let pointer = BlobPointer(from: field.value),
+                      !ContactPhotoCells.isDeleted(blobID: pointer.blobId, in: envelope.fields) else { continue }
                 let stored: Data?
                 do {
                     stored = try ctx.readBlob(blobId: pointer.blobId)
                 } catch SidecarBlobCryptoError.cannotDecrypt {
-                    throw UnreadableProfilePhotoError(pointer: pointer)
+                    throw UnreadableProfilePhotoError(pointer: pointer, modifiedAt: field.modifiedAt)
                 }
                 guard let data = stored else {
-                    throw SidecarStoreError.notYetDownloaded(key)
+                    if try ctx.pendingBlobIds().contains(pointer.blobId) {
+                        throw SidecarStoreError.notYetDownloaded(key)
+                    }
+                    throw MissingProfilePhotoFileError(pointer: pointer, modifiedAt: field.modifiedAt)
                 }
                 var photo = ContactPhoto(data: data, kind: .fullSize, crop: pointer.photoCrop)
                 photo.systemPhotoDigest = pointer.systemPhotoDigest
                 photo.blobID = pointer.blobId
                 photo.pointerRevision = "\(pointer.blobId)@\(SidecarISO8601.string(from: field.modifiedAt))"
-                return (photo, pointer)
+                return (photo, pointer, field.modifiedAt)
             }
             return nil
         }
@@ -822,7 +834,7 @@ public final class GuessWhoSync: @unchecked Sendable {
                 // No longer current, but still on the contact.
                 if let blobID = BlobPointer.referencedBlobId(from: value) {
                     ContactPhotoCells.addLibraryCell(blobID: blobID, value: value, createdAt: cell.modifiedAt,
-                                                     now: now, deviceID: deviceID, to: &fields)
+                                                     stamp: cell.modifiedAt, deviceID: deviceID, to: &fields)
                 }
                 fields[id] = SidecarCell(value: cell.value, modifiedAt: now,
                                         modifiedBy: deviceID, deletedAt: now)

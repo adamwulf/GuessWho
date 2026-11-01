@@ -19,6 +19,9 @@ public struct ContactPhoto: Sendable {
     /// here. Another device may be able to read that file, so it must not be replaced
     /// by a crop edit made from these bytes.
     public package(set) var storedFileUnreadable = false
+    /// These bytes came from Contacts because the stored file isn't on this device,
+    /// with no placeholder saying it's on its way. It may arrive, or be gone for good.
+    package var storedFileMissing = false
 
     public init(data: Data, kind: ContactPhotoKind, crop: ContactPhotoCrop? = nil) {
         self.data = data
@@ -51,6 +54,14 @@ public struct ContactPhotoItem: Identifiable, Equatable, Sendable {
 /// can tell when the stored photo changes.
 struct UnreadableProfilePhotoError: Error {
     let pointer: BlobPointer
+    let modifiedAt: Date
+}
+
+/// The contact's stored photo has no file on this device and no placeholder for one.
+/// The repository shows the Contacts photo instead, and watches for the file.
+struct MissingProfilePhotoFileError: Error {
+    let pointer: BlobPointer
+    let modifiedAt: Date
 }
 
 public enum ContactPhotoEditError: LocalizedError {

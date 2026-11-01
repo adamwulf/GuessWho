@@ -231,6 +231,66 @@ private final class Fixture {
         encoder.outputFormatting = .sortedKeys
         return try encoder.encode(try #require(try store.read(key)))
     }
+
+    /// Delivers a change to this contact's files, as the watcher would, and says
+    /// whether photo consumers were told to drop what they've cached.
+    func deliverChange() async throws -> Bool {
+        nonisolated(unsafe) var dataChanged = false
+        let token = center.addObserver(forName: .contactsRepositoryDidReload, object: repo, queue: nil) { note in
+            if note.userInfo?[ContactsRepositoryDidReloadKey.contactDataChanged] as? Bool == true { dataChanged = true }
+        }
+        defer { center.removeObserver(token) }
+        center.post(name: .guessWhoSidecarsDidChange, object: nil,
+                    userInfo: [GuessWhoSidecarsDidChangeKey.changeSet: SidecarChangeSet(changedKeys: [key])])
+        try await Task.sleep(for: .milliseconds(650))
+        return dataChanged
+    }
+}
+
+/// Two devices that start with the same data and each write without seeing the
+/// other. Each holds its own copy of every file.
+private struct TwoDevices {
+    let key = SidecarKey(kind: .contact, id: Fixture.guessWhoID)
+    let storeA = InMemorySidecarStore()
+    let storeB = InMemorySidecarStore()
+    let a: GuessWhoSync
+    let b: GuessWhoSync
+
+    init() {
+        a = GuessWhoSync(contacts: InMemoryContactStore(), events: InMemoryEventStore(), sidecars: storeA, deviceID: "a")
+        b = GuessWhoSync(contacts: InMemoryContactStore(), events: InMemoryEventStore(), sidecars: storeB, deviceID: "b")
+    }
+
+    /// Both devices start with this photo, as an older build wrote it: `profilePhoto`
+    /// alone, with no `contactPhoto` cell.
+    func startWithOlderCurrent(_ data: Data, blobID: String = UUID().uuidString.lowercased()) throws -> String {
+        let pointer = BlobPointer(blobId: blobID, contentType: "image/jpeg", byteCount: data.count)
+        let stamp = Date(timeIntervalSinceNow: -60)
+        let inner = SidecarField.makeInnerValue(field: ContactsRepository.profilePhotoFieldName, type: .blob,
+                                                value: pointer.jsonValue, createdAt: stamp)
+        let cell = SidecarCell(value: inner, modifiedAt: stamp, modifiedBy: "older-build")
+        for store in [storeA, storeB] {
+            try store.writeBlob(data, blobId: blobID, for: key)
+            try store.write(SidecarEnvelope(schemaVersion: 1, entityID: key.id,
+                                            fields: [ContactPhotoCells.profileCellID: cell]), at: key)
+        }
+        return blobID
+    }
+
+    /// Copies A's envelope and its photo files to B, so both start the same.
+    func copyAToB() throws {
+        try storeB.write(try #require(try storeA.read(key)), at: key)
+        for blobID in try storeA.blobIds(for: key) {
+            try storeB.writeBlob(try #require(try storeA.readBlob(blobId: blobID, for: key)), blobId: blobID, for: key)
+        }
+    }
+
+    /// B's changes reach A: the envelopes merge, and A stays without any file it deleted.
+    func mergeBIntoA() throws -> SidecarEnvelope {
+        let merged = try merge(try #require(try storeA.read(key)), try #require(try storeB.read(key))).get()
+        try storeA.write(merged, at: key)
+        return merged
+    }
 }
 
 private enum FixtureError: Error { case noSuchPhoto }
@@ -699,7 +759,7 @@ struct ContactPhotoLibraryTests {
             modifiedAt: Date(timeIntervalSinceNow: -60), modifiedBy: "start")]
         if !startsOlder {
             ContactPhotoCells.addLibraryCell(blobID: startID, value: pointer.jsonValue, createdAt: Date(timeIntervalSinceNow: -60),
-                                             now: Date(timeIntervalSinceNow: -60), deviceID: "start", to: &cells)
+                                             stamp: Date(timeIntervalSinceNow: -60), deviceID: "start", to: &cells)
         }
         for store in [firstStore, secondStore] {
             try store.writeBlob(photoA, blobId: startID, for: key)
@@ -1129,17 +1189,350 @@ struct ContactPhotoLibraryTests {
         defer { fixture.cleanUp() }
         try await fixture.repo.setContactPhoto(for: fixture.id, imageData: photoA)
         _ = try await fixture.repo.contactPhotoData(for: fixture.id, kind: .thumbnail)
-        nonisolated(unsafe) var dataChanged = false
-        let token = fixture.center.addObserver(forName: .contactsRepositoryDidReload, object: fixture.repo, queue: nil) { note in
-            if note.userInfo?[ContactsRepositoryDidReloadKey.contactDataChanged] as? Bool == true { dataChanged = true }
-        }
-        defer { fixture.center.removeObserver(token) }
 
         try fixture.sync.removeProfilePhoto(at: fixture.key)
-        fixture.center.post(name: .guessWhoSidecarsDidChange, object: nil,
-                            userInfo: [GuessWhoSidecarsDidChangeKey.changeSet: SidecarChangeSet(changedKeys: [fixture.key])])
-        try await Task.sleep(for: .milliseconds(650))
 
-        #expect(dataChanged)
+        #expect(try await fixture.deliverChange())
+    }
+
+    // MARK: - Telling photo consumers what changed
+
+    /// Contacts.app changes a photo, another device picks the original again, and
+    /// Contacts arrives first here. The JSON's pointer is identical, so only the
+    /// cell's stamp shows a new choice was made.
+    @Test func aNewRevisionWithAnIdenticalPointerInvalidatesPhotoConsumers() async throws {
+        let fixture = try await Fixture(onDisk: false)
+        defer { fixture.cleanUp() }
+        try await fixture.repo.setContactPhoto(for: fixture.id, imageData: photoA, crop: cropA)
+        _ = try await fixture.repo.contactPhotoData(for: fixture.id, kind: .thumbnail)
+        let before = try #require(try fixture.sync.currentContactPhotoCell(at: fixture.key))
+        #expect(try await !fixture.deliverChange(), "nothing has changed yet")
+        try await tick()
+
+        try fixture.sync.setCurrentContactPhoto(at: fixture.key, blobID: before.pointer.blobId,
+                                                systemPhotoDigest: before.pointer.systemPhotoDigest)
+
+        let after = try #require(try fixture.sync.currentContactPhotoCell(at: fixture.key))
+        #expect(after.pointer == before.pointer)
+        #expect(after.modifiedAt != before.modifiedAt)
+        #expect(try await fixture.deliverChange())
+    }
+
+    /// Reading for the list or before a write must not count as the loader having
+    /// seen the change: it still holds the old image.
+    @Test func theListDoesNotHideAPointerChangeFromPhotoConsumers() async throws {
+        let fixture = try await Fixture(onDisk: false)
+        defer { fixture.cleanUp() }
+        try await fixture.repo.setContactPhoto(for: fixture.id, imageData: photoA)
+        _ = try await fixture.repo.contactPhotoData(for: fixture.id, kind: .thumbnail)
+        try await tick()
+
+        try fixture.sync.storeContactPhoto(at: fixture.key, data: photoB, crop: .existingOrNone, makeCurrent: true,
+                                           systemPhotoDigest: ContactPhotoSourceTracker.digest(photoB))
+        _ = try await fixture.items()
+
+        #expect(try await fixture.deliverChange())
+
+        // The loader reading it is what settles things.
+        _ = try await fixture.repo.contactPhotoData(for: fixture.id, kind: .thumbnail)
+        #expect(try await !fixture.deliverChange())
+    }
+
+    @Test func aStaleCropCommitDoesNotHideAPointerChangeFromPhotoConsumers() async throws {
+        let fixture = try await Fixture(onDisk: false)
+        defer { fixture.cleanUp() }
+        try await fixture.repo.setContactPhoto(for: fixture.id, imageData: photoA)
+        _ = try await fixture.repo.contactPhotoData(for: fixture.id, kind: .thumbnail)
+        try await tick()
+
+        try fixture.sync.storeContactPhoto(at: fixture.key, data: photoB, crop: .existingOrNone, makeCurrent: true,
+                                           systemPhotoDigest: ContactPhotoSourceTracker.digest(photoB))
+        do {
+            try await fixture.repo.setContactPhotoCrop(for: fixture.id, crop: cropA, originalData: photoA)
+            Issue.record("the stale crop should have been refused")
+        } catch ContactPhotoEditError.photoChanged {
+        }
+
+        #expect(try await fixture.deliverChange())
+    }
+
+    // MARK: - A file that isn't here
+
+    @Test(arguments: [false, true]) func aMissingCurrentFileShowsTheContactsPhoto(onDisk: Bool) async throws {
+        let fixture = try await Fixture(onDisk: onDisk)
+        defer { fixture.cleanUp() }
+        try await fixture.repo.setContactPhoto(for: fixture.id, imageData: photoA, crop: cropA)
+        let blobID = try #require(try fixture.store.blobIds(for: fixture.key).first)
+        try fixture.store.deleteBlob(blobId: blobID, for: fixture.key)
+
+        let shown = try #require(try await fixture.repo.contactPhotoData(for: fixture.id, kind: .fullSize))
+
+        #expect(shown.data == photoA)
+        #expect(shown.crop == nil)
+    }
+
+    /// With the pointer never marked loaded, every delivery would drop the loader's
+    /// whole cache. Once the file does arrive, consumers must hear about it.
+    @Test(arguments: [false, true]) func aMissingFileStopsInvalidatingUntilItArrives(onDisk: Bool) async throws {
+        let fixture = try await Fixture(onDisk: onDisk)
+        defer { fixture.cleanUp() }
+        try await fixture.repo.setContactPhoto(for: fixture.id, imageData: photoA, crop: cropA)
+        let blobID = try #require(try fixture.store.blobIds(for: fixture.key).first)
+        try fixture.store.deleteBlob(blobId: blobID, for: fixture.key)
+        _ = try await fixture.repo.contactPhotoData(for: fixture.id, kind: .thumbnail)
+
+        #expect(try await !fixture.deliverChange())
+        #expect(try await !fixture.deliverChange())
+
+        try fixture.store.writeBlob(photoA, blobId: blobID, for: fixture.key)
+
+        #expect(try await fixture.deliverChange())
+        let shown = try #require(try await fixture.repo.contactPhotoData(for: fixture.id, kind: .thumbnail))
+        #expect(shown.crop == cropA)
+        #expect(try await !fixture.deliverChange())
+    }
+
+    @Test func aRealPlaceholderStaysPending() async throws {
+        let fixture = try await Fixture(onDisk: true)
+        defer { fixture.cleanUp() }
+        try await fixture.repo.setContactPhoto(for: fixture.id, imageData: photoA)
+        let blobID = try #require(try fixture.store.blobIds(for: fixture.key).first)
+        try fixture.makeFilePlaceholder(blobID: blobID)
+
+        await #expect(throws: SidecarStoreError.notYetDownloaded(fixture.key)) {
+            _ = try await fixture.repo.contactPhotoData(for: fixture.id, kind: .fullSize)
+        }
+    }
+
+    /// The file may be gone for good, so Contacts' copy could be the last one left.
+    @Test(arguments: [false, true]) func changingAPhotoWhoseFileIsMissingKeepsTheContactsCopy(onDisk: Bool) async throws {
+        let fixture = try await Fixture(onDisk: onDisk)
+        defer { fixture.cleanUp() }
+        try await fixture.repo.setContactPhoto(for: fixture.id, imageData: photoA)
+        let blobID = try #require(try fixture.store.blobIds(for: fixture.key).first)
+        try fixture.store.deleteBlob(blobId: blobID, for: fixture.key)
+
+        try await fixture.repo.setContactPhoto(for: fixture.id, imageData: photoB)
+
+        #expect(try await Set(fixture.storedBytes()) == [photoA, photoB])
+        #expect(try await fixture.bytes(fixture.current()) == photoB)
+    }
+
+    @Test(arguments: [false, true]) func croppingAPhotoWhoseFileIsMissingAdoptsTheContactsCopy(onDisk: Bool) async throws {
+        let fixture = try await Fixture(onDisk: onDisk)
+        defer { fixture.cleanUp() }
+        try await fixture.repo.setContactPhoto(for: fixture.id, imageData: photoA)
+        let blobID = try #require(try fixture.store.blobIds(for: fixture.key).first)
+        try fixture.store.deleteBlob(blobId: blobID, for: fixture.key)
+
+        try await fixture.repo.setContactPhotoCrop(for: fixture.id, crop: cropA, originalData: photoA)
+
+        let current = try #require(try await fixture.current())
+        #expect(current.id != blobID)
+        #expect(current.crop == cropA)
+        #expect(try await fixture.bytes(current) == photoA)
+    }
+
+    @Test(arguments: [false, true]) func aMissingFileWithNoContactsPhotoShowsNoPhoto(onDisk: Bool) async throws {
+        let fixture = try await Fixture(onDisk: onDisk)
+        defer { fixture.cleanUp() }
+        try await fixture.repo.setContactPhoto(for: fixture.id, imageData: photoA)
+        let blobID = try #require(try fixture.store.blobIds(for: fixture.key).first)
+        try fixture.store.deleteBlob(blobId: blobID, for: fixture.key)
+        try await fixture.contacts.base.setImageData(localID: Fixture.localID, imageData: nil)
+
+        #expect(try await fixture.repo.contactPhotoData(for: fixture.id, kind: .fullSize) == nil)
+        let items = try await fixture.items()
+        #expect(items.map(\.id) == [blobID])
+        #expect(items.first?.isCurrent == false)
+
+        // So adding one makes it current, and the placeholder can still be cleared.
+        try await fixture.repo.addContactPhoto(for: fixture.id, imageData: photoB, crop: nil)
+        #expect(try await fixture.contactsBytes() == photoB)
+        try await fixture.repo.deleteContactPhoto(for: fixture.id, photoID: blobID)
+        #expect(try await fixture.storedBytes() == [photoB])
+    }
+
+    // MARK: - Races with a delete
+
+    /// A deletes X, then B, which hasn't seen that, makes X current.
+    @Test func deleteThenSwapOnAnotherDeviceStaysDeleted() throws {
+        let devices = TwoDevices()
+        let x = try devices.a.storeContactPhoto(at: devices.key, data: photoA, crop: .exactly(cropA), makeCurrent: false,
+                                                systemPhotoDigest: nil).pointer.blobId
+        let y = try devices.a.storeContactPhoto(at: devices.key, data: photoB, crop: .existingOrNone, makeCurrent: true,
+                                                systemPhotoDigest: nil).pointer.blobId
+        try devices.copyAToB()
+
+        try devices.a.deleteContactPhoto(at: devices.key, blobID: x)
+        Thread.sleep(forTimeInterval: 0.003)
+        try devices.b.setCurrentContactPhoto(at: devices.key, blobID: x, systemPhotoDigest: nil)
+
+        let merged = try devices.mergeBIntoA()
+        // B's later write wins the slot, so it still names X.
+        let slot = try #require(merged.fields[ContactPhotoCells.profileCellID])
+        #expect(slot.deletedAt == nil)
+
+        let stored = try devices.a.storedContactPhotos(at: devices.key)
+        #expect(stored.photos.map(\.pointer.blobId) == [y])
+        #expect(stored.current == nil)
+        #expect(try devices.a.profilePhoto(at: devices.key) == nil)
+        #expect(try devices.a.currentContactPhotoCell(at: devices.key) == nil)
+        #expect(try devices.a.storedContactPhoto(at: devices.key, blobID: x) == nil)
+        // And a first crop isn't refused as if something were still current.
+        try devices.a.storeContactPhoto(at: devices.key, data: photoC, crop: .exactly(cropB), makeCurrent: true,
+                                        systemPhotoDigest: nil, expectation: .absent)
+    }
+
+    /// B crops X before A deletes it: the delete has the later stamp, and wins.
+    @Test func cropThenDeleteOnAnotherDeviceStaysDeleted() throws {
+        let devices = TwoDevices()
+        let x = try devices.a.storeContactPhoto(at: devices.key, data: photoA, crop: .existingOrNone, makeCurrent: true,
+                                                systemPhotoDigest: nil).pointer.blobId
+        try devices.copyAToB()
+
+        try devices.b.setCurrentContactPhotoCrop(at: devices.key, blobID: x, crop: cropA, systemPhotoDigest: nil)
+        Thread.sleep(forTimeInterval: 0.003)
+        try devices.a.deleteContactPhoto(at: devices.key, blobID: x)
+
+        _ = try devices.mergeBIntoA()
+
+        let stored = try devices.a.storedContactPhotos(at: devices.key)
+        #expect(stored.photos.isEmpty)
+        #expect(stored.current == nil)
+    }
+
+    /// A deletes X, then B, which hasn't seen that, crops it. Merge is whole-cell
+    /// last-writer-wins, so B's later cell beats the tombstone and X comes back with
+    /// its file gone. It shows as a placeholder, and deleting again clears it.
+    @Test func deleteThenCropOnAnotherDeviceComesBackAsAClearablePlaceholder() async throws {
+        let fixture = try await Fixture(onDisk: false)
+        defer { fixture.cleanUp() }
+        try await fixture.repo.setContactPhoto(for: fixture.id, imageData: photoA)
+        let x = try #require(try fixture.store.blobIds(for: fixture.key).first)
+        let otherStore = InMemorySidecarStore()
+        try otherStore.write(try #require(try fixture.store.read(fixture.key)), at: fixture.key)
+        try otherStore.writeBlob(photoA, blobId: x, for: fixture.key)
+        let other = GuessWhoSync(contacts: InMemoryContactStore(), events: InMemoryEventStore(), sidecars: otherStore, deviceID: "b")
+
+        try fixture.sync.deleteContactPhoto(at: fixture.key, blobID: x)
+        try await tick()
+        try other.setCurrentContactPhotoCrop(at: fixture.key, blobID: x, crop: cropA, systemPhotoDigest: nil)
+        let merged = try merge(try #require(try fixture.store.read(fixture.key)), try #require(try otherStore.read(fixture.key))).get()
+        try fixture.store.write(merged, at: fixture.key)
+
+        // Contacts still has the photo here, and shows it.
+        #expect(try await fixture.repo.contactPhotoData(for: fixture.id, kind: .fullSize)?.data == photoA)
+        let items = try await fixture.items()
+        #expect(items.map(\.id) == [x])
+        #expect(try await fixture.bytes(items.first) == nil)
+
+        try await fixture.repo.deleteContactPhoto(for: fixture.id, photoID: x)
+
+        #expect(try await fixture.items().isEmpty)
+        #expect(try await fixture.contactsBytes() == nil)
+    }
+
+    /// B crops X, then A, which hasn't seen that, makes Y current. Both survive.
+    @Test func cropThenSwapOnAnotherDeviceKeepsBoth() throws {
+        let devices = TwoDevices()
+        let y = try devices.a.storeContactPhoto(at: devices.key, data: photoB, crop: .existingOrNone, makeCurrent: false,
+                                                systemPhotoDigest: nil).pointer.blobId
+        let x = try devices.a.storeContactPhoto(at: devices.key, data: photoA, crop: .existingOrNone, makeCurrent: true,
+                                                systemPhotoDigest: nil).pointer.blobId
+        try devices.copyAToB()
+
+        try devices.b.setCurrentContactPhotoCrop(at: devices.key, blobID: x, crop: cropA, systemPhotoDigest: nil)
+        Thread.sleep(forTimeInterval: 0.003)
+        try devices.a.setCurrentContactPhoto(at: devices.key, blobID: y, systemPhotoDigest: nil)
+
+        _ = try devices.mergeBIntoA()
+
+        let stored = try devices.a.storedContactPhotos(at: devices.key)
+        #expect(stored.current?.blobId == y)
+        #expect(stored.photos.count == 2)
+        #expect(stored.photos.first { $0.pointer.blobId == x }?.pointer.photoCrop == cropA)
+    }
+
+    /// The swap, then a crop of the old photo on a device that hasn't seen it. The
+    /// crop writes `profilePhoto` too, so the old photo ends up current again.
+    @Test func swapThenCropOnAnotherDeviceMakesTheCroppedPhotoCurrent() throws {
+        let devices = TwoDevices()
+        let y = try devices.a.storeContactPhoto(at: devices.key, data: photoB, crop: .existingOrNone, makeCurrent: false,
+                                                systemPhotoDigest: nil).pointer.blobId
+        let x = try devices.a.storeContactPhoto(at: devices.key, data: photoA, crop: .existingOrNone, makeCurrent: true,
+                                                systemPhotoDigest: nil).pointer.blobId
+        try devices.copyAToB()
+
+        try devices.a.setCurrentContactPhoto(at: devices.key, blobID: y, systemPhotoDigest: nil)
+        Thread.sleep(forTimeInterval: 0.003)
+        try devices.b.setCurrentContactPhotoCrop(at: devices.key, blobID: x, crop: cropA, systemPhotoDigest: nil)
+
+        _ = try devices.mergeBIntoA()
+
+        let stored = try devices.a.storedContactPhotos(at: devices.key)
+        #expect(stored.current?.blobId == x)
+        #expect(stored.current?.photoCrop == cropA)
+        #expect(stored.photos.count == 2)
+    }
+
+    /// Older data has no `contactPhoto` cell to tombstone, so the delete writes one.
+    @Test func aReplaceThenDeleteOfOlderDataStaysDeleted() throws {
+        let devices = TwoDevices()
+        let x = try devices.startWithOlderCurrent(photoA)
+
+        let y = try devices.b.storeContactPhoto(at: devices.key, data: photoB, crop: .existingOrNone, makeCurrent: true,
+                                                systemPhotoDigest: nil).pointer.blobId
+        try devices.storeA.writeBlob(photoB, blobId: y, for: devices.key)
+        Thread.sleep(forTimeInterval: 0.003)
+        try devices.a.deleteContactPhoto(at: devices.key, blobID: x)
+        #expect(try devices.storeA.read(devices.key)?.fields[x.uppercased()]?.deletedAt != nil)
+
+        _ = try devices.mergeBIntoA()
+
+        let stored = try devices.a.storedContactPhotos(at: devices.key)
+        #expect(stored.photos.map(\.pointer.blobId) == [y])
+        // The delete's later stamp also tombstones the slot, so nothing is current.
+        #expect(stored.current == nil)
+    }
+
+    /// B's new cell for X takes X's old stamp, so a delete B hadn't seen still beats it.
+    @Test func aDeleteThenReplaceOfOlderDataStaysDeleted() throws {
+        let devices = TwoDevices()
+        let x = try devices.startWithOlderCurrent(photoA)
+
+        try devices.a.deleteContactPhoto(at: devices.key, blobID: x)
+        Thread.sleep(forTimeInterval: 0.003)
+        let y = try devices.b.storeContactPhoto(at: devices.key, data: photoB, crop: .existingOrNone, makeCurrent: true,
+                                                systemPhotoDigest: nil).pointer.blobId
+        try devices.storeA.writeBlob(photoB, blobId: y, for: devices.key)
+
+        _ = try devices.mergeBIntoA()
+
+        let stored = try devices.a.storedContactPhotos(at: devices.key)
+        #expect(stored.photos.map(\.pointer.blobId) == [y])
+        #expect(stored.current?.blobId == y)
+    }
+
+    /// With a photo deleted but still named by `profilePhoto`, the pointer must not
+    /// keep reading as changed, or every delivery drops the loader's cache.
+    @Test func aDeletedPhotoStillNamedByTheSlotShowsContactsAndSettles() async throws {
+        let fixture = try await Fixture(onDisk: false)
+        defer { fixture.cleanUp() }
+        try await fixture.repo.setContactPhoto(for: fixture.id, imageData: photoA)
+        let x = try #require(try fixture.store.blobIds(for: fixture.key).first)
+        // What a merge leaves: the slot live, and the photo's own key a tombstone.
+        var fields = try #require(try fixture.store.read(fixture.key)).fields
+        let cell = try #require(fields[x.uppercased()])
+        fields[x.uppercased()] = SidecarCell(value: cell.value, modifiedAt: Date(), modifiedBy: "a", deletedAt: Date())
+        try fixture.store.write(SidecarEnvelope(schemaVersion: 1, entityID: fixture.key.id, fields: fields), at: fixture.key)
+        try fixture.store.deleteBlob(blobId: x, for: fixture.key)
+
+        let shown = try #require(try await fixture.repo.contactPhotoData(for: fixture.id, kind: .thumbnail))
+        #expect(shown.data == photoA)
+        let items = try await fixture.items()
+        #expect(items.map(\.isContactsOnly) == [true])
+
+        #expect(try await !fixture.deliverChange())
     }
 }
