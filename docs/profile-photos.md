@@ -282,9 +282,12 @@ under the same storage lock. A pending original download remains retryable.
 A current photo whose file isn't here, with no iCloud placeholder either, shows the
 Contacts photo, uncropped, rather than going blank. The file may still arrive, because
 the JSON can land before the file's placeholder does, or may be gone for good, as when
-an older build deleted it. Its item stays current in All Photos as a placeholder. Because
-Contacts' copy could be the last one, changing the photo stores it first, and Edit Crop
-adopts it as a new photo. When the file does arrive, photo consumers are told.
+an older build deleted it. Its item stays current in All Photos as a placeholder. If
+Contacts has no photo, as on a new device whose Contacts haven't synced, the contact
+shows no photo and the item isn't current, though it's still listed as a placeholder. Add
+Photo then makes the new photo current, for every device. Because Contacts' copy could be
+the last one, changing the photo stores it first, and Edit Crop adopts it as a new photo.
+When the file does arrive, photo consumers are told.
 
 The shared `ContactPhotoLoader` renders the rectangle for avatars, lists, and
 contact details. `ContactPhotoRendering` draws in upright image coordinates,
