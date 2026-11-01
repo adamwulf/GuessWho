@@ -8,7 +8,7 @@
 // The bridge is a Mac-only affordance: on plain iOS/iPadOS the bundle isn't
 // embedded (its Embed phase is `platformFilter = maccatalyst`), so `shared`
 // is nil there and callers must fall back (the app keeps the PhotosPicker
-// path on iOS — see ContactDetailView's PhotoChangeModifier).
+// path on iOS — see PhotoChangeModifier).
 
 import Foundation
 import GuessWhoLogging

@@ -17,6 +17,8 @@ struct FullscreenPhoto: Identifiable {
 /// free, and behaves identically on iPhone/iPad and Mac Catalyst.
 struct ContactPhotoViewer: View {
     let image: UIImage
+    /// Nil when the viewer was opened from All Photos, so it can't lead back there.
+    var onShowAllPhotos: (() -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -28,6 +30,23 @@ struct ContactPhotoViewer: View {
                 .ignoresSafeArea()
                 .accessibilityElement()
                 .accessibilityLabel("Contact photo")
+
+            if let onShowAllPhotos {
+                Button {
+                    onShowAllPhotos()
+                    dismiss()
+                } label: {
+                    Text("All Photos")
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
+                        .background(.ultraThinMaterial, in: Capsule())
+                }
+                .padding(.top, 8)
+                .padding(.leading, 16)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            }
 
             Button {
                 dismiss()

@@ -188,10 +188,12 @@ iPad, and Catalyst.
 - Each photo opens a menu: View Photo (the existing `ContactPhotoViewer`), Use as
   Current Photo (hidden on the current one), Delete Photo (destructive, with a
   confirmation saying it's removed from all the user's devices, and that the contact
-  will have no photo if it's current).
+  will have no photo if it's current). A photo still downloading has no bytes to view
+  or choose, so its menu offers only Delete Photo, which also clears a photo whose file
+  is gone for good.
 - Toolbar: Done and Add Photo. Add Photo reuses the existing pickers and the crop
-  editor, then calls `addContactPhoto`. `PhotoChangeModifier` is private to
-  `ContactDetailView.swift`, so move it where both can use it.
+  editor, then calls `addContactPhoto`. `PhotoChangeModifier` moved to its own file, with
+  the shared picked-image decoding, so both views can use it.
 - Empty state when there are no photos, with Add Photo.
 - Errors use the existing alert style, and every failure logs with `error.logContext()`,
   or `logCodes()` for a file the user chose.

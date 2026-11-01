@@ -1,0 +1,340 @@
+import SwiftUI
+import PhotosUI
+import GuessWhoSync
+import GuessWhoLogging
+
+/// Every photo on a contact, current and previous: view one, make one current,
+/// add one, or delete one for good. Presented as a sheet on every platform.
+struct ContactPhotosView: View {
+    private static let log = GuessWhoLog.logger("contact.photo")
+
+    let repository: ContactsRepository
+    let contactID: ContactID
+    /// Called before a write, because one that fails partway can still leave a photo.
+    let onWillChange: () -> Void
+    /// Called after a change, to refresh whatever shows the current photo.
+    let onDidChange: () async -> Void
+
+    private struct AddPhotoRequest: Identifiable {
+        let id = UUID()
+        let photo: PickedPhoto
+    }
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var items: [ContactPhotoItem] = []
+    @State private var hasLoaded = false
+    @State private var loadGeneration = 0
+    @State private var isChanging = false
+    @State private var viewerPhoto: FullscreenPhoto?
+    @State private var photoToDelete: ContactPhotoItem?
+    @State private var addRequest: AddPhotoRequest?
+    @State private var presentingPhotoPicker = false
+    @State private var photoPickerItem: PhotosPickerItem?
+    @State private var photoSaveError: String?
+
+    var body: some View {
+        NavigationStack {
+            content
+                .navigationTitle("All Photos")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Done") { dismiss() }.disabled(isChanging)
+                    }
+                    ToolbarItem(placement: .primaryAction) {
+                        Button("Add Photo") { presentingPhotoPicker = true }.disabled(isChanging)
+                    }
+                }
+        }
+        .interactiveDismissDisabled(isChanging)
+        .task(id: loadGeneration) { await reload() }
+        // Also how a photo arriving from another device appears.
+        .onReceive(NotificationCenter.default.publisher(for: .contactsRepositoryDidReload, object: repository)) { _ in
+            loadGeneration += 1
+        }
+        .fullScreenCover(item: $viewerPhoto) { photo in
+            ContactPhotoViewer(image: photo.image)
+        }
+        .sheet(item: $addRequest) { request in
+            ContactPhotoCropEditor(image: request.photo.image, initialCrop: nil) { crop in
+                onWillChange()
+                try await repository.addContactPhoto(for: contactID, imageData: request.photo.data, crop: crop)
+                await onDidChange()
+                loadGeneration += 1
+            }
+        }
+        .confirmationDialog(
+            "Delete this photo?",
+            isPresented: Binding(get: { photoToDelete != nil }, set: { if !$0 { photoToDelete = nil } }),
+            titleVisibility: .visible,
+            presenting: photoToDelete
+        ) { item in
+            Button("Delete Photo", role: .destructive) {
+                Task { await change(operation: "delete") {
+                    try await repository.deleteContactPhoto(for: contactID, photoID: item.id)
+                } }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: { item in
+            Text(item.isCurrent
+                ? "It will be removed from all your devices, and this contact will have no photo."
+                : "It will be removed from all your devices.")
+        }
+        .modifier(PhotoChangeModifier(
+            presentingPhotoPicker: $presentingPhotoPicker,
+            photoPickerItem: $photoPickerItem,
+            photoSaveError: $photoSaveError,
+            onPick: { item in Task { await addPicked(item) } },
+            onPickFileData: { data, loadError in Task { await addFile(data, loadError: loadError) } }
+        ))
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        if hasLoaded && items.isEmpty {
+            ContentUnavailableView {
+                Label("No Photos", systemImage: "photo.on.rectangle")
+            } description: {
+                Text("Photos you add to this contact appear here.")
+            } actions: {
+                Button("Add Photo") { presentingPhotoPicker = true }
+            }
+        } else {
+            ScrollView {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 120, maximum: 220), spacing: 12)], spacing: 12) {
+                    ForEach(items) { item in
+                        ContactPhotoCell(
+                            repository: repository,
+                            contactID: contactID,
+                            item: item,
+                            generation: loadGeneration,
+                            onView: { Task { await view(item) } },
+                            onUseAsCurrent: {
+                                Task { await change(operation: "swap") {
+                                    try await repository.setCurrentContactPhoto(for: contactID, photoID: item.id)
+                                } }
+                            },
+                            onDelete: { photoToDelete = item }
+                        )
+                        .disabled(isChanging)
+                    }
+                }
+                .padding()
+            }
+        }
+    }
+
+    private func reload() async {
+        do {
+            let listed = try await repository.contactPhotos(for: contactID)
+            guard !Task.isCancelled else { return }
+            items = listed
+            hasLoaded = true
+        } catch {
+            Self.log.error("photo list load failed", error.logContext(["contactID": contactID.logValue]))
+            // Reloads come often, and the next one may well work, so only a list
+            // that never appeared is worth interrupting for.
+            if !hasLoaded { photoSaveError = error.localizedDescription }
+        }
+    }
+
+    private func view(_ item: ContactPhotoItem) async {
+        do {
+            guard let photo = try await repository.contactPhotoData(for: contactID, photoID: item.id) else {
+                throw ContactPhotoEditError.photoPending
+            }
+            let image = await Task.detached(priority: .userInitiated) { photo.displayImage() }.value
+            guard let image else { throw PickedPhoto.LoadError.notDecodable }
+            viewerPhoto = FullscreenPhoto(image: image)
+        } catch {
+            Self.log.error("photo view load failed", error.logContext([
+                "contactID": contactID.logValue, "photoID": item.id,
+            ]))
+            photoSaveError = error.localizedDescription
+        }
+    }
+
+    /// A failed write can still have changed something, if Contacts couldn't be
+    /// restored, so the refresh runs either way.
+    private func change(operation: String, _ write: () async throws -> Void) async {
+        isChanging = true
+        defer { isChanging = false }
+        onWillChange()
+        do {
+            try await write()
+        } catch {
+            Self.log.error("photo change failed", error.logContext([
+                "contactID": contactID.logValue, "op": operation,
+            ]))
+            photoSaveError = error.localizedDescription
+        }
+        await onDidChange()
+        loadGeneration += 1
+    }
+
+    private func addPicked(_ item: PhotosPickerItem) async {
+        defer { photoPickerItem = nil }
+        do {
+            addRequest = AddPhotoRequest(photo: try await PickedPhoto.load(item))
+        } catch {
+            photoSaveError = error.localizedDescription
+        }
+    }
+
+    private func addFile(_ data: Data?, loadError: Error?) async {
+        do {
+            addRequest = AddPhotoRequest(photo: try await PickedPhoto.decode(data, loadError: loadError))
+        } catch {
+            photoSaveError = error.localizedDescription
+        }
+    }
+}
+
+/// One photo in the grid, with its own thumbnail and menu. A cell loads its own
+/// thumbnail so only the visible ones are read.
+private struct ContactPhotoCell: View {
+    private static let log = GuessWhoLog.logger("contact.photo")
+
+    let repository: ContactsRepository
+    let contactID: ContactID
+    let item: ContactPhotoItem
+    /// Bumped on every reload, so a photo still downloading gets another try.
+    let generation: Int
+    let onView: () -> Void
+    let onUseAsCurrent: () -> Void
+    let onDelete: () -> Void
+
+    private enum Thumbnail {
+        case loading
+        case image(UIImage, crop: ContactPhotoCrop?)
+        case pending
+        case unavailable
+        case undecodable
+    }
+
+    private struct LoadKey: Equatable {
+        let crop: ContactPhotoCrop?
+        let generation: Int
+    }
+
+    @State private var loaded = Thumbnail.loading
+
+    /// Unavailable from the list alone, before this cell's own read comes back.
+    private var thumbnail: Thumbnail {
+        if case .loading = loaded, !item.isAvailable { return .unavailable }
+        return loaded
+    }
+
+    var body: some View {
+        Group {
+            switch thumbnail {
+            case .image:
+                Menu {
+                    Button("View Photo", action: onView)
+                    if !item.isCurrent {
+                        Button("Use as Current Photo", action: onUseAsCurrent)
+                    }
+                    Button("Delete Photo", role: .destructive, action: onDelete)
+                } label: {
+                    tile
+                }
+            case .pending, .undecodable:
+                Menu {
+                    Button("Delete Photo", role: .destructive, action: onDelete)
+                } label: {
+                    tile
+                }
+            case .loading, .unavailable:
+                tile
+            }
+        }
+        .menuIndicator(.hidden)
+        .buttonStyle(.plain)
+        .task(id: LoadKey(crop: item.crop, generation: generation)) { await load() }
+    }
+
+    private var tile: some View {
+        Color.secondary.opacity(0.15)
+            .aspectRatio(1, contentMode: .fit)
+            .overlay { tileContent }
+            .overlay(alignment: .bottom) {
+                if item.isCurrent {
+                    Text("Current")
+                        .font(.caption.weight(.semibold))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(.thinMaterial, in: Capsule())
+                        .padding(6)
+                }
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(accessibilityLabel)
+    }
+
+    @ViewBuilder
+    private var tileContent: some View {
+        switch thumbnail {
+        case .loading:
+            ProgressView()
+        case .image(let image, _):
+            Image(uiImage: image)
+                .resizable()
+                .scaledToFill()
+        case .pending:
+            placeholder(systemImage: "icloud.and.arrow.down", text: "Downloading")
+        case .unavailable:
+            placeholder(systemImage: "photo", text: "Not available on this device")
+        case .undecodable:
+            placeholder(systemImage: "photo", text: "Can’t show this photo")
+        }
+    }
+
+    private func placeholder(systemImage: String, text: String) -> some View {
+        VStack(spacing: 4) {
+            Image(systemName: systemImage)
+                .font(.title2)
+            Text(text)
+                .font(.caption)
+                .multilineTextAlignment(.center)
+        }
+        .foregroundStyle(.secondary)
+        .padding(8)
+    }
+
+    private var accessibilityLabel: String {
+        let description: String
+        switch thumbnail {
+        case .loading, .image: description = "Photo"
+        case .pending: description = "Photo, downloading"
+        case .unavailable: description = "Photo, not available on this device"
+        case .undecodable: description = "Photo that can’t be shown"
+        }
+        return item.isCurrent ? "\(description), current" : description
+    }
+
+    private func load() async {
+        // A stored photo's bytes never change, so only a new crop means drawing it
+        // again. The photo only Contacts holds, which has no date, can change.
+        if case .image(_, let crop) = loaded, crop == item.crop, item.addedAt != nil { return }
+        do {
+            guard let photo = try await repository.contactPhotoData(for: contactID, photoID: item.id) else {
+                loaded = .pending
+                return
+            }
+            let image = await Task.detached(priority: .userInitiated) {
+                photo.displayImage(maxDimension: 256)
+            }.value
+            guard !Task.isCancelled else { return }
+            loaded = image.map { .image($0, crop: photo.crop) } ?? .undecodable
+        } catch ContactPhotoEditError.storedPhotoUnreadable {
+            loaded = .unavailable
+        } catch {
+            // The next reload tries again.
+            Self.log.error("photo thumbnail load failed", error.logContext([
+                "contactID": contactID.logValue, "photoID": item.id,
+            ]))
+            loaded = .pending
+        }
+    }
+}
