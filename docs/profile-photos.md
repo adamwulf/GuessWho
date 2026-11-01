@@ -397,7 +397,7 @@ Continue with the same contact, with B current.
 4. Tap B's tile → Delete Photo.
    Expect the message to say "It will be removed from all your devices, and this contact
    will have no photo."
-5. Confirm it and close the sheet.
+5. Confirm it, close the sheet, and leave editing with the checkmark if you're in it.
    Expect B gone and C not labeled Current, because no other photo takes over. Contacts.app
    shows no photo, and the card shows the contact's initials.
 
@@ -587,7 +587,8 @@ contact.
 - The card shows Contacts' copy, uncropped.
 - In All Photos, the tile reads "Not available right now" and stays labeled Current. Its
   menu offers only Delete Photo.
-- Delete Photo clears the tile and Contacts' copy, and the card shows the initials.
+- Delete Photo clears the tile and Contacts' copy. Close the sheet and leave editing with
+  the checkmark if you're in it, and the card shows the initials.
 
 **An older file this device can't read.** A file with no marker counts as an older encrypted
 one. In Terminal, type this, ending with a space and with no quotes:
