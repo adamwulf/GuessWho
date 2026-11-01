@@ -23,6 +23,8 @@ struct ContactPhotosView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var items: [ContactPhotoItem] = []
     @State private var hasLoaded = false
+    /// The list has never loaded, and the last try failed.
+    @State private var firstLoadFailed = false
     @State private var loadGeneration = 0
     @State private var isChanging = false
     @State private var viewerPhoto: FullscreenPhoto?
@@ -95,7 +97,15 @@ struct ContactPhotosView: View {
 
     @ViewBuilder
     private var content: some View {
-        if hasLoaded && items.isEmpty {
+        if firstLoadFailed {
+            ContentUnavailableView {
+                Label("Couldn’t Load Photos", systemImage: "exclamationmark.triangle")
+            } description: {
+                Text("This contact’s photos couldn’t be loaded right now.")
+            } actions: {
+                Button("Try Again") { loadGeneration += 1 }
+            }
+        } else if hasLoaded && items.isEmpty {
             ContentUnavailableView {
                 Label("No Photos", systemImage: "photo.on.rectangle")
             } description: {
@@ -134,11 +144,12 @@ struct ContactPhotosView: View {
             guard !Task.isCancelled else { return }
             items = listed
             hasLoaded = true
+            firstLoadFailed = false
         } catch {
             Self.log.error("photo list load failed", error.logContext(["contactID": contactID.logValue]))
-            // Reloads come often, and the next one may well work, so only a list
-            // that never appeared is worth interrupting for.
-            if !hasLoaded { photoSaveError = error.localizedDescription }
+            // After a timeout no reload may come, so a list that never appeared needs
+            // its own way to try again. Once it has appeared, this reload just logs.
+            if !hasLoaded { firstLoadFailed = true }
         }
     }
 

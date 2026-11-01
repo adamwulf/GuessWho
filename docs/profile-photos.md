@@ -54,7 +54,9 @@ photo becomes current on its own.
 
 The sheet reloads on `.contactsRepositoryDidReload`, so a photo arriving from another
 device appears. After a change it invalidates `ContactPhotoLoader` and refreshes the
-header.
+header. If the list has never loaded and a load fails, the sheet says so in place, with
+a Try Again button, since no reload may come. Once it has loaded, a failed reload only
+logs.
 
 ## Storage
 
