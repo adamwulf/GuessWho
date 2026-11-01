@@ -514,8 +514,8 @@ several photos, a crop editor, and the viewer.
 
 **The card.**
 
-1. On one contact, Photo menu → Remove Photo, then tap the checkmark. On another, delete the
-   current photo in All Photos.
+1. On one contact, Photo menu → Remove Photo. On another, Photo menu → All Photos, delete the
+   current photo, and close the sheet. Tap the checkmark on both.
    Expect the initials on both. Tapping them opens the picker.
 2. Open the Photo menu on a contact with no photo.
    Expect Choose Photo and All Photos.
