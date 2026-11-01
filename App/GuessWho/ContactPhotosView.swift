@@ -33,6 +33,7 @@ struct ContactPhotosView: View {
     @State private var presentingPhotoPicker = false
     @State private var photoPickerItem: PhotosPickerItem?
     @State private var photoSaveError: String?
+    @State private var photoOpenError: String?
     /// The Mac file panel is modeless, so the sheet stays clickable behind it. Done would
     /// drop the file chosen later, and Add Photo would open a second panel.
     @State private var isFilePanelOpen = false
@@ -84,6 +85,14 @@ struct ContactPhotosView: View {
             Text(item.isCurrent
                 ? "It will be removed from all your devices, and this contact will have no photo."
                 : "It will be removed from all your devices.")
+        }
+        .alert(
+            "Couldn’t Open Photo",
+            isPresented: Binding(get: { photoOpenError != nil }, set: { if !$0 { photoOpenError = nil } })
+        ) {
+            Button("OK", role: .cancel) { photoOpenError = nil }
+        } message: {
+            Text(photoOpenError ?? "")
         }
         .modifier(PhotoChangeModifier(
             presentingPhotoPicker: $presentingPhotoPicker,
@@ -165,7 +174,7 @@ struct ContactPhotosView: View {
             Self.log.error("photo view load failed", error.logContext([
                 "contactID": contactID.logValue, "photoID": item.id,
             ]))
-            photoSaveError = error.localizedDescription
+            photoOpenError = error.localizedDescription
         }
     }
 
