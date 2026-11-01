@@ -5825,6 +5825,8 @@ public final class ContactsRepository: NSObject {
                 }
             } catch {
                 // A failed read must not certify a cached image as current.
+                Self.photoLog.error("photo cell read failed, treating the loaded photo as stale",
+                                    metadata: error.logMetadata(["id": .string(key.id)]))
                 changed.insert(key)
             }
         }
