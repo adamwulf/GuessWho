@@ -309,7 +309,7 @@ than risk losing it:
 - **A repeat LinkedIn import**, when Contacts re-encodes what it's given, also leaves
   three: the import, Contacts' re-encoded copy, and the original. The current photo moves
   to the import, with no crop, even though the image hasn't changed. When Contacts keeps
-  the bytes as they were, the import matches the original and nothing changes.
+  the bytes as they were, the import matches Contacts' copy, so nothing is written.
 
 The shared `ContactPhotoLoader` renders the rectangle for avatars, lists, and
 contact details. `ContactPhotoRendering` draws in upright image coordinates,
