@@ -323,7 +323,9 @@ consumers when either changes, when the current photo is removed, or when a miss
 file arrives. The stamp matters because choosing a photo again can leave the pointer
 identical. Unrelated notes and timestamp changes retain their inexpensive refresh. The
 list and the reads before a write don't count as loading: they'd hide a change from
-`ContactPhotoLoader`, which still holds the old image.
+`ContactPhotoLoader`, which still holds the old image. The entry is dropped when the post
+fires, and the next read adds it back, so a new photo consumer must re-read on the post or
+that contact's later changes go unnoticed.
 
 ## Verification
 
