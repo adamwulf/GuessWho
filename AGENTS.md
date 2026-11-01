@@ -132,6 +132,13 @@ touching that subsystem:
   call per drop, then a card re-load). Read before touching highlighted
   emails, the card's drop target, a drop onto a SwiftUI `List`, or any code
   that walks every cell of a contact envelope.
+- [`docs/profile-photos.md`](docs/profile-photos.md) — a contact's photos: many
+  photos with one current, and Contacts holding only that one. Covers the
+  add-only `contactPhoto` cells and why pointers never move between cells, the
+  rules for every write, dedup by SHA-256, the crop editor and its coordinates,
+  All Photos, older encrypted files, changes made in Contacts.app, and what a
+  failed write leaves behind. Read before touching contact photos, a `.dat`
+  file's lifetime, or `ContactPhotoSourceTracker`.
 - [`docs/autocomplete.md`](docs/autocomplete.md) — text-field autocomplete:
   how a field opts in (`.autocomplete(text:candidates:)` +
   `.autocompleteMenuHost()`), the shared filter, the candidate lists, and

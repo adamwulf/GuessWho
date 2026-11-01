@@ -2141,8 +2141,8 @@ public actor ToolDispatcher {
         }
         // Reserved-name guardrail: the upsert-by-name path REPLACES an
         // existing same-name field of a different type, so a write named
-        // like an internal field would clobber it (the previousPhoto
-        // photo-restore snapshot, the user's own notes).
+        // like an internal field would clobber it (a stored photo's
+        // pointer, the user's own notes).
         guard !ContactsRepository.isReservedFieldName(fieldName) else {
             return .error(
                 helperId: helperId, messageId: messageId,
@@ -3060,7 +3060,7 @@ public actor ToolDispatcher {
                     let prior = try await contacts.contactPhotoData(
                         for: contact.contactID, kind: .fullSize)?.data
                     // Intrinsically idempotent even without a client token:
-                    // do not snapshot and rewrite identical bytes.
+                    // do not rewrite identical bytes.
                     if prior == data {
                         return .acknowledged(
                             helperId: helperId, messageId: messageId,

@@ -83,7 +83,11 @@ public struct ContactsDeletePhoto: CLIToolCommand {
 
     public static let configuration = CommandConfiguration(
         commandName: "delete-photo",
-        abstract: "Remove a contact's photo."
+        abstract: "Remove a contact's current photo.",
+        discussion: """
+            The contact then shows no photo. The photo stays on the contact, under
+            All Photos in the app, where it can be made current again or deleted for good.
+            """
     )
 
     @Argument(help: "Contact id returned by contacts search or contacts list.")
