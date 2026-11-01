@@ -124,7 +124,9 @@ the same `byteCount`. So re-importing a LinkedIn photo or choosing the same file
 reuses the existing photo, with the new crop if there is one, or its own. Dedup applies
 to new writes only. Existing data can hold the same bytes under two blobIds, from an
 old repeat import, and the list can't see that without reading bytes, so both show.
-Two devices adding the same image at the same moment also mint two photos.
+Two devices adding the same image at the same moment also mint two photos. So does a
+change made while a file is still on its way, because a file that isn't here can't be
+compared. See [Rendering and refresh](#rendering-and-refresh).
 
 **There is no limit** on the number of photos.
 
@@ -288,6 +290,19 @@ shows no photo and the item isn't current, though it's still listed as a placeho
 Photo then makes the new photo current, for every device. Because Contacts' copy could be
 the last one, changing the photo stores it first, and Edit Crop adopts it as a new photo.
 When the file does arrive, photo consumers are told.
+
+Showing the photo this way writes nothing, but a change while the file is still on its
+way costs extra photos. Contacts' copy is stored, the original then arrives too, and
+dedup couldn't compare them because the original wasn't here. Nothing is lost, and the
+extras can be deleted in All Photos. This is the deliberate choice to keep a photo rather
+than risk losing it:
+
+- **Choosing a new photo** leaves three: the new one, current; Contacts' copy, with no
+  crop; and the original, with its crop. The last two show the same image.
+- **A repeat LinkedIn import**, when Contacts re-encodes what it's given, also leaves
+  three: the import, Contacts' re-encoded copy, and the original. The current photo moves
+  to the import, with no crop, even though the image hasn't changed. When Contacts keeps
+  the bytes as they were, the import matches the original and nothing changes.
 
 The shared `ContactPhotoLoader` renders the rectangle for avatars, lists, and
 contact details. `ContactPhotoRendering` draws in upright image coordinates,
