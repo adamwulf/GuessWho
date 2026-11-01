@@ -235,16 +235,17 @@ private final class Fixture {
         return try encoder.encode(try #require(try store.read(key)))
     }
 
-    /// Delivers a change to this contact's files, as the watcher would, and says
-    /// whether photo consumers were told to drop what they've cached.
-    func deliverChange() async throws -> Bool {
+    /// Delivers a change, by default to this contact's files as the watcher would, and
+    /// says whether photo consumers were told to drop what they've cached.
+    func deliverChange(_ changeSet: SidecarChangeSet? = nil) async throws -> Bool {
         nonisolated(unsafe) var dataChanged = false
         let token = center.addObserver(forName: .contactsRepositoryDidReload, object: repo, queue: nil) { note in
             if note.userInfo?[ContactsRepositoryDidReloadKey.contactDataChanged] as? Bool == true { dataChanged = true }
         }
         defer { center.removeObserver(token) }
-        center.post(name: .guessWhoSidecarsDidChange, object: nil,
-                    userInfo: [GuessWhoSidecarsDidChangeKey.changeSet: SidecarChangeSet(changedKeys: [key])])
+        center.post(name: .guessWhoSidecarsDidChange, object: nil, userInfo: [
+            GuessWhoSidecarsDidChangeKey.changeSet: changeSet ?? SidecarChangeSet(changedKeys: [key]),
+        ])
         try await Task.sleep(for: .milliseconds(650))
         return dataChanged
     }
@@ -1439,6 +1440,71 @@ struct ContactPhotoLibraryTests {
         // The loader reading it is what settles things.
         _ = try await fixture.repo.contactPhotoData(for: fixture.id, kind: .thumbnail)
         #expect(try await !fixture.deliverChange())
+    }
+
+    /// A contact changed elsewhere and now off screen: nothing reads it again, so it
+    /// must not drop the whole photo cache on every later delivery.
+    @Test func aStaleEntryInvalidatesOnce() async throws {
+        let fixture = try await Fixture(onDisk: false)
+        defer { fixture.cleanUp() }
+        try await fixture.repo.setContactPhoto(for: fixture.id, imageData: photoA)
+        _ = try await fixture.repo.contactPhotoData(for: fixture.id, kind: .thumbnail)
+        try await tick()
+        try fixture.sync.storeContactPhoto(at: fixture.key, data: photoB, crop: .existingOrNone, makeCurrent: true,
+                                           systemPhotoDigest: nil)
+        let coarse = SidecarChangeSet(changedKeys: nil, changedKinds: [.contact])
+
+        var deliveries: [Bool] = []
+        for _ in 0..<3 { deliveries.append(try await fixture.deliverChange(coarse)) }
+
+        #expect(deliveries == [true, false, false])
+
+        // A consumer that reads it again is tracked again.
+        _ = try await fixture.repo.contactPhotoData(for: fixture.id, kind: .thumbnail)
+        try await tick()
+        try fixture.sync.storeContactPhoto(at: fixture.key, data: photoC, crop: .existingOrNone, makeCurrent: true,
+                                           systemPhotoDigest: nil)
+        #expect(try await fixture.deliverChange(coarse))
+    }
+
+    /// A pass that a newer delivery supersedes posts nothing, so it must leave its
+    /// findings for that delivery, or photo consumers never hear about the change.
+    @Test func aSupersededPassDoesNotLoseThePointerChange() async throws {
+        let fixture = try await Fixture(onDisk: false)
+        defer { fixture.cleanUp() }
+        try await fixture.repo.setContactPhoto(for: fixture.id, imageData: photoA)
+        _ = try await fixture.repo.contactPhotoData(for: fixture.id, kind: .thumbnail)
+        try await tick()
+        try fixture.sync.storeContactPhoto(at: fixture.key, data: photoB, crop: .existingOrNone, makeCurrent: true,
+                                           systemPhotoDigest: nil)
+
+        // Park the first pass partway through, past where it finds the change.
+        nonisolated(unsafe) var firstPassParked = false
+        nonisolated(unsafe) var releaseFirstPass: CheckedContinuation<Void, Never>?
+        fixture.repo.sidecarReadBarrierForTesting = {
+            guard !firstPassParked else { return }
+            firstPassParked = true
+            await withCheckedContinuation { releaseFirstPass = $0 }
+        }
+        nonisolated(unsafe) var dataChanged = false
+        let token = fixture.center.addObserver(forName: .contactsRepositoryDidReload, object: fixture.repo, queue: nil) { note in
+            if note.userInfo?[ContactsRepositoryDidReloadKey.contactDataChanged] as? Bool == true { dataChanged = true }
+        }
+        defer { fixture.center.removeObserver(token) }
+        let changeSet = SidecarChangeSet(changedKeys: [fixture.key])
+        fixture.center.post(name: .guessWhoSidecarsDidChange, object: nil,
+                            userInfo: [GuessWhoSidecarsDidChangeKey.changeSet: changeSet])
+        while !firstPassParked { try await Task.sleep(for: .milliseconds(20)) }
+
+        // A newer delivery supersedes it, and the parked pass then finishes.
+        fixture.center.post(name: .guessWhoSidecarsDidChange, object: nil,
+                            userInfo: [GuessWhoSidecarsDidChangeKey.changeSet: changeSet])
+        releaseFirstPass?.resume()
+        try await Task.sleep(for: .milliseconds(10))
+        #expect(!dataChanged, "the superseded pass posts nothing")
+
+        try await Task.sleep(for: .milliseconds(650))
+        #expect(dataChanged)
     }
 
     @Test func aStaleCropCommitDoesNotHideAPointerChangeFromPhotoConsumers() async throws {

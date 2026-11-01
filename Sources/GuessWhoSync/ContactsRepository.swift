@@ -5680,9 +5680,15 @@ public final class ContactsRepository: NSObject {
     private func refreshFromSidecarChange(_ changeSet: SidecarChangeSet, generation: Int) async {
         // Only a changed photo pointer invalidates photo consumers; notes and timestamps
         // keep their existing presentation-only refresh behavior.
-        let photosChanged = cachedPhotoPointersChanged(changeSet)
+        let changedPhotoKeys = cachedPhotoPointersChanged(changeSet)
         defer {
-            if photosChanged, generation == refreshGeneration { postDidReload() }
+            // Dropped only when the post fires: a superseded pass skips it, and the
+            // pass that replaced it still needs to find these changes. A consumer
+            // that reloads adds its entry back, so one off screen stops invalidating.
+            if !changedPhotoKeys.isEmpty, generation == refreshGeneration {
+                for key in changedPhotoKeys { loadedPhotoPointers[key] = nil }
+                postDidReload()
+            }
         }
 
         guard let changedKeys = changeSet.changedKeys else {
@@ -5783,23 +5789,24 @@ public final class ContactsRepository: NSObject {
         postContactCellsDidChange(forContactKeys: contactKeys)
     }
 
-    private func cachedPhotoPointersChanged(_ changeSet: SidecarChangeSet) -> Bool {
-        guard let sync else { return false }
-        var changed = false
+    /// The loaded entries this change makes stale.
+    private func cachedPhotoPointersChanged(_ changeSet: SidecarChangeSet) -> Set<SidecarKey> {
+        guard let sync else { return [] }
+        var changed: Set<SidecarKey> = []
         for (key, previous) in loadedPhotoPointers {
             if let keys = changeSet.changedKeys, !keys.contains(key) { continue }
             if let kinds = changeSet.changedKinds, !kinds.contains(.contact) { continue }
             do {
                 let current = try sync.currentContactPhotoCell(at: key)
                 if current?.pointer.jsonValue ?? .null != previous.pointer || current?.modifiedAt != previous.modifiedAt {
-                    changed = true
+                    changed.insert(key)
                 } else if previous.fileMissing, let current,
                           try sync.hasContactPhotoFile(at: key, blobID: current.pointer.blobId) {
-                    changed = true
+                    changed.insert(key)
                 }
             } catch {
                 // A failed read must not certify a cached image as current.
-                changed = true
+                changed.insert(key)
             }
         }
         return changed
