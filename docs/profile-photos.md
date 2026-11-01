@@ -577,15 +577,17 @@ iPad uses the same picker, so check it there too if you can.
 
 **Setup, on Mac.** Help → Open iCloud Folder opens the synced folder in Finder. Photos are in
 `contacts`, named `<contact-uuid>.<photo-uuid>.dat`. To find one, add a new image to a
-throwaway contact, then sort by Date Modified. The newest `.dat` is that photo. Both
-setups below change the file in iCloud, so every device sees the result.
+throwaway contact with no photo, so the image is current, then sort by Date Modified. The
+newest `.dat` is that photo. Use a new contact for each setup. Both change the file in
+iCloud, so every device sees the result.
 
-**A missing file.** Delete the `.dat` in Finder.
+**A missing file.** Delete the `.dat` in Finder. Quit and reopen the app, then open the
+contact.
 
-- The tile reads "Not available right now", and its menu offers only Delete Photo.
-- If it's current and Contacts has the photo, the card shows Contacts' copy, uncropped, and
-  the tile stays labeled Current.
-- Delete Photo clears the tile.
+- The card shows Contacts' copy, uncropped.
+- In All Photos, the tile reads "Not available right now" and stays labeled Current. Its
+  menu offers only Delete Photo.
+- Delete Photo clears the tile and Contacts' copy, and the card shows the initials.
 
 **An older file this device can't read.** A file with no marker counts as an older encrypted
 one. In Terminal, run this with the file's path, which you can drag in from Finder:
@@ -594,8 +596,11 @@ one. In Terminal, run this with the file's path, which you can drag in from Find
 printf 'not a photo' > "<path to the .dat>"
 ```
 
-- The tile reads "Not available on this device" and has no menu.
-- If it's current, the card shows Contacts' copy, uncropped.
+Quit and reopen the app, then open the contact.
+
+- The card shows Contacts' copy, uncropped.
+- In All Photos, the tile reads "Not available on this device", stays labeled Current, and
+  has no menu.
 - Photo menu → Edit Crop shows "Couldn't update photo" and "This photo was saved on another
   device and can't be edited here. Choose a new photo to replace it."
 - Choose Photo still works, and the old tile stays listed.
