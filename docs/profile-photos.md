@@ -442,7 +442,7 @@ Use a contact with at least two photos with different crops.
    Expect Current to move to it and the card to show it with its own crop. Contacts.app
    shows that image, and the photo it replaced stays in the grid.
 3. Swap back, then Photo menu → Edit Crop.
-   Expect the first photo's crop back exactly as it was, and the editor to start there.
+   Expect the original current photo back, with its crop, and the editor to start there.
 
 ### On both
 
