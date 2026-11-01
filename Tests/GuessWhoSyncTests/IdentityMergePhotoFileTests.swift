@@ -197,21 +197,24 @@ struct IdentityMergePhotoFileTests {
 
     /// Both identities use the fixed `profilePhoto` cell, so one pointer loses the
     /// merge. The losing pointer's moved file must still be named by something.
-    @Test(arguments: [false, true]) func mergingTwoOlderCurrentPhotosKeepsBoth(onDisk: Bool) async throws {
+    @Test(arguments: [false, true], [false, true])
+    func mergingTwoOlderCurrentPhotosKeepsBoth(onDisk: Bool, winnerIsLater: Bool) async throws {
         let root = makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let sidecars: SidecarStoreProtocol = onDisk ? makeFileStore(root: root) : InMemorySidecarStore()
         let sync = makeSync(makeContacts(), sidecars)
-        let earlier = try plantOlderCurrent(Data([1]), at: winnerKey, in: sidecars, stamp: Date(timeIntervalSinceNow: -200))
-        let later = try plantOlderCurrent(Data([2]), at: loserKey, in: sidecars, stamp: Date(timeIntervalSinceNow: -100))
+        let winnerStamp = Date(timeIntervalSinceNow: winnerIsLater ? -100 : -200)
+        let loserStamp = Date(timeIntervalSinceNow: winnerIsLater ? -200 : -100)
+        let winnerPhoto = try plantOlderCurrent(Data([1]), at: winnerKey, in: sidecars, stamp: winnerStamp)
+        let loserPhoto = try plantOlderCurrent(Data([2]), at: loserKey, in: sidecars, stamp: loserStamp)
 
         _ = try await sync.reconcileContactIdentity(localID: "C1")
 
         let stored = try sync.storedContactPhotos(at: winnerKey)
-        #expect(Set(stored.photos.map(\.pointer.blobId)) == [earlier, later])
-        #expect(stored.current?.blobId == later)
-        #expect(try sync.storedContactPhoto(at: winnerKey, blobID: earlier)?.data == Data([1]))
-        #expect(try sync.storedContactPhoto(at: winnerKey, blobID: later)?.data == Data([2]))
+        #expect(Set(stored.photos.map(\.pointer.blobId)) == [winnerPhoto, loserPhoto])
+        #expect(stored.current?.blobId == (winnerIsLater ? winnerPhoto : loserPhoto))
+        #expect(try sync.storedContactPhoto(at: winnerKey, blobID: winnerPhoto)?.data == Data([1]))
+        #expect(try sync.storedContactPhoto(at: winnerKey, blobID: loserPhoto)?.data == Data([2]))
     }
 
     // MARK: - A merge that fails partway
