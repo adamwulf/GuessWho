@@ -122,6 +122,18 @@ enum ContactPhotoCells {
         fields[id] = SidecarCell(value: inner, modifiedAt: stamp, modifiedBy: deviceID)
     }
 
+    /// Gives each `profilePhoto` pointer its own cell. Two identities being merged both
+    /// use the fixed `profilePhoto` cell, so one pointer loses, and with older data
+    /// nothing else would name that photo's file.
+    static func keepingCurrentPhotos(of envelope: SidecarEnvelope, deviceID: String) -> SidecarEnvelope {
+        var fields = envelope.fields
+        for slot in live(in: fields) where slot.name == ContactsRepository.profilePhotoFieldName {
+            addLibraryCell(blobID: slot.blobID, value: slot.value, createdAt: slot.cell.modifiedAt,
+                           stamp: slot.cell.modifiedAt, deviceID: deviceID, to: &fields)
+        }
+        return SidecarEnvelope(schemaVersion: envelope.schemaVersion, entityID: envelope.entityID, fields: fields)
+    }
+
     /// Points `profilePhoto` at `pointer`. The photo it stops showing keeps a cell
     /// of its own, so it stays on the contact.
     static func setCurrent(_ pointer: BlobPointer, now: Date, deviceID: String,

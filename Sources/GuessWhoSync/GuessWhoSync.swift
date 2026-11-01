@@ -1809,13 +1809,15 @@ public final class GuessWhoSync: @unchecked Sendable {
         var mergedLoserUUIDs: [String] = []
         var errors: [String] = []
         let merged = try withCaseDLocks(uuidsInSortedOrder: sortedUUIDs) { () throws -> SidecarEnvelope in
-            var folded = try sidecars.read(winnerKey)
-                ?? SidecarEnvelope(entityID: winner, fields: [:])
+            var folded = ContactPhotoCells.keepingCurrentPhotos(
+                of: try sidecars.read(winnerKey) ?? SidecarEnvelope(entityID: winner, fields: [:]),
+                deviceID: deviceID)
 
             for loser in losers {
                 let loserKey = SidecarKey(kind: .contact, id: loser)
                 // Like an envelope that hasn't downloaded, a loser's file that
-                // hasn't stops the merge before any write. A later attempt retries.
+                // hasn't stops the merge before any write. Nothing is destroyed. This
+                // only runs again while the cached contact has no GuessWho ID.
                 let pending = try sidecars.pendingBlobIds(for: loserKey)
                 guard pending.isEmpty else {
                     Self.saveLog.notice("contact identity merge waiting on undownloaded files", metadata: [
@@ -1825,11 +1827,11 @@ public final class GuessWhoSync: @unchecked Sendable {
                     throw SidecarStoreError.notYetDownloaded(loserKey)
                 }
                 guard let loserEnvelope = try sidecars.read(loserKey) else { continue }
-                let rebased = SidecarEnvelope(
+                let rebased = ContactPhotoCells.keepingCurrentPhotos(of: SidecarEnvelope(
                     schemaVersion: loserEnvelope.schemaVersion,
                     entityID: winner,
                     fields: loserEnvelope.fields
-                )
+                ), deviceID: deviceID)
                 switch merge(folded, rebased) {
                 case .success(let next):
                     folded = next
@@ -1840,14 +1842,29 @@ public final class GuessWhoSync: @unchecked Sendable {
             }
 
             // A file's name includes its key, and deleting the loser deletes the
-            // loser's files. Move them first, so the winner's cells can find them.
-            for loser in losers {
-                let loserKey = SidecarKey(kind: .contact, id: loser)
-                for blobId in try sidecars.blobIds(for: loserKey) {
-                    try sidecars.moveBlob(blobId: blobId, from: loserKey, to: winnerKey)
+            // loser's files. Move them first, so the winner's cells can find them. On
+            // failure they go back, where the loser's cells still name them.
+            var moved: [(blobId: String, loser: SidecarKey)] = []
+            do {
+                for loser in losers {
+                    let loserKey = SidecarKey(kind: .contact, id: loser)
+                    for blobId in try sidecars.blobIds(for: loserKey) {
+                        try sidecars.moveBlob(blobId: blobId, from: loserKey, to: winnerKey)
+                        moved.append((blobId, loserKey))
+                    }
                 }
+            } catch {
+                moveBack(moved, from: winnerKey, after: error)
+                throw error
             }
-            try sidecars.write(folded, at: winnerKey)
+            do {
+                try sidecars.write(folded, at: winnerKey)
+            } catch {
+                // After a timeout the winner's envelope can still land, and then it
+                // needs the files where they are.
+                if !error.isSidecarTimeout { moveBack(moved, from: winnerKey, after: error) }
+                throw error
+            }
             for loser in losers {
                 try sidecars.delete(SidecarKey(kind: .contact, id: loser))
             }
@@ -1881,6 +1898,23 @@ public final class GuessWhoSync: @unchecked Sendable {
             winnerUUID: winner,
             losers: losers
         )
+    }
+
+    /// Best-effort: a file that won't move back stays under the winner, where nothing
+    /// names it until a later merge. It isn't destroyed.
+    private func moveBack(_ moved: [(blobId: String, loser: SidecarKey)], from winnerKey: SidecarKey, after failure: Error) {
+        Self.saveLog.error("contact identity merge failed, moving files back", metadata: failure.logMetadata([
+            "winner": .string(winnerKey.id), "movedFiles": .stringConvertible(moved.count),
+        ]))
+        for file in moved {
+            do {
+                try sidecars.moveBlob(blobId: file.blobId, from: winnerKey, to: file.loser)
+            } catch {
+                Self.saveLog.error("contact identity merge couldn't move a file back", metadata: error.logMetadata([
+                    "winner": .string(winnerKey.id), "loser": .string(file.loser.id), "blobId": .string(file.blobId),
+                ]))
+            }
+        }
     }
 
     // §13.4 endpoint rewrite. Runs ONCE per reconcile pass, over the union of

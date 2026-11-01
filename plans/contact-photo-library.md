@@ -73,8 +73,14 @@ adds none.
   without being opened.
 - **Placeholder rule.** An iCloud placeholder is never renamed, because its format is
   private to the system. A loser file that exists only as a placeholder is treated like
-  an envelope that hasn't downloaded: its download starts, the merge stops before any
-  write, and a later attempt retries. Nothing is destroyed.
+  an envelope that hasn't downloaded: its download starts, and the merge stops before any
+  write. Nothing is destroyed. A later attempt usually doesn't come: the merge runs only
+  while the cached contact has no GuessWho ID, so after a reload the fast path skips it
+  and the loser stays, with its photos and notes out of view. This work adds no new trigger.
+- If a move or the winner's write fails after files moved, they go back, best-effort and
+  logged. After a timed-out winner write they stay, because that write can still land.
+- Each side's live `profilePhoto` gets a library cell before merging. Both identities use
+  the fixed cell, so one pointer loses, and with older data nothing else names that file.
 
 ### Rules for every write
 

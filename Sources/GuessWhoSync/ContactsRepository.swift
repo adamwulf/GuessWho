@@ -2699,8 +2699,12 @@ public final class ContactsRepository: NSObject {
     /// surfaces (effectively only Catalyst multi-window). See the "CONCURRENCY
     /// (decision: ACCEPT double-mint...)" paragraph in
     /// `plans/package-vended-contact-identity.md` for the full rationale,
-    /// including why single-device last-write-wins orphans a sidecar (harmless)
-    /// and only the multi-device case self-heals via Case-D.
+    /// including why single-device last-write-wins orphans a sidecar (harmless).
+    ///
+    /// A merge of two IDs (Case D) only runs from the mint path below. Once the cached
+    /// contact has a GuessWho ID, the fast path skips it, so a contact carrying two
+    /// IDs keeps using one, and nothing retries a merge that stopped. Nothing is
+    /// destroyed, but the other ID's photos and notes stay out of view.
     internal func resolveOrMintGuessWhoID(for id: ContactID) async throws -> String {
         // Fast path: already reconciled — return the stable UUID, mint nothing.
         if let existing = id.guessWhoID {
