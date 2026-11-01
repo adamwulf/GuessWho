@@ -357,6 +357,11 @@ same per-contact algorithm, dispatching on the number of *distinct, valid*
   [`mail-activity.md`](mail-activity.md)) can exist on both sides. Those
   resolve by whole-cell last-writer-wins, so the same message recorded on both
   contacts becomes one activity, and `lastInteracted` keeps the later time.
+  A loser's `.dat` files move to the winner before the loser is deleted, because
+  a file's name includes its contact's key. A loser file that exists only as an
+  iCloud placeholder stops the merge before any write, as an envelope that hasn't
+  downloaded does: its download starts, and a later attempt retries. A placeholder
+  is never renamed, because its format is private to the system.
 
 Lex-smallest-wins is the package's single **first-writer-wins** rule (every
 other field uses last-writer-wins). It needs no coordination and no clock: two

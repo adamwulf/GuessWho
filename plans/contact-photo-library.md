@@ -55,6 +55,24 @@ If two devices each moved pointers at once, one pointer could be overwritten by 
 other and that photo lost. With an add-only cell per photo, the worst a race does is
 pick a different current photo. No migration is needed.
 
+### Identity merges
+
+A `.dat` file's name includes its contact's key. Case D (`handleCaseD`) merged the
+loser's cells into the winner and then deleted the loser, which deleted the loser's
+files, so the winner kept cells naming files that no longer existed. The loss is real
+but narrow: the only production route to a merge is `resolveOrMintGuessWhoID` ->
+`reconcileContactIdentity(localID:)`, reached when a write's `ContactID` has no
+GuessWho ID. `reconcileContactIdentities()` has no production caller, and this work
+adds none.
+
+- Before deleting a loser, the merge moves each of its files to the winner with
+  `moveBlob(blobId:from:to:)`: a rename on disk, so an older encrypted file moves
+  without being opened.
+- **Placeholder rule.** An iCloud placeholder is never renamed, because its format is
+  private to the system. A loser file that exists only as a placeholder is treated like
+  an envelope that hasn't downloaded: its download starts, the merge stops before any
+  write, and a later attempt retries. Nothing is destroyed.
+
 ### Rules for every write
 
 All under `withKeyLocked`, in one envelope write. Order: `.dat` first, then envelope,

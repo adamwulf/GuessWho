@@ -55,6 +55,15 @@ public protocol SidecarStoreProtocol {
     // Every blobId that has a `.dat` (or not-yet-downloaded placeholder) on
     // disk for `key`. Used by the orphan sweep to find unreferenced files.
     func blobIds(for key: SidecarKey) throws -> [String]
+
+    // The blobIds of `key` that exist remotely but aren't on this device yet.
+    // Asking starts their downloads.
+    func pendingBlobIds(for key: SidecarKey) throws -> [String]
+
+    // Give the blob the name it has under `destination`, unchanged, so an older
+    // encrypted file moves without being opened. No-op if it is already gone.
+    // Throws `.notYetDownloaded` when only an iCloud placeholder exists.
+    func moveBlob(blobId: String, from source: SidecarKey, to destination: SidecarKey) throws
 }
 
 // Internal fast path for whole-corpus projections. The filesystem store can
@@ -165,4 +174,14 @@ public extension SidecarStoreProtocol {
     func readBlob(blobId: String, for key: SidecarKey) throws -> Data? { nil }
     func deleteBlob(blobId: String, for key: SidecarKey) throws {}
     func blobIds(for key: SidecarKey) throws -> [String] { [] }
+
+    // Default: a backend with no remote tier has nothing pending.
+    func pendingBlobIds(for key: SidecarKey) throws -> [String] { [] }
+
+    // Default: a backend whose bytes are always local can copy, then delete.
+    func moveBlob(blobId: String, from source: SidecarKey, to destination: SidecarKey) throws {
+        guard source != destination, let data = try readBlob(blobId: blobId, for: source) else { return }
+        try writeBlob(data, blobId: blobId, for: destination)
+        try deleteBlob(blobId: blobId, for: source)
+    }
 }

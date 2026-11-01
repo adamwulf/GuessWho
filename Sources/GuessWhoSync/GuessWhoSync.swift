@@ -1768,6 +1768,16 @@ public final class GuessWhoSync: @unchecked Sendable {
 
             for loser in losers {
                 let loserKey = SidecarKey(kind: .contact, id: loser)
+                // Like an envelope that hasn't downloaded, a loser's file that
+                // hasn't stops the merge before any write. A later attempt retries.
+                let pending = try sidecars.pendingBlobIds(for: loserKey)
+                guard pending.isEmpty else {
+                    Self.saveLog.notice("contact identity merge waiting on undownloaded files", metadata: [
+                        "winner": .string(winner), "loser": .string(loser),
+                        "pendingFiles": .stringConvertible(pending.count),
+                    ])
+                    throw SidecarStoreError.notYetDownloaded(loserKey)
+                }
                 guard let loserEnvelope = try sidecars.read(loserKey) else { continue }
                 let rebased = SidecarEnvelope(
                     schemaVersion: loserEnvelope.schemaVersion,
@@ -1783,6 +1793,14 @@ public final class GuessWhoSync: @unchecked Sendable {
                 }
             }
 
+            // A file's name includes its key, and deleting the loser deletes the
+            // loser's files. Move them first, so the winner's cells can find them.
+            for loser in losers {
+                let loserKey = SidecarKey(kind: .contact, id: loser)
+                for blobId in try sidecars.blobIds(for: loserKey) {
+                    try sidecars.moveBlob(blobId: blobId, from: loserKey, to: winnerKey)
+                }
+            }
             try sidecars.write(folded, at: winnerKey)
             for loser in losers {
                 try sidecars.delete(SidecarKey(kind: .contact, id: loser))

@@ -565,6 +565,49 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
         return result
     }
 
+    // `blobIds(for:)` lists placeholders too and starts their downloads, so a
+    // listed blob with no file at its real name is one still on its way.
+    public func pendingBlobIds(for key: SidecarKey) throws -> [String] {
+        try blobIds(for: key).filter {
+            !FileManager.default.fileExists(atPath: blobURL(for: key, blobId: $0).path)
+        }
+    }
+
+    // A rename, so an older encrypted file keeps its bytes. An iCloud placeholder
+    // is never renamed: its format is private to the system.
+    public func moveBlob(blobId: String, from source: SidecarKey, to destination: SidecarKey) throws {
+        guard source != destination else { return }
+        // In a fixed order, so two opposite moves can't deadlock.
+        let (first, second) = source.id < destination.id ? (source, destination) : (destination, source)
+        try fileLocks.withLock(forKey: first) {
+            try fileLocks.withLock(forKey: second) {
+                let fm = FileManager.default
+                let sourceURL = blobURL(for: source, blobId: blobId)
+                let destinationURL = blobURL(for: destination, blobId: blobId)
+                guard fm.fileExists(atPath: sourceURL.path) else {
+                    guard fm.fileExists(atPath: placeholderURL(for: sourceURL).path) else { return }
+                    try? ubiquity.startDownloading(at: sourceURL)
+                    throw SidecarStoreError.notYetDownloaded(source)
+                }
+                var moveError: Error?
+                try coordinatedMove(key: source, from: sourceURL, to: destinationURL) { safeSource, safeDestination in
+                    do {
+                        // A blobId never names two different files, so a copy
+                        // already at the destination is this same photo.
+                        if fm.fileExists(atPath: safeDestination.path) {
+                            try fm.removeItem(at: safeSource)
+                        } else {
+                            try fm.moveItem(at: safeSource, to: safeDestination)
+                        }
+                    } catch {
+                        moveError = error
+                    }
+                }
+                if let moveError { throw moveError }
+            }
+        }
+    }
+
     @_spi(ConflictReconcile)
     public func reconcileConflict(
         at key: SidecarKey,
@@ -940,6 +983,17 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
         }
     }
 
+    private func coordinatedMove(key: SidecarKey, from source: URL, to destination: URL,
+                                 _ body: @escaping (URL, URL) -> Void) throws {
+        guard coordinatesUbiquitousAccess else {
+            body(source, destination)
+            return
+        }
+        try runWithBusyHandling(key: key) { _ in
+            try self.fileCoordinator.coordinateMoving(from: source, to: destination, body)
+        }
+    }
+
     // Run `operation` on `key`'s coordinator queue with a per-attempt wait of
     // `perAttemptTimeout`. The operation is dispatched ONCE; we never re-issue.
     //
@@ -1057,9 +1111,35 @@ protocol SidecarFileCoordinating: AnyObject {
         options: NSFileCoordinator.WritingOptions,
         _ body: @escaping (URL) -> Void
     ) throws
+    func coordinateMoving(from source: URL, to destination: URL, _ body: @escaping (URL, URL) -> Void) throws
+}
+
+extension SidecarFileCoordinating {
+    // For test coordinators, which only count the single-file claims above.
+    func coordinateMoving(from source: URL, to destination: URL, _ body: @escaping (URL, URL) -> Void) throws {
+        body(source, destination)
+    }
 }
 
 private final class ProductionSidecarFileCoordinator: SidecarFileCoordinating {
+    func coordinateMoving(from source: URL, to destination: URL, _ body: @escaping (URL, URL) -> Void) throws {
+        let coordinator = NSFileCoordinator(filePresenter: nil)
+        var coordinationError: NSError?
+        coordinator.coordinate(
+            writingItemAt: source,
+            options: [.forMoving],
+            writingItemAt: destination,
+            options: [.forReplacing],
+            error: &coordinationError
+        ) { safeSource, safeDestination in
+            body(safeSource, safeDestination)
+            if FileManager.default.fileExists(atPath: safeDestination.path) {
+                coordinator.item(at: safeSource, didMoveTo: safeDestination)
+            }
+        }
+        if let coordinationError { throw coordinationError }
+    }
+
     func coordinateReading(at url: URL, _ body: @escaping (URL) -> Void) throws {
         let coordinator = NSFileCoordinator(filePresenter: nil)
         var coordinationError: NSError?
