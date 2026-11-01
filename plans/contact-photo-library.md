@@ -153,10 +153,13 @@ now the immediate delete from the sweep discussion, so a deleted photo doesn't l
 in iCloud. `sweepOrphanBlobs` stays uncalled. It refuses an older file this device can't
 read, since another device may still read it.
 
-One exception to "doesn't linger": `deleteBlob` follows the envelope delete, which leaves
-an iCloud placeholder alone. So a photo deleted on a device its file never reached loses
-its cells, but the file stays in iCloud with nothing naming it. This logs, and nothing
-shows it.
+What it does depends on the file. All of this is checked before any write:
+- **Present:** deleted, as above.
+- **Only an iCloud placeholder on this device:** a placeholder can't be removed, so the
+  file would stay in iCloud. The delete starts its download, throws `photoPending`, and
+  changes nothing, including Contacts when the photo is current.
+- **Truly missing, with no placeholder** (an older build deleted it, or a dangling
+  pointer): the delete tombstones the cells, so a stuck placeholder can always be cleared.
 
 All of these post the same refresh `setContactPhoto` does. A failed Contacts write
 leaves storage unchanged. `sync == nil`: the list shows only the Contacts photo, and
@@ -189,8 +192,9 @@ iPad, and Catalyst.
   Current Photo (hidden on the current one), Delete Photo (destructive, with a
   confirmation saying it's removed from all the user's devices, and that the contact
   will have no photo if it's current). A photo still downloading has no bytes to view
-  or choose, so its menu offers only Delete Photo, which also clears a photo whose file
-  is gone for good.
+  or choose, so its menu offers only Delete Photo. The view can't tell a file on its way
+  from one that's gone until it tries: the first reports it's still downloading and to
+  try again shortly, and the second is cleared.
 - Toolbar: Done and Add Photo. Add Photo reuses the existing pickers and the crop
   editor, then calls `addContactPhoto`. `PhotoChangeModifier` moved to its own file, with
   the shared picked-image decoding, so both views can use it.

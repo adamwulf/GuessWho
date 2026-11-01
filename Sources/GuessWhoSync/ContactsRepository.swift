@@ -1845,6 +1845,9 @@ public final class ContactsRepository: NSObject {
 
     /// Removes a photo for good, on every device. Deleting the photo that's showing
     /// clears it from Contacts too, and no other photo becomes current on its own.
+    /// Throws `.photoPending` and changes nothing while its file is still downloading,
+    /// which this starts. A file that's truly missing doesn't stop the delete, so a
+    /// photo stuck waiting for one can always be cleared.
     public func deleteContactPhoto(for id: ContactID, photoID: String) async throws {
         guard let contact = contact(id: id) else { throw ContactPhotoEditError.photoChanged }
         let localID = contact.localID
@@ -1864,8 +1867,12 @@ public final class ContactsRepository: NSObject {
         guard let sync else { throw SidecarUnavailableError() }
         guard let key = SidecarKey.forContact(contact) else { throw ContactPhotoEditError.photoChanged }
         // Another device may still read an older encrypted file, so it stays.
-        // A photo still downloading can go.
         _ = try await contactPhotoData(for: id, photoID: photoID)
+        // Before clearing Contacts, so a refusal leaves everything as it was.
+        let isPending = try await Task.detached(priority: .userInitiated) {
+            try sync.isContactPhotoFilePending(at: key, blobID: photoID)
+        }.value
+        guard !isPending else { throw ContactPhotoEditError.photoPending }
         let stored = try await Task.detached(priority: .userInitiated) {
             try sync.storedContactPhotos(at: key)
         }.value

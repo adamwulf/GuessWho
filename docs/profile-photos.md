@@ -35,8 +35,10 @@ is labeled. Each cell loads its own thumbnail, so only visible photos are read.
 Each photo's menu offers View Photo, Use as Current Photo (not on the current one),
 and Delete Photo, which asks first and says the photo is removed from all the user's
 devices, and that the contact will have no photo if it's current. A photo still
-downloading offers only Delete Photo. A photo this device can't read shows a
-placeholder with no actions, because another device may still read it.
+downloading offers only Delete Photo. The view can't tell a file on its way from one
+that's gone until it tries: the first reports it's still downloading and to try again
+shortly, and the second is cleared. A photo this device can't read shows a placeholder
+with no actions, because another device may still read it.
 
 Add Photo uses the same pickers and crop editor, and doesn't change the current photo
 unless the contact shows none. Choosing a photo makes it current, restoring that
@@ -142,9 +144,15 @@ can't be read here.
 `deleteContactPhoto` tombstones every live cell naming the photo, then deletes the
 `.dat`. If the photo is current it clears Contacts first, restoring on failure. For
 the photo only Contacts holds, it just clears Contacts. It refuses an older file this
-device can't read. Like an envelope delete, it leaves an iCloud placeholder alone, so
-a photo deleted on a device its file never reached loses its cells, but the file stays
-in iCloud with nothing naming it. This logs, and nothing shows it.
+device can't read. Delete promises the photo is gone from every device, so what it
+does also depends on the file, checked before any write:
+
+- **Present:** deleted as above.
+- **Only an iCloud placeholder on this device:** a placeholder can't be removed, so the
+  file would stay in iCloud. The delete starts its download, throws `photoPending`, and
+  changes nothing, including Contacts when the photo is current.
+- **Truly missing, with no placeholder**, as when an older build deleted it: the delete
+  tombstones the cells, so a photo stuck waiting for its file can always be cleared.
 
 All of these post the same refresh `setContactPhoto` does. A failed Contacts write
 leaves storage unchanged. With no storage (`sync == nil`), the list shows only the

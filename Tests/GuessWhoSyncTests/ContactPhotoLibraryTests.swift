@@ -122,6 +122,7 @@ private final class Fixture {
     static let guessWhoID = "33333333-3333-4333-8333-333333333333"
 
     let contacts: PhotoFaultContactStore
+    let ubiquity = FakeUbiquityProvider()
     let store: CommitFailingSidecarStore
     let sync: GuessWhoSync
     let repo: ContactsRepository
@@ -142,7 +143,7 @@ private final class Fixture {
         if let contactsPhoto { await contacts.seedPhoto(contactsPhoto, for: Self.localID) }
         self.contacts = contacts
         let base: SidecarStoreProtocol = onDisk
-            ? FileSystemSidecarStore(root: root, ubiquity: FakeUbiquityProvider(), blobCrypto: NoKeyBlobCrypto(),
+            ? FileSystemSidecarStore(root: root, ubiquity: ubiquity, blobCrypto: NoKeyBlobCrypto(),
                                      coordinatesUbiquitousAccess: false)
             : InMemorySidecarStore()
         store = CommitFailingSidecarStore(base: base)
@@ -209,6 +210,26 @@ private final class Fixture {
     func sealFile(blobID: String) throws {
         let url = root.appendingPathComponent("contacts").appendingPathComponent("\(key.id).\(blobID).dat")
         try InMemoryBlobCrypto().encrypt(Data([9, 9])).write(to: url)
+    }
+
+    /// Turns a stored file into an iCloud placeholder, as on a device it hasn't
+    /// reached. Returns the file's real URL and the placeholder's.
+    @discardableResult
+    func makeFilePlaceholder(blobID: String) throws -> (file: URL, placeholder: URL) {
+        let directory = root.appendingPathComponent("contacts")
+        let name = "\(key.id).\(blobID).dat"
+        let file = directory.appendingPathComponent(name)
+        try FileManager.default.removeItem(at: file)
+        let placeholder = directory.appendingPathComponent(".\(name).icloud")
+        try Data().write(to: placeholder)
+        return (file, placeholder)
+    }
+
+    /// Every cell, stamps included, to prove nothing was written.
+    func envelopeBytes() throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .sortedKeys
+        return try encoder.encode(try #require(try store.read(key)))
     }
 }
 
@@ -892,7 +913,9 @@ struct ContactPhotoLibraryTests {
         #expect(try await fixture.items().first { $0.id == blobID }?.isAvailable == true)
     }
 
-    @Test(arguments: [false, true]) func aPendingFileReadsAsNilAndCanOnlyBeDeleted(onDisk: Bool) async throws {
+    /// A file that's gone with no placeholder, as when an older build deleted it. It
+    /// reads like one still downloading, and it can still be cleared.
+    @Test(arguments: [false, true]) func aMissingFileReadsAsNilAndCanStillBeDeleted(onDisk: Bool) async throws {
         let fixture = try await Fixture(onDisk: onDisk)
         defer { fixture.cleanUp() }
         try await fixture.repo.setContactPhoto(for: fixture.id, imageData: photoA)
@@ -910,30 +933,12 @@ struct ContactPhotoLibraryTests {
 
         try await fixture.repo.deleteContactPhoto(for: fixture.id, photoID: blobID)
         #expect(try await fixture.items().count == 1)
+        #expect(try fixture.store.read(fixture.key)?.fields[blobID.uppercased()]?.deletedAt != nil)
+        #expect(try await fixture.bytes(fixture.current()) == photoB)
     }
 
-    /// Like an envelope delete, deleting leaves an iCloud placeholder alone.
-    @Test func deletingAnUndownloadedPhotoRemovesItsCellsAndLeavesThePlaceholder() async throws {
-        let fixture = try await Fixture(onDisk: true)
-        defer { fixture.cleanUp() }
-        try await fixture.repo.setContactPhoto(for: fixture.id, imageData: photoA)
-        let blobID = try #require(try fixture.store.blobIds(for: fixture.key).first)
-        try await fixture.repo.setContactPhoto(for: fixture.id, imageData: photoB)
-        let directory = fixture.root.appendingPathComponent("contacts")
-        let name = "\(fixture.key.id).\(blobID).dat"
-        try FileManager.default.removeItem(at: directory.appendingPathComponent(name))
-        let placeholder = directory.appendingPathComponent(".\(name).icloud")
-        try Data().write(to: placeholder)
-
-        try await fixture.repo.deleteContactPhoto(for: fixture.id, photoID: blobID)
-
-        #expect(try await fixture.items().count == 1)
-        #expect(try await !fixture.items().contains { $0.id == blobID })
-        #expect(FileManager.default.fileExists(atPath: placeholder.path))
-    }
-
-    @Test func aPendingCurrentPhotoIsStillCurrent() async throws {
-        let fixture = try await Fixture(onDisk: false)
+    @Test(arguments: [false, true]) func aMissingCurrentFileIsStillCurrentAndCanBeDeleted(onDisk: Bool) async throws {
+        let fixture = try await Fixture(onDisk: onDisk)
         defer { fixture.cleanUp() }
         try await fixture.repo.setContactPhoto(for: fixture.id, imageData: photoA)
         let blobID = try #require(try fixture.store.blobIds(for: fixture.key).first)
@@ -947,6 +952,94 @@ struct ContactPhotoLibraryTests {
         try await fixture.repo.deleteContactPhoto(for: fixture.id, photoID: blobID)
         #expect(try await fixture.contactsBytes() == nil)
         #expect(try await fixture.items().isEmpty)
+    }
+
+    /// Delete promises the photo is gone from every device, and a placeholder can't
+    /// be removed, so the file would stay in iCloud. Nothing changes until it arrives.
+    @Test func deletingAnUndownloadedPhotoIsRefusedUntilItArrives() async throws {
+        let fixture = try await Fixture(onDisk: true)
+        defer { fixture.cleanUp() }
+        try await fixture.repo.setContactPhoto(for: fixture.id, imageData: photoA)
+        let blobID = try #require(try fixture.store.blobIds(for: fixture.key).first)
+        try await fixture.repo.setContactPhoto(for: fixture.id, imageData: photoB)
+        let urls = try fixture.makeFilePlaceholder(blobID: blobID)
+        let envelope = try fixture.envelopeBytes()
+        let writes = await fixture.contacts.photoWriteCount
+        let items = try await fixture.items()
+        fixture.ubiquity.startDownloadingCalls.removeAll()
+
+        do {
+            try await fixture.repo.deleteContactPhoto(for: fixture.id, photoID: blobID)
+            Issue.record("the delete should have been refused")
+        } catch ContactPhotoEditError.photoPending {
+        }
+
+        #expect(fixture.ubiquity.startDownloadingCalls.contains(urls.file))
+        #expect(FileManager.default.fileExists(atPath: urls.placeholder.path))
+        #expect(try fixture.envelopeBytes() == envelope)
+        #expect(await fixture.contacts.photoWriteCount == writes)
+        #expect(try await fixture.contactsBytes() == photoB)
+        #expect(try await fixture.items() == items)
+
+        // The download finishes, and the same delete now goes through.
+        try FileManager.default.removeItem(at: urls.placeholder)
+        try fixture.store.writeBlob(photoA, blobId: blobID, for: fixture.key)
+
+        try await fixture.repo.deleteContactPhoto(for: fixture.id, photoID: blobID)
+
+        #expect(!FileManager.default.fileExists(atPath: urls.file.path))
+        #expect(try await fixture.storedBytes() == [photoB])
+        #expect(try fixture.store.read(fixture.key)?.fields[blobID.uppercased()]?.deletedAt != nil)
+    }
+
+    /// The check comes before Contacts is cleared, so nothing has to be restored.
+    @Test func aRefusedDeleteOfTheCurrentPhotoLeavesContactsAndEveryCellAlone() async throws {
+        let fixture = try await Fixture(onDisk: true)
+        defer { fixture.cleanUp() }
+        try await fixture.repo.setContactPhoto(for: fixture.id, imageData: photoA, crop: cropA)
+        let blobID = try #require(try fixture.store.blobIds(for: fixture.key).first)
+        let urls = try fixture.makeFilePlaceholder(blobID: blobID)
+        let envelope = try fixture.envelopeBytes()
+        let writes = await fixture.contacts.photoWriteCount
+        let items = try await fixture.items()
+        #expect(items.map(\.id) == [blobID])
+        #expect(items.first?.isCurrent == true)
+
+        do {
+            try await fixture.repo.deleteContactPhoto(for: fixture.id, photoID: blobID)
+            Issue.record("the delete should have been refused")
+        } catch ContactPhotoEditError.photoPending {
+        }
+
+        #expect(await fixture.contacts.photoWriteCount == writes, "Contacts was never written, not even to restore")
+        #expect(try await fixture.contactsBytes() == photoA)
+        #expect(try fixture.envelopeBytes() == envelope)
+        #expect(FileManager.default.fileExists(atPath: urls.placeholder.path))
+        #expect(try await fixture.items() == items)
+    }
+
+    /// The engine holds the same rule under its lock, in case a file becomes a
+    /// placeholder after the repository's check.
+    @Test func theEngineRefusesToDeleteAPlaceholderToo() async throws {
+        let fixture = try await Fixture(onDisk: true)
+        defer { fixture.cleanUp() }
+        try await fixture.repo.setContactPhoto(for: fixture.id, imageData: photoA)
+        let blobID = try #require(try fixture.store.blobIds(for: fixture.key).first)
+        try fixture.makeFilePlaceholder(blobID: blobID)
+        let envelope = try fixture.envelopeBytes()
+
+        #expect(try fixture.sync.isContactPhotoFilePending(at: fixture.key, blobID: blobID))
+        #expect(throws: ContactPhotoEditError.self) {
+            try fixture.sync.deleteContactPhoto(at: fixture.key, blobID: blobID)
+        }
+
+        #expect(try fixture.envelopeBytes() == envelope)
+    }
+
+    @Test func thePendingErrorSaysToTryAgain() {
+        let message = ContactPhotoEditError.photoPending.localizedDescription
+        #expect(message.contains("still downloading"))
+        #expect(message.contains("try again"))
     }
 
     // MARK: - No storage

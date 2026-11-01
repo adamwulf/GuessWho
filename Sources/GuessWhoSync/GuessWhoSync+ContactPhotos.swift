@@ -325,9 +325,18 @@ extension GuessWhoSync {
         }
     }
 
-    /// Removes a photo for good: every cell naming it, then its file.
+    /// Whether this photo's file exists only as an iCloud placeholder here. Asking
+    /// starts its download. A file truly missing has no placeholder, so this is false.
+    func isContactPhotoFilePending(at key: SidecarKey, blobID: String) throws -> Bool {
+        try withKeyLocked(key) { ctx in try ctx.pendingBlobIds().contains(blobID) }
+    }
+
+    /// Removes a photo for good: every cell naming it, then its file. Throws
+    /// `.photoPending` and changes nothing while the file is only a placeholder here,
+    /// because a placeholder can't be removed, and the file would stay in iCloud.
     func deleteContactPhoto(at key: SidecarKey, blobID: String) throws {
         try withKeyLocked(key) { ctx in
+            guard try !ctx.pendingBlobIds().contains(blobID) else { throw ContactPhotoEditError.photoPending }
             if let envelope = try ctx.read() {
                 var fields = envelope.fields
                 if ContactPhotoCells.tombstone(blobID: blobID, now: Date(), deviceID: deviceID, in: &fields) {
@@ -342,12 +351,6 @@ extension GuessWhoSync {
     /// a file nothing names. It isn't worth failing the change over.
     private func removeFile(blobID: String, ctx: KeyLockedContext) {
         do {
-            // Like an envelope delete, this leaves an iCloud placeholder alone.
-            if try ctx.pendingBlobIds().contains(blobID) {
-                Self.photoLog.notice("photo file left in storage: not downloaded here", metadata: [
-                    "id": .string(ctx.key.id), "blobId": .string(blobID),
-                ])
-            }
             try ctx.deleteBlob(blobId: blobID)
         } catch {
             Self.photoLog.error("photo file could not be removed", metadata: error.logMetadata([
