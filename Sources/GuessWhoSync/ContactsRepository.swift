@@ -2126,10 +2126,9 @@ public final class ContactsRepository: NSObject {
     /// - Sidecar fields (headline/about/location) are stored as notes prefixed
     ///   with "LinkedIn …: " so the source is obvious to the user.
     /// - `photo` routes through `setContactPhoto`, so replacing an existing
-    ///   photo snapshots the replaced bytes into the single-slot previous-photo
-    ///   sidecar blob first. Skipped entirely — no write, no snapshot — when
-    ///   the incoming bytes equal the contact's current photo (re-import) or
-    ///   the payload's data URL doesn't decode.
+    ///   photo keeps it on the contact. Skipped entirely when the incoming bytes
+    ///   equal the contact's current photo (re-import) or the payload's data URL
+    ///   doesn't decode.
     ///
     /// Throws if the contact can't be fetched/saved. Returns the refreshed
     /// `Contact` (CNContact fields; sidecar notes are read separately).

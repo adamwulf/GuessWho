@@ -78,9 +78,13 @@ encrypted one. See [Profile photos](profile-photos.md).
 they're `.blob`, and preserves them like any other cell. But an older build still
 deletes a `.dat` when it overwrites `profilePhoto` or `previousPhoto`, so it can delete
 a file a `contactPhoto` cell still names. That photo then shows as a placeholder that
-never fills in, until someone deletes it. The older build's own `previousPhoto` copy
-usually keeps the bytes, and a newer build lists that as a photo of its own. Update
-every device.
+never fills in, until someone deletes it.
+
+This is a real loss, because an older build keeps only one previous photo. Each replace
+on it overwrites `previousPhoto`, deleting that file. So the previous photo from before
+the update, and all but the latest photo replaced on that build, are gone for good. Only
+the latest survives, as the older build's `previousPhoto` copy, which a newer build lists
+as a photo of its own. Update every device.
 
 ## Why it holds — three legs
 

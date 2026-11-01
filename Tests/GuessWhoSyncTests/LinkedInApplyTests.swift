@@ -581,24 +581,29 @@ struct LinkedInApplyPhotoTests {
         #expect(try sync.storedContactPhotos(at: key).photos.count == 1)
     }
 
-    @Test func unchangedPhoto_reimportIsNoOp_noSnapshot() async throws {
+    /// Contacts already holds these bytes: importing them stores no photo and
+    /// doesn't rewrite Contacts.
+    @Test func unchangedPhoto_reimportIsNoOp() async throws {
         let bytes = Data([0xFF, 0xD8, 0xFF, 0xCC])
-        let (repo, id, sync) = await makeRepo(
+        let store = PhotoFaultContactStore(contacts: [
             Contact(localID: "T", givenName: "Ada", imageDataAvailable: true),
-            seedPhoto: bytes
-        )
+        ])
+        await store.seedPhoto(bytes, for: "T")
+        let sync = GuessWhoSync(contacts: store, events: InMemoryEventStore(),
+                                sidecars: InMemorySidecarStore(), deviceID: "device-test")
+        let repo = ContactsRepository(contacts: store, sync: sync)
+        await repo.reload()
+        let id = try #require(repo.contact(localID: "T")).contactID
+
         _ = try await repo.applyLinkedIn(
             profile: profile(photoBytes: bytes), to: id, fields: [.photo]
         )
-        // Photo untouched, and — the point — NO previous-photo snapshot was
-        // taken: re-importing the same profile must not repoint the slot at a
-        // copy of the live photo.
-        let live = try await repo.contactPhotoData(for: id, kind: .fullSize)
-        #expect(live?.data == bytes)
-        if let guessWhoID = ContactID(contact: try #require(repo.contact(localID: "T"))).guessWhoID {
-            let key = SidecarKey(kind: .contact, id: guessWhoID)
-            #expect(try sync.fields(at: key).filter { $0.field == ContactsRepository.previousPhotoFieldName }.isEmpty)
-        }
+
+        #expect(await store.photoWriteCount == 0)
+        let freshID = try #require(repo.contact(localID: "T")).contactID
+        #expect(try await repo.contactPhotoData(for: freshID, kind: .fullSize)?.data == bytes)
+        // Only the photo Contacts holds, and nothing stored beside it.
+        #expect(try await repo.contactPhotos(for: freshID).map(\.isContactsOnly) == [true])
     }
 
     @Test func photoNotChosen_notApplied() async throws {

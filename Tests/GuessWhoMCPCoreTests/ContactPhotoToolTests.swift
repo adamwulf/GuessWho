@@ -131,6 +131,57 @@ final class ContactPhotoToolTests: XCTestCase {
         XCTAssertEqual(auditAfterNoOp, auditAfterDelete)
     }
 
+    /// A removed photo stays on the contact, so setting the same bytes again brings it
+    /// back as current, without storing them twice.
+    func testSetDeleteThenSetBringsThePhotoBackWithoutADuplicate() async throws {
+        let fixture = try await productionFixture()
+        defer { fixture.cleanUp() }
+        let ada = MCPProductionFixture.adaGuessWhoID
+
+        func set(_ data: Data) async {
+            let response = await fixture.dispatcher.handle(.contactsSetPhoto(
+                helperId: MCPProductionFixture.helper, messageId: TestMessageID.next(),
+                contactId: ada, mediaType: "image/jpeg",
+                dataBase64: data.base64EncodedString(), idempotencyToken: nil))
+            guard case .acknowledged(_, _, let message) = response else {
+                return XCTFail("expected photo-set acknowledgement")
+            }
+            XCTAssertEqual(message, WireAckMessage.photoSet)
+        }
+        func currentPhoto() async -> Data? {
+            let response = await fixture.dispatcher.handle(.contactsGetPhoto(
+                helperId: MCPProductionFixture.helper, messageId: TestMessageID.next(), contactId: ada))
+            guard case .contactPhoto(_, _, let photo) = response else {
+                XCTFail("expected a photo result")
+                return nil
+            }
+            return photo.dataBase64.flatMap { Data(base64Encoded: $0) }
+        }
+
+        await set(jpegA)
+        let deleted = await fixture.dispatcher.handle(.contactsDeletePhoto(
+            helperId: MCPProductionFixture.helper, messageId: TestMessageID.next(),
+            contactId: ada, idempotencyToken: nil))
+        guard case .acknowledged = deleted else {
+            return XCTFail("expected photo-delete acknowledgement")
+        }
+        let afterDelete = await currentPhoto()
+        XCTAssertNil(afterDelete)
+
+        await set(jpegA)
+
+        let afterSet = await currentPhoto()
+        XCTAssertEqual(afterSet, jpegA)
+        let stored = try await fixture.storedPhotos(forLocalID: MCPProductionFixture.adaLocalID)
+        XCTAssertEqual(stored, [jpegA])
+        let id = try XCTUnwrap(fixture.contact(localID: MCPProductionFixture.adaLocalID)).contactID
+        let items = try await fixture.repository.contactPhotos(for: id)
+        XCTAssertEqual(items.count, 1, "the same bytes aren't stored twice")
+        XCTAssertEqual(items.first?.isCurrent, true)
+        let committed = await fixture.store.committedPhotoWrites
+        XCTAssertEqual(committed.map(\.cleared), [false, true, false])
+    }
+
     func testSetRejectsInvalidMismatchedAndOversizedPayloads() async throws {
         let fixture = try await productionFixture()
         defer { fixture.cleanUp() }

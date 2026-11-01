@@ -261,7 +261,8 @@ Package tests, on both the in-memory store and `FileSystemSidecarStore` with
 - `previousPhoto` is never written. Update the tests that assert it was.
 
 Hand check (needs the app, on iPhone and Mac): every step of Adam's four rules, a
-photo syncing between devices, and the Contacts.app view of each change.
+photo syncing between devices, and the Contacts.app view of each change. The full list is
+in `docs/profile-photos.md`.
 
 ## Not included
 

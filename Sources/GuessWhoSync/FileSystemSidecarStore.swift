@@ -451,7 +451,7 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
     // kick off a download (best-effort) and still return nil, so a
     // referenced-but-not-yet-downloaded blob reads as "pending," NOT an error.
     // (Mirrors `read()`'s `.json` placeholder handling but returns nil rather
-    // than throwing — a missing previous-photo is benign.)
+    // than throwing, because a caller can do without one photo file.)
     public func readBlob(blobId: String, for key: SidecarKey) throws -> Data? {
         let url = blobURL(for: key, blobId: blobId)
         let fm = FileManager.default

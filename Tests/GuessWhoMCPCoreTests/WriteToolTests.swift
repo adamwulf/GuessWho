@@ -164,9 +164,10 @@ final class WriteToolTests: XCTestCase {
     func testReservedFieldNamesRejected() async {
         let fixture = await writableFixture()
         guard let jane = await janeHandle(fixture) else { return XCTFail("no jane") }
-        // previousPhoto would clobber the photo-restore snapshot via the
+        // A photo field would clobber a stored photo's pointer via the
         // type-replace upsert; "note" would overwrite a user note in place.
-        for name in ["previousPhoto", "PreviousPhoto", "note", "Note", "tag"] {
+        for name in ["previousPhoto", "PreviousPhoto", "contactPhoto", "ContactPhoto", "profilePhoto", "ProfilePhoto",
+                     "note", "Note", "tag"] {
             let response = await fixture.dispatcher.handle(.contactsSetCustomField(
                 helperId: Fixture.helper, messageId: TestMessageID.next(),
                 contactId: jane, name: name, type: nil,
@@ -177,7 +178,7 @@ final class WriteToolTests: XCTestCase {
         let fields = await MainActor.run {
             fixture.contacts.fieldsByEffectiveID[Sentinels.guessWhoUUID] ?? []
         }
-        // The snapshot blob is untouched, and no user note was replaced.
+        // The stored photo's cell is untouched, and no user note was replaced.
         XCTAssertTrue(fields.contains { $0.field == "previousPhoto" && $0.type == .blob })
         XCTAssertFalse(fields.contains { value in
             if case .string(let string) = value.value { return string == "clobber" }

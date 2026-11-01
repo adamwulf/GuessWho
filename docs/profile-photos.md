@@ -325,4 +325,22 @@ photos. Repeat with an EXIF-rotated photo and resize the editor while zoomed.
 Also hand-check All Photos on both: see every photo, add one without the current photo
 changing, remove the current photo and see it stay, make an older photo current and
 see its crop come back, delete a photo and the current photo, a photo syncing between
-devices, and the Contacts.app view of each change.
+devices, and the Contacts.app view of each change. Then, on both:
+
+- The viewer's All Photos button versus its X, and View Photo from the grid, which has
+  no such button.
+- Add Photo with no current photo, and the empty state.
+- The crop editor's error alert.
+- Choosing the same photo twice.
+- The monogram returning after Remove and after Delete.
+- All Photos reachable in edit mode, and a drop on the monogram.
+- A file still downloading (Delete refused), a missing file (Delete clears it), and an
+  unreadable older file on Mac.
+- An unsaved + record after adding or swapping: Cancel asks, and Back keeps it.
+- Typed edits plus an All Photos change, then Done and Cancel.
+- Tapping tile edges on wide uncropped photos.
+- VoiceOver.
+- A narrow iPhone and a small Mac window.
+- Done and Add Photo while the file panel is open.
+- `.fullScreenCover` from the sheet on Catalyst, and the full-tile Menu label on Catalyst.
+- The crop sheet opening as the Photos picker closes.

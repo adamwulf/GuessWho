@@ -8,7 +8,7 @@ private struct InjectedPhotoWriteFailure: Error {}
 
 /// Delegates to an in-memory store. Photo writes can fail, can come back re-encoded
 /// the way the real Contacts store can, and are counted.
-private actor PhotoFaultContactStore: ContactStoreProtocol {
+actor PhotoFaultContactStore: ContactStoreProtocol {
     let base: InMemoryContactStore
     private(set) var photoWriteCount = 0
     private var failuresLeft = 0
@@ -396,10 +396,12 @@ struct ContactPhotoLibraryTests {
         defer { fixture.cleanUp() }
         try await fixture.repo.setContactPhoto(for: fixture.id, imageData: photoA)
         let writes = await fixture.contacts.photoWriteCount
+        let envelope = try fixture.envelopeBytes()
 
         try await fixture.repo.setCurrentContactPhoto(for: fixture.id, photoID: try #require(try await fixture.current()).id)
 
         #expect(await fixture.contacts.photoWriteCount == writes)
+        #expect(try fixture.envelopeBytes() == envelope)
     }
 
     @Test(arguments: [false, true]) func deletingRemovesTheFileAndCells(onDisk: Bool) async throws {
@@ -605,15 +607,14 @@ struct ContactPhotoLibraryTests {
         await fixture.contacts.reencodeWrites()
         try await fixture.repo.setContactPhoto(for: fixture.id, imageData: photoA, crop: cropA)
         let writes = await fixture.contacts.photoWriteCount
-        let envelope = try #require(try fixture.store.read(fixture.key))
+        let envelope = try fixture.envelopeBytes()
         let files = try fixture.store.blobIds(for: fixture.key)
 
         try await fixture.repo.setContactPhoto(for: fixture.id, imageData: photoA)
 
         #expect(await fixture.contacts.photoWriteCount == writes)
         #expect(try fixture.store.blobIds(for: fixture.key) == files)
-        let after = try #require(try fixture.store.read(fixture.key))
-        #expect(after.fields.keys.sorted() == envelope.fields.keys.sorted())
+        #expect(try fixture.envelopeBytes() == envelope)
         #expect(try await fixture.current()?.crop == cropA)
     }
 
