@@ -323,7 +323,9 @@ extension GuessWhoSync {
             do {
                 try ctx.write(SidecarEnvelope(schemaVersion: 1, entityID: existing?.entityID ?? key.id, fields: fields))
             } catch {
-                if isNew { removeFile(blobID: pointer.blobId, ctx: ctx) }
+                // After a timeout the envelope can still land, naming this file. If
+                // it never does, the file is an orphan, which is harmless.
+                if isNew, !error.isSidecarTimeout { removeFile(blobID: pointer.blobId, ctx: ctx) }
                 throw error
             }
             return ContactPhotoWrite(pointer: pointer, isNew: isNew)
@@ -385,8 +387,9 @@ extension GuessWhoSync {
         }
     }
 
-    /// The cells are already gone or never landed, so a failure here only leaves
-    /// a file nothing names. It isn't worth failing the change over.
+    /// For a file nothing names: its cells are tombstoned, or a write that named it
+    /// failed outright. A failure here only leaves that file behind, which isn't worth
+    /// failing the change over.
     private func removeFile(blobID: String, ctx: KeyLockedContext) {
         do {
             try ctx.deleteBlob(blobId: blobID)

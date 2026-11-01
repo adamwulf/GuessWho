@@ -295,6 +295,23 @@ private struct TwoDevices {
 
 private enum FixtureError: Error { case noSuchPhoto }
 
+/// Holds an envelope write inside its coordination claim until released, so the store
+/// gives up waiting on a write that later lands.
+private final class HoldingEnvelopeWritesCoordinator: SidecarFileCoordinating, @unchecked Sendable {
+    let release = DispatchSemaphore(value: 0)
+    let finished = DispatchSemaphore(value: 0)
+
+    func coordinateReading(at url: URL, _ body: @escaping (URL) -> Void) throws { body(url) }
+
+    func coordinateWriting(at url: URL, options: NSFileCoordinator.WritingOptions,
+                           _ body: @escaping (URL) -> Void) throws {
+        guard url.pathExtension == "json" else { return body(url) }
+        release.wait()
+        body(url)
+        finished.signal()
+    }
+}
+
 @Suite("Multiple photos on a contact")
 @MainActor
 struct ContactPhotoLibraryTests {
@@ -819,6 +836,35 @@ struct ContactPhotoLibraryTests {
         #expect(try await fixture.items() == before)
         #expect(try fixture.store.blobIds(for: fixture.key).sorted() == files)
         #expect(try await fixture.contactsBytes() == photoA)
+    }
+
+    /// A timeout means the store stopped waiting. The write still runs, so the envelope
+    /// can land after the error, and it needs its file.
+    @Test func aTimedOutEnvelopeWriteKeepsItsFile() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("photo-timeout-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let coordinator = HoldingEnvelopeWritesCoordinator()
+        let store = FileSystemSidecarStore(root: root, ubiquity: FakeUbiquityProvider(), blobCrypto: NoKeyBlobCrypto(),
+                                           coordinatesUbiquitousAccess: true, fileCoordinator: coordinator,
+                                           busyHandler: { _, _, _ in .fail }, perAttemptTimeout: 0.05)
+        let sync = GuessWhoSync(contacts: InMemoryContactStore(), events: InMemoryEventStore(), sidecars: store, deviceID: "test")
+        let key = SidecarKey(kind: .contact, id: Fixture.guessWhoID)
+
+        #expect(throws: SidecarStoreError.timedOut(key)) {
+            try sync.storeContactPhoto(at: key, data: photoA, crop: .existingOrNone, makeCurrent: true,
+                                       systemPhotoDigest: nil)
+        }
+
+        let files = try store.blobIds(for: key)
+        #expect(files.count == 1)
+
+        coordinator.release.signal()
+        #expect(coordinator.finished.wait(timeout: .now() + 5) == .success)
+
+        // The envelope landed after the error, and its photo can be read.
+        let current = try #require(try sync.storedContactPhotos(at: key).current)
+        #expect([current.blobId] == files)
+        #expect(try sync.storedContactPhoto(at: key, blobID: current.blobId)?.data == photoA)
     }
 
     /// A kept Contacts photo stands for what Contacts still holds, so a failed change

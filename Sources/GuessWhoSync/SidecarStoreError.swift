@@ -20,6 +20,15 @@ public enum SidecarStoreError: Error, Equatable {
     case typeValueMismatch(expected: SidecarFieldType, got: JSONValue)
 }
 
+extension Error {
+    /// `.timedOut` means the store stopped waiting, not that the operation failed. It
+    /// keeps running and can still land, so don't undo anything it depends on.
+    var isSidecarTimeout: Bool {
+        if let error = self as? SidecarStoreError, case .timedOut = error { return true }
+        return false
+    }
+}
+
 // `Error.logContext` reflects an enum error into the log. A rejected field value
 // is the user's data, so this leaves it out.
 extension SidecarStoreError: CustomDebugStringConvertible {
