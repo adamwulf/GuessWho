@@ -210,7 +210,9 @@ iPad, and Catalyst.
   pixels wide on a 3x iPhone, where 256 looks soft.
 - The current photo has a visible "Current" label. Placeholders for pending and
   unavailable photos. A photo with no bytes here reads "Not available right now", because
-  its file may be gone rather than downloading, and a read error has its own wording.
+  its file may be gone rather than downloading. A read error has its own wording and no
+  actions, because it can't rule out an older file another device may still read, and the
+  next reload tries again. Its text is plain, since Foundation's names the file.
 - The Mac file panel is modeless, so Done, Add Photo, and the contact card's Choose Photo
   and All Photos are disabled while it's open.
 - Each photo opens a menu: View Photo (the existing `ContactPhotoViewer`), Use as

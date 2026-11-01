@@ -228,6 +228,24 @@ extension GuessWhoSync {
         try sidecars.blobPresence(blobId: blobID, for: key) != .missing
     }
 
+    /// Reads a photo's file. Foundation's text for a failed read names the file, so that
+    /// stops at the log. The store's own plain errors and an older encrypted file this
+    /// device can't open pass through as they are.
+    func readPhotoFile(blobID: String, ctx: KeyLockedContext) throws -> Data? {
+        do {
+            return try ctx.readBlob(blobId: blobID)
+        } catch let error as SidecarStoreError {
+            throw error
+        } catch SidecarBlobCryptoError.cannotDecrypt {
+            throw SidecarBlobCryptoError.cannotDecrypt
+        } catch {
+            Self.photoLog.error("photo file read failed", metadata: error.logMetadata([
+                "id": .string(ctx.key.id), "blobId": .string(blobID),
+            ]))
+            throw ContactPhotoEditError.photoReadFailed
+        }
+    }
+
     /// The photo's bytes and crop under one lock, or nil when it isn't on the contact
     /// or its file hasn't downloaded yet. Asking starts the download.
     func storedContactPhoto(at key: SidecarKey, blobID: String) throws -> ContactPhoto? {
@@ -236,7 +254,7 @@ extension GuessWhoSync {
                   let preferred = ContactPhotoCells.preferred(
                     ContactPhotoCells.live(in: envelope.fields).filter { $0.blobID == blobID }),
                   let pointer = BlobPointer(from: preferred.value),
-                  let data = try ctx.readBlob(blobId: blobID) else { return nil }
+                  let data = try readPhotoFile(blobID: blobID, ctx: ctx) else { return nil }
             var photo = ContactPhoto(data: data, kind: .fullSize, crop: pointer.photoCrop)
             photo.blobID = blobID
             return photo

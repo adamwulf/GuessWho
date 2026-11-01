@@ -39,9 +39,10 @@ and Delete Photo, which asks first and says the photo is removed from all the us
 devices, and that the contact will have no photo if it's current. A photo with no bytes
 here reads "Not available right now" and offers only Delete Photo. The view can't tell a
 file on its way from one that's gone until it tries: the first reports it's still
-downloading and to try again shortly, and the second is cleared. A read that fails has
-its own wording, and offers the same action. A photo this device can't read shows a
-placeholder with no actions, because another device may still read it.
+downloading and to try again shortly, and the second is cleared. A read that fails reads
+"Couldn't load this photo" and has no actions, because a failed read can't rule out an
+older file another device may still read; the next reload tries again. A photo this
+device can't read shows a placeholder with no actions, for the same reason.
 
 The Mac file panel is modeless, so while it's open Done and Add Photo are disabled, as
 are Choose Photo and All Photos on the contact card.
@@ -167,7 +168,8 @@ A `profilePhoto` cell with no `contactPhoto` cell uses its `modifiedAt` for the 
 because the slot keeps the `createdAt` of the contact's first photo across repoints.
 
 `contactPhotoData(for:photoID:)` reads one photo's bytes and crop. A file still
-downloading returns nil and starts its download.
+downloading returns nil and starts its download. A read that fails throws
+`photoReadFailed`, because Foundation's text names the file and must not reach an alert.
 
 `addContactPhoto` stores a photo, and makes it current through `setContactPhoto` if
 the contact shows none.
@@ -180,7 +182,7 @@ can't be read here.
 `deleteContactPhoto` tombstones every live cell naming the photo, then deletes the
 `.dat`. If the photo is current it clears Contacts first, restoring on failure. For
 the photo only Contacts holds, it just clears Contacts. It refuses an older file this
-device can't read. Delete promises the photo is gone from every device, so what it
+device can't read, and a read that fails, which can't rule that out. Delete promises the photo is gone from every device, so what it
 does also depends on the file, checked before any write:
 
 - **Present:** deleted as above.

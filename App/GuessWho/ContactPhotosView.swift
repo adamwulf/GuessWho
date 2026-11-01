@@ -249,14 +249,16 @@ private struct ContactPhotoCell: View {
                     tile
                 }
                 .accessibilityLabel(accessibilityLabel)
-            case .notHere, .undecodable, .readFailed:
+            case .notHere, .undecodable:
                 Menu {
                     Button("Delete Photo", role: .destructive, action: onDelete)
                 } label: {
                     tile
                 }
                 .accessibilityLabel(accessibilityLabel)
-            case .loading, .unavailable:
+            case .loading, .unavailable, .readFailed:
+                // A failed read can't rule out an older file another device may still
+                // read, so there's nothing to offer. The next reload tries again.
                 tile
             }
         }

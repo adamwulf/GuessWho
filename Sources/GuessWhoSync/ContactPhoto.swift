@@ -72,6 +72,9 @@ public enum ContactPhotoEditError: LocalizedError, Equatable {
     case saveInProgress
     case storedPhotoUnreadable
     case photoPending
+    /// Reading the photo's file failed, for a reason other than it being an older
+    /// encrypted one. Foundation's text names the file, so it stops at the log.
+    case photoReadFailed
     case restoreFailed(save: String, restore: String)
 
     public var errorDescription: String? {
@@ -82,6 +85,7 @@ public enum ContactPhotoEditError: LocalizedError, Equatable {
         case .storedPhotoUnreadable:
             return "This photo was saved on another device and can’t be edited here. Choose a new photo to replace it."
         case .photoPending: return "This photo is still downloading. Please try again in a moment."
+        case .photoReadFailed: return "This photo couldn’t be read. Please try again."
         case .restoreFailed(let save, let restore):
             return "The photo could not be saved or restored. Save: \(save) Restore: \(restore)"
         }

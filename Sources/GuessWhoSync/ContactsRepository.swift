@@ -1820,7 +1820,8 @@ public final class ContactsRepository: NSObject {
 
     /// One photo's full bytes and crop. Returns nil while its file is downloading,
     /// which this starts, and throws `.storedPhotoUnreadable` for an older encrypted
-    /// file this device can't open, which also marks the item unavailable.
+    /// file this device can't open, which also marks the item unavailable. Any other
+    /// failed read throws `.photoReadFailed`.
     public func contactPhotoData(for id: ContactID, photoID: String) async throws -> ContactPhoto? {
         guard let contact = contact(id: id) else { return nil }
         do {
@@ -1924,7 +1925,8 @@ public final class ContactsRepository: NSObject {
         }
         guard let sync else { throw SidecarUnavailableError() }
         guard let key = SidecarKey.forContact(contact) else { throw ContactPhotoEditError.photoListChanged }
-        // Another device may still read an older encrypted file, so it stays.
+        // Another device may still read an older encrypted file, so it stays. A read
+        // that fails can't rule that out, so it refuses too.
         _ = try await contactPhotoData(for: id, photoID: photoID)
         // Before clearing Contacts, so a refusal leaves everything as it was.
         let isPending = try await Task.detached(priority: .userInitiated) {

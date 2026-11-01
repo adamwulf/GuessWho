@@ -1272,6 +1272,77 @@ struct ContactPhotoLibraryTests {
         #expect(try await fixture.bytes(older) == photoA)
     }
 
+    /// Makes reading this photo's file really fail, with Foundation's own error: a
+    /// directory sits where the file should be.
+    private func breakFile(blobID: String, in fixture: Fixture) throws {
+        let url = fixture.root.appendingPathComponent("contacts").appendingPathComponent("\(fixture.key.id).\(blobID).dat")
+        try FileManager.default.removeItem(at: url)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+    }
+
+    /// A failed read can't rule out an older file another device may still read, and
+    /// Foundation's text names the file, so every path refuses in plain language.
+    @Test func aFailedReadRefusesDeleteAndSwapInPlainLanguage() async throws {
+        let fixture = try await Fixture(onDisk: true)
+        defer { fixture.cleanUp() }
+        try await fixture.repo.setContactPhoto(for: fixture.id, imageData: photoA)
+        try await fixture.repo.setContactPhoto(for: fixture.id, imageData: photoB)
+        let older = try await fixture.item(with: photoA)
+        try breakFile(blobID: older.id, in: fixture)
+        let envelope = try fixture.envelopeBytes()
+        let writes = await fixture.contacts.photoWriteCount
+
+        await #expect(throws: ContactPhotoEditError.photoReadFailed) {
+            _ = try await fixture.repo.contactPhotoData(for: fixture.id, photoID: older.id)
+        }
+        await #expect(throws: ContactPhotoEditError.photoReadFailed) {
+            try await fixture.repo.deleteContactPhoto(for: fixture.id, photoID: older.id)
+        }
+        await #expect(throws: ContactPhotoEditError.photoReadFailed) {
+            try await fixture.repo.setCurrentContactPhoto(for: fixture.id, photoID: older.id)
+        }
+
+        #expect(try fixture.envelopeBytes() == envelope)
+        #expect(await fixture.contacts.photoWriteCount == writes)
+        #expect(!ContactPhotoEditError.photoReadFailed.localizedDescription.contains(".dat"))
+    }
+
+    /// The same when it's the current photo: delete and crop both read it first.
+    @Test func aFailedReadOfTheCurrentPhotoRefusesInPlainLanguage() async throws {
+        let fixture = try await Fixture(onDisk: true)
+        defer { fixture.cleanUp() }
+        try await fixture.repo.setContactPhoto(for: fixture.id, imageData: photoA)
+        let current = try #require(try await fixture.current())
+        try breakFile(blobID: current.id, in: fixture)
+        let envelope = try fixture.envelopeBytes()
+
+        await #expect(throws: ContactPhotoEditError.photoReadFailed) {
+            try await fixture.repo.deleteContactPhoto(for: fixture.id, photoID: current.id)
+        }
+        await #expect(throws: ContactPhotoEditError.photoReadFailed) {
+            try await fixture.repo.setContactPhotoCrop(for: fixture.id, crop: cropA, originalData: photoA)
+        }
+
+        #expect(try fixture.envelopeBytes() == envelope)
+        #expect(try await fixture.contactsBytes() == photoA)
+        // The list still appears, with that photo current.
+        #expect(try await fixture.items().map(\.id) == [current.id])
+    }
+
+    /// An older encrypted file keeps its own error, which says something more useful.
+    @Test func anUnreadableFileKeepsItsOwnError() async throws {
+        let fixture = try await Fixture(onDisk: true)
+        defer { fixture.cleanUp() }
+        try await fixture.repo.setContactPhoto(for: fixture.id, imageData: photoA)
+        let blobID = try #require(try fixture.store.blobIds(for: fixture.key).first)
+        try await fixture.repo.setContactPhoto(for: fixture.id, imageData: photoB)
+        try fixture.sealFile(blobID: blobID)
+
+        await #expect(throws: ContactPhotoEditError.storedPhotoUnreadable) {
+            _ = try await fixture.repo.contactPhotoData(for: fixture.id, photoID: blobID)
+        }
+    }
+
     /// With nothing stored, an empty list would wrongly say there are no photos.
     @Test func aFailedContactsReadWithNothingStoredStillReportsIt() async throws {
         let fixture = try await Fixture(onDisk: false, contactsPhoto: photoA)

@@ -799,7 +799,7 @@ public final class GuessWhoSync: @unchecked Sendable {
                       !ContactPhotoCells.isDeleted(blobID: pointer.blobId, in: envelope.fields) else { continue }
                 let stored: Data?
                 do {
-                    stored = try ctx.readBlob(blobId: pointer.blobId)
+                    stored = try readPhotoFile(blobID: pointer.blobId, ctx: ctx)
                 } catch SidecarBlobCryptoError.cannotDecrypt {
                     throw UnreadableProfilePhotoError(pointer: pointer, modifiedAt: field.modifiedAt)
                 }
