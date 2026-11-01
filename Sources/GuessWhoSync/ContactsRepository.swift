@@ -1702,13 +1702,17 @@ public final class ContactsRepository: NSObject {
             key = nil
         }
         let shown = await shownPhotoIfKnown(for: id)
-        // Only a stored photo can already be current, and then nothing was kept
-        // above, so returning here writes nothing at all.
+        // Only a stored photo can already be current, and then nothing is kept below,
+        // so returning here writes nothing at all. Contacts must still hold what the
+        // pointer says it does: choosing the photo again heals Contacts that drifted.
         if let imageData, let sync, let key, case .stored = shown {
             let match = try await Task.detached(priority: .userInitiated) {
                 try sync.contactPhotoMatching(imageData, at: key)
             }.value
-            if let match, match.isCurrent, crop == nil || crop == match.pointer.photoCrop { return true }
+            if let match, match.isCurrent, crop == nil || crop == match.pointer.photoCrop,
+               await photoDigest(previousSystemData) == match.pointer.systemPhotoDigest {
+                return true
+            }
         }
         let kept = await keepShownContactsPhoto(shown, key: key)
         Self.saveLog.notice("contact save requested", metadata: [
@@ -1860,8 +1864,11 @@ public final class ContactsRepository: NSObject {
             throw ContactPhotoEditError.photoPending
         }
         let shown = await shownPhotoIfKnown(for: id)
-        if case .stored = shown, stored.current?.blobId == photoID { return }
         let previousSystemData = try await systemPhotoBytes(localID: localID)
+        if case .stored = shown, stored.current?.blobId == photoID,
+           await photoDigest(previousSystemData) == stored.current?.systemPhotoDigest {
+            return
+        }
         let kept = await keepShownContactsPhoto(shown, key: key)
         Self.saveLog.notice("contact save requested", metadata: [
             "op": "setCurrentContactPhoto", "localID": .string(localID),

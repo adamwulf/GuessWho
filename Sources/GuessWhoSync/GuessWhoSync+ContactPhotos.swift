@@ -245,10 +245,18 @@ extension GuessWhoSync {
     }
 
     /// Only a photo the same size can match, so most photos on a contact are never read.
+    /// Older data can hold the same bytes twice, so the current photo is checked first:
+    /// matching its uncropped duplicate would move current off it.
     private func matchingCell(for data: Data, in fields: [String: SidecarCell],
                               ctx: KeyLockedContext) -> ContactPhotoCells.Cell? {
         var incoming: String?
-        for group in Dictionary(grouping: ContactPhotoCells.live(in: fields), by: \.blobID).values {
+        let groups = Dictionary(grouping: ContactPhotoCells.live(in: fields), by: \.blobID).values.sorted { first, second in
+            let firstIsCurrent = first.contains { $0.name == ContactsRepository.profilePhotoFieldName }
+            let secondIsCurrent = second.contains { $0.name == ContactsRepository.profilePhotoFieldName }
+            if firstIsCurrent != secondIsCurrent { return firstIsCurrent }
+            return first[0].blobID < second[0].blobID
+        }
+        for group in groups {
             guard let preferred = ContactPhotoCells.preferred(group),
                   BlobPointer(from: preferred.value)?.byteCount == data.count else { continue }
             do {

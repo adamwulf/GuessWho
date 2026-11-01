@@ -114,8 +114,11 @@ as `setBlobField` does today.
   2. SHA-256 the incoming bytes and compare against the readable photos on the contact.
      On a match, reuse that photo, with `crop ?? its existing crop`. Otherwise store new.
      Only a photo with the same `byteCount` is read and hashed.
-  3. If the match is already current and the crop is unchanged, return without writing
-     to Contacts. This stops a repeated LinkedIn import from churning.
+  3. If the match is already current, the crop is unchanged, and Contacts' digest matches
+     the pointer's `systemPhotoDigest`, return without writing to Contacts. This stops a
+     repeated LinkedIn import from churning, and choosing the photo again heals Contacts
+     that drifted. The group holding `profilePhoto` is checked first, so a duplicate in
+     older data can't take current off the cropped photo.
   4. Write Contacts, then commit, restoring Contacts on failure, as today.
 - Nil image: as step 1, then clear Contacts and tombstone `profilePhoto`. Library
   cells stay. `removeProfilePhoto` keeps its current meaning, and a pointer with no

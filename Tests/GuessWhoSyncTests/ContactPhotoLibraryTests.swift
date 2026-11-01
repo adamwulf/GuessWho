@@ -617,6 +617,84 @@ struct ContactPhotoLibraryTests {
         #expect(try await fixture.current()?.crop == cropA)
     }
 
+    /// Older data can hold the same bytes under two blobIds. Which one a repeat import
+    /// finds first must not depend on dictionary order, or it can match the uncropped
+    /// duplicate, rewrite Contacts, and move current off the cropped photo.
+    private func makeFixtureWithDuplicateOfCurrent() async throws -> (Fixture, current: String) {
+        let fixture = try await Fixture(onDisk: false)
+        let reencoded = photoA + Data([0xEE])
+        await fixture.contacts.seedPhoto(reencoded, for: Fixture.localID)
+        let current = try fixture.plantOlderCell(field: ContactsRepository.profilePhotoFieldName, data: photoA,
+                                                 cellID: ContactPhotoCells.profileCellID, crop: cropA,
+                                                 createdAt: Date(timeIntervalSinceNow: -100),
+                                                 digest: ContactPhotoSourceTracker.digest(reencoded))
+        try fixture.plantOlderCell(field: ContactsRepository.previousPhotoFieldName, data: photoA,
+                                   createdAt: Date(timeIntervalSinceNow: -200))
+        return (fixture, current)
+    }
+
+    @Test func aRepeatOfTheCurrentPhotoMatchesItOverADuplicate() async throws {
+        for _ in 0..<40 {
+            let (fixture, current) = try await makeFixtureWithDuplicateOfCurrent()
+            defer { fixture.cleanUp() }
+            let envelope = try fixture.envelopeBytes()
+
+            try await fixture.repo.setContactPhoto(for: fixture.id, imageData: photoA)
+
+            #expect(await fixture.contacts.photoWriteCount == 0)
+            #expect(try fixture.envelopeBytes() == envelope)
+            #expect(try fixture.sync.currentContactPhotoCell(at: fixture.key)?.pointer.blobId == current)
+        }
+    }
+
+    @Test func aRepeatLinkedInImportMatchesTheCurrentPhotoOverADuplicate() async throws {
+        let profile = LinkedInProfile(photo: .init(
+            dataURL: "data:image/jpeg;base64," + photoA.base64EncodedString(),
+            contentType: "image/jpeg",
+            byteLength: photoA.count
+        ))
+        for _ in 0..<40 {
+            let (fixture, current) = try await makeFixtureWithDuplicateOfCurrent()
+            defer { fixture.cleanUp() }
+
+            _ = try await fixture.repo.applyLinkedIn(profile: profile, to: fixture.id, fields: [.photo])
+
+            #expect(await fixture.contacts.photoWriteCount == 0)
+            let cell = try #require(try fixture.sync.currentContactPhotoCell(at: fixture.key))
+            #expect(cell.pointer.blobId == current)
+            #expect(cell.pointer.photoCrop == cropA)
+        }
+    }
+
+    /// A device can trust the pointer while Contacts holds something else, as on its
+    /// first look at this photo. Choosing the photo again puts Contacts right.
+    @Test(arguments: [false, true]) func choosingTheCurrentPhotoAgainHealsContactsThatDrifted(viaSwap: Bool) async throws {
+        let fixture = try await Fixture(onDisk: false)
+        defer { fixture.cleanUp() }
+        try await fixture.repo.setContactPhoto(for: fixture.id, imageData: photoA, crop: cropA)
+        try await fixture.contacts.base.setImageData(localID: Fixture.localID, imageData: photoB)
+        let otherDefaults = try #require(UserDefaults(suiteName: "PhotoLibraryTests.\(UUID().uuidString)"))
+        let otherDevice = ContactsRepository(contacts: fixture.contacts, sync: fixture.sync,
+                                             notificationCenter: NotificationCenter(),
+                                             photoSourceDefaults: otherDefaults)
+        await otherDevice.reload()
+        let id = try #require(otherDevice.contact(localID: Fixture.localID)).contactID
+        let current = try #require(try fixture.sync.currentContactPhotoCell(at: fixture.key))
+        #expect(try await otherDevice.contactPhotoData(for: id, kind: .fullSize)?.data == photoA, "it trusts the pointer")
+
+        if viaSwap {
+            try await otherDevice.setCurrentContactPhoto(for: id, photoID: current.pointer.blobId)
+        } else {
+            try await otherDevice.setContactPhoto(for: id, imageData: photoA)
+        }
+
+        #expect(try await fixture.contactsBytes() == photoA)
+        let healed = try #require(try fixture.sync.currentContactPhotoCell(at: fixture.key))
+        #expect(healed.pointer.blobId == current.pointer.blobId)
+        #expect(healed.pointer.photoCrop == cropA)
+        #expect(healed.pointer.systemPhotoDigest == ContactPhotoSourceTracker.digest(photoA))
+    }
+
     @Test(arguments: [false, true]) func repeatingTheCurrentPhotoWithANewCropUpdatesIt(onDisk: Bool) async throws {
         let fixture = try await Fixture(onDisk: onDisk)
         defer { fixture.cleanUp() }

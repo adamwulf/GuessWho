@@ -103,6 +103,12 @@ deleted, whatever else still names it: it isn't listed, and it isn't current.
   with its photo. If the crop has the later stamp it also makes that photo current
   again, because a crop writes `profilePhoto`.
 
+Racing swaps, or a crop against a swap, can leave Contacts and `profilePhoto` disagreeing
+on two devices: `profilePhoto` follows the later stamp, and Contacts follows its own
+sync, and a crop doesn't write Contacts at all. A device then treats Contacts' bytes as
+an external change, or on its first look at that photo, trusts the pointer. Choosing the
+photo again puts Contacts right.
+
 **The same image is never stored twice** by a new write. Identity is the bytes'
 SHA-256, compared against the readable photos on the contact, reading only those with
 the same `byteCount`. So re-importing a LinkedIn photo or choosing the same file
@@ -125,8 +131,11 @@ Its steps:
    those bytes again, this store is undone, so they aren't listed twice. The undo
    leaves one tombstoned cell, which nothing shows. If restoring Contacts fails too,
    the stored copy stays, because it's the only one left.
-2. If the bytes match the current photo and the crop is unchanged, return without
-   writing anything, so a repeated import doesn't churn.
+2. If the bytes match the current photo, the crop is unchanged, and Contacts still
+   holds what the pointer's `systemPhotoDigest` says, return without writing anything,
+   so a repeated import doesn't churn. If Contacts has drifted, this writes it again.
+   With the same bytes under two blobIds in older data, the current photo is the one
+   matched.
 3. Write Contacts, then commit. If the commit fails, the repository restores the
    previous system photo and reports the failure. A failure to restore is also
    reported, rather than presented as a successful save.
