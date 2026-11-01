@@ -1820,8 +1820,8 @@ public final class ContactsRepository: NSObject {
 
     /// One photo's full bytes and crop. Returns nil while its file is downloading,
     /// which this starts, and throws `.storedPhotoUnreadable` for an older encrypted
-    /// file this device can't open, which also marks the item unavailable. Any other
-    /// failed read throws `.photoReadFailed`.
+    /// file this device can't open, which also marks the item unavailable. A store
+    /// timeout stays `.timedOut`, and any other failed read throws `.photoReadFailed`.
     public func contactPhotoData(for id: ContactID, photoID: String) async throws -> ContactPhoto? {
         guard let contact = contact(id: id) else { return nil }
         do {

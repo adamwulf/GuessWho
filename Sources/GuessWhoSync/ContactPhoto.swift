@@ -72,8 +72,8 @@ public enum ContactPhotoEditError: LocalizedError, Equatable {
     case saveInProgress
     case storedPhotoUnreadable
     case photoPending
-    /// Reading the photo's file failed, for a reason other than it being an older
-    /// encrypted one. Foundation's text names the file, so it stops at the log.
+    /// Reading the photo's file failed. An older encrypted file and a store timeout
+    /// keep their own errors. Foundation's text names the file, so it stops at the log.
     case photoReadFailed
     case restoreFailed(save: String, restore: String)
 

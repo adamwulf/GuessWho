@@ -172,8 +172,9 @@ A `profilePhoto` cell with no `contactPhoto` cell uses its `modifiedAt` for the 
 because the slot keeps the `createdAt` of the contact's first photo across repoints.
 
 `contactPhotoData(for:photoID:)` reads one photo's bytes and crop. A file still
-downloading returns nil and starts its download. A read that fails throws
-`photoReadFailed`, because Foundation's text names the file and must not reach an alert.
+downloading returns nil and starts its download. A store timeout stays `.timedOut`. Any
+other failed read throws `photoReadFailed`, because Foundation's text names the file and
+must not reach an alert.
 
 `addContactPhoto` stores a photo, and makes it current through `setContactPhoto` if
 the contact shows none.
