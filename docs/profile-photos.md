@@ -39,10 +39,10 @@ and Delete Photo, which asks first and says the photo is removed from all the us
 devices, and that the contact will have no photo if it's current. A photo with no bytes
 here reads "Not available right now" and offers only Delete Photo. The view can't tell
 what that will do until it tries: with an iCloud placeholder here it reports the photo is
-still downloading and to try again shortly, and with none the photo is cleared. A read that fails reads
-"Couldn't load this photo" and has no actions, because a failed read can't rule out an
-older file another device may still read; the next reload tries again. A photo this
-device can't read shows a placeholder with no actions, for the same reason.
+still downloading and to try again shortly, and with none the photo is cleared. A read
+that fails reads "Couldn't load this photo" and has no actions, because a failed read
+can't rule out an older file another device may still read; the next reload tries again.
+A photo this device can't read shows a placeholder with no actions, for the same reason.
 
 The Mac file panel is modeless, so while it's open Done and Add Photo are disabled, as
 are Choose Photo and All Photos on the contact card.

@@ -360,9 +360,9 @@ same per-contact algorithm, dispatching on the number of *distinct, valid*
   A loser's `.dat` files move to the winner before the loser is deleted, because
   a file's name includes its contact's key. If a move or the winner's write fails,
   the moved files go back, best-effort. After a winner's write that timed out they
-  stay, because that write can still land and would then need them. Each side's current photo gets its own
-  `contactPhoto` cell before merging, because both use the fixed `profilePhoto` cell
-  and one pointer loses. A loser file that exists only as an iCloud placeholder stops
+  stay, because that write can still land and would then need them. Each side's
+  current photo gets its own `contactPhoto` cell before merging, because both use the
+  fixed `profilePhoto` cell and one pointer loses. A loser file that exists only as an iCloud placeholder stops
   the merge before any write, as an envelope that hasn't downloaded does, and its
   download starts. A placeholder is never renamed, because its format is private to
   the system.
