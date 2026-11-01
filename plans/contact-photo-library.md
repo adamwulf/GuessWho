@@ -206,9 +206,13 @@ New `App/GuessWho/ContactPhotosView.swift`, presented as a sheet, shared by iPho
 iPad, and Catalyst.
 
 - A grid of photos, newest first, each rendered with its crop through the existing
-  rendering helper, off the main thread, bounded to 256 pixels.
+  rendering helper, off the main thread, bounded to 600 pixels. A tile can be about 540
+  pixels wide on a 3x iPhone, where 256 looks soft.
 - The current photo has a visible "Current" label. Placeholders for pending and
-  unavailable photos.
+  unavailable photos. A photo with no bytes here reads "Not available right now", because
+  its file may be gone rather than downloading, and a read error has its own wording.
+- The Mac file panel is modeless, so Done, Add Photo, and the contact card's Choose Photo
+  and All Photos are disabled while it's open.
 - Each photo opens a menu: View Photo (the existing `ContactPhotoViewer`), Use as
   Current Photo (hidden on the current one), Delete Photo (destructive, with a
   confirmation saying it's removed from all the user's devices, and that the contact

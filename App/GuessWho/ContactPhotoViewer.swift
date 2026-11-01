@@ -10,8 +10,8 @@ struct FullscreenPhoto: Identifiable {
 }
 
 /// Fullscreen, zoomable/pannable presentation of a contact's photo. Shown as a
-/// `.fullScreenCover` from the detail header when the user taps the photo. The
-/// zoom/pan/double-tap mechanics live in a `UIScrollView` (via
+/// `.fullScreenCover` from the detail header when the user taps the photo, and from
+/// View Photo in All Photos. The zoom/pan/double-tap mechanics live in a `UIScrollView` (via
 /// `ZoomableImageView`) rather than SwiftUI gestures: the scroll view gives us
 /// momentum, rubber-band bounce, centered insets, and double-tap-to-zoom for
 /// free, and behaves identically on iPhone/iPad and Mac Catalyst.

@@ -29,16 +29,22 @@ the edit-mode photo menu, always, and from a button in the full-screen viewer op
 from the header. The viewer opened from inside All Photos has no such button.
 
 It shows a grid of photos, newest first, each drawn with its own crop through
-`ContactPhotoRendering`, off the main thread, at up to 256 pixels. The current photo
-is labeled. Each cell loads its own thumbnail, so only visible photos are read.
+`ContactPhotoRendering`, off the main thread, at up to 600 pixels, since a tile can be
+about 540 pixels wide on a 3x iPhone. The current photo is labeled. Each cell loads its
+own thumbnail, so only visible photos are read. VoiceOver reads when each photo was added
+and which is current.
 
 Each photo's menu offers View Photo, Use as Current Photo (not on the current one),
 and Delete Photo, which asks first and says the photo is removed from all the user's
-devices, and that the contact will have no photo if it's current. A photo still
-downloading offers only Delete Photo. The view can't tell a file on its way from one
-that's gone until it tries: the first reports it's still downloading and to try again
-shortly, and the second is cleared. A photo this device can't read shows a placeholder
-with no actions, because another device may still read it.
+devices, and that the contact will have no photo if it's current. A photo with no bytes
+here reads "Not available right now" and offers only Delete Photo. The view can't tell a
+file on its way from one that's gone until it tries: the first reports it's still
+downloading and to try again shortly, and the second is cleared. A read that fails has
+its own wording, and offers the same action. A photo this device can't read shows a
+placeholder with no actions, because another device may still read it.
+
+The Mac file panel is modeless, so while it's open Done and Add Photo are disabled, as
+are Choose Photo and All Photos on the contact card.
 
 Add Photo uses the same pickers and crop editor, and doesn't change the current photo
 unless the contact shows none. Choosing a photo makes it current, restoring that

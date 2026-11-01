@@ -188,6 +188,8 @@ struct ContactDetailView: View {
     // AppKitBridge bundle, NOT a document-picker sheet (see `PhotoChangeModifier`)
     // `photoPickerItem` binds the iOS/iPadOS selection before opening the crop editor.
     @State private var presentingPhotoPicker = false
+    // The Mac file panel is modeless, so All Photos could otherwise open behind it.
+    @State private var isPhotoFilePanelOpen = false
     @State private var photoPickerItem: PhotosPickerItem?
     @State private var photoSaveError: String?
     @State private var photoCropRequest: PhotoCropRequest?
@@ -455,7 +457,8 @@ struct ContactDetailView: View {
         #endif
         .toolbar { toolbarContent }
         .fullScreenCover(item: $fullscreenPhoto, onDismiss: openAllPhotosAfterViewer) { photo in
-            ContactPhotoViewer(image: photo.image, onShowAllPhotos: { showAllPhotosAfterViewer = true })
+            ContactPhotoViewer(image: photo.image,
+                               onShowAllPhotos: isPhotoFilePanelOpen ? nil : { showAllPhotosAfterViewer = true })
         }
         .sheet(isPresented: $showingAllPhotos) { allPhotosSheet }
         // Photo-change UI (picker + error) lives in one modifier to keep the
@@ -479,6 +482,7 @@ struct ContactDetailView: View {
             presentingPhotoPicker: $presentingPhotoPicker,
             photoPickerItem: $photoPickerItem,
             photoSaveError: $photoSaveError,
+            isFilePanelOpen: $isPhotoFilePanelOpen,
             onPick: { item in Task { await applyPickedPhoto(item) } },
             onPickFileData: { data, loadError in Task { await applyRawPhotoData(data, loadError: loadError) } }
         ))
@@ -1532,12 +1536,14 @@ struct ContactDetailView: View {
             // Reframing always starts from the preserved full photo.
             Menu {
                 Button("Choose Photo") { presentingPhotoPicker = true }
+                    .disabled(isPhotoFilePanelOpen)
                 if headerPhoto != nil {
                     Button("Edit Crop") { Task { await editPhotoCrop() } }
                     Button("Reset Crop") { Task { await resetPhotoCrop() } }
                     Button("Remove Photo", role: .destructive) { Task { await removePhoto() } }
                 }
                 Button("All Photos") { showingAllPhotos = true }
+                    .disabled(isPhotoFilePanelOpen)
             } label: {
                 circle
             }

@@ -31,6 +31,9 @@ struct ContactPhotosView: View {
     @State private var presentingPhotoPicker = false
     @State private var photoPickerItem: PhotosPickerItem?
     @State private var photoSaveError: String?
+    /// The Mac file panel is modeless, so the sheet stays clickable behind it. Done would
+    /// drop the file chosen later, and Add Photo would open a second panel.
+    @State private var isFilePanelOpen = false
 
     var body: some View {
         NavigationStack {
@@ -39,14 +42,14 @@ struct ContactPhotosView: View {
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {
-                        Button("Done") { dismiss() }.disabled(isChanging)
+                        Button("Done") { dismiss() }.disabled(isChanging || isFilePanelOpen)
                     }
                     ToolbarItem(placement: .primaryAction) {
-                        Button("Add Photo") { presentingPhotoPicker = true }.disabled(isChanging)
+                        Button("Add Photo") { presentingPhotoPicker = true }.disabled(isChanging || isFilePanelOpen)
                     }
                 }
         }
-        .interactiveDismissDisabled(isChanging)
+        .interactiveDismissDisabled(isChanging || isFilePanelOpen)
         .task(id: loadGeneration) { await reload() }
         // Also how a photo arriving from another device appears.
         .onReceive(NotificationCenter.default.publisher(for: .contactsRepositoryDidReload, object: repository)) { _ in
@@ -84,6 +87,7 @@ struct ContactPhotosView: View {
             presentingPhotoPicker: $presentingPhotoPicker,
             photoPickerItem: $photoPickerItem,
             photoSaveError: $photoSaveError,
+            isFilePanelOpen: $isFilePanelOpen,
             onPick: { item in Task { await addPicked(item) } },
             onPickFileData: { data, loadError in Task { await addFile(data, loadError: loadError) } }
         ))
@@ -97,7 +101,7 @@ struct ContactPhotosView: View {
             } description: {
                 Text("Photos you add to this contact appear here.")
             } actions: {
-                Button("Add Photo") { presentingPhotoPicker = true }
+                Button("Add Photo") { presentingPhotoPicker = true }.disabled(isFilePanelOpen)
             }
         } else {
             ScrollView {
@@ -198,18 +202,24 @@ private struct ContactPhotoCell: View {
     let repository: ContactsRepository
     let contactID: ContactID
     let item: ContactPhotoItem
-    /// Bumped on every reload, so a photo still downloading gets another try.
+    /// Bumped on every reload, so a photo that isn't here yet gets another try.
     let generation: Int
     let onView: () -> Void
     let onUseAsCurrent: () -> Void
     let onDelete: () -> Void
 
+    /// The largest side of a tile's image. A tile can be about 540 pixels wide on a
+    /// 3x iPhone.
+    private nonisolated static let thumbnailMaxDimension: CGFloat = 600
+
     private enum Thumbnail {
         case loading
         case image(UIImage, crop: ContactPhotoCrop?)
-        case pending
+        /// No bytes yet. The file may be downloading, or may be gone for good.
+        case notHere
         case unavailable
         case undecodable
+        case readFailed
     }
 
     private struct LoadKey: Equatable {
@@ -238,12 +248,14 @@ private struct ContactPhotoCell: View {
                 } label: {
                     tile
                 }
-            case .pending, .undecodable:
+                .accessibilityLabel(accessibilityLabel)
+            case .notHere, .undecodable, .readFailed:
                 Menu {
                     Button("Delete Photo", role: .destructive, action: onDelete)
                 } label: {
                     tile
                 }
+                .accessibilityLabel(accessibilityLabel)
             case .loading, .unavailable:
                 tile
             }
@@ -256,7 +268,9 @@ private struct ContactPhotoCell: View {
     private var tile: some View {
         Color.secondary.opacity(0.15)
             .aspectRatio(1, contentMode: .fit)
-            .overlay { tileContent }
+            // An uncropped photo overflows its tile. Clipping only clips drawing, so
+            // without this its overflow would catch taps meant for the next tile.
+            .overlay { tileContent.allowsHitTesting(false) }
             .overlay(alignment: .bottom) {
                 if item.isCurrent {
                     Text("Current")
@@ -268,6 +282,7 @@ private struct ContactPhotoCell: View {
                 }
             }
             .clipShape(RoundedRectangle(cornerRadius: 12))
+            .contentShape(RoundedRectangle(cornerRadius: 12))
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(accessibilityLabel)
     }
@@ -281,12 +296,14 @@ private struct ContactPhotoCell: View {
             Image(uiImage: image)
                 .resizable()
                 .scaledToFill()
-        case .pending:
-            placeholder(systemImage: "icloud.and.arrow.down", text: "Downloading")
+        case .notHere:
+            placeholder(systemImage: "photo", text: "Not available right now")
         case .unavailable:
             placeholder(systemImage: "photo", text: "Not available on this device")
         case .undecodable:
             placeholder(systemImage: "photo", text: "Can’t show this photo")
+        case .readFailed:
+            placeholder(systemImage: "exclamationmark.triangle", text: "Couldn’t load this photo")
         }
     }
 
@@ -303,14 +320,16 @@ private struct ContactPhotoCell: View {
     }
 
     private var accessibilityLabel: String {
-        let description: String
+        var parts = [item.addedAt.map { "Photo added \($0.formatted(date: .abbreviated, time: .omitted))" } ?? "Photo"]
         switch thumbnail {
-        case .loading, .image: description = "Photo"
-        case .pending: description = "Photo, downloading"
-        case .unavailable: description = "Photo, not available on this device"
-        case .undecodable: description = "Photo that can’t be shown"
+        case .loading, .image: break
+        case .notHere: parts.append("not available right now")
+        case .unavailable: parts.append("not available on this device")
+        case .undecodable: parts.append("can’t be shown")
+        case .readFailed: parts.append("couldn’t be loaded")
         }
-        return item.isCurrent ? "\(description), current" : description
+        if item.isCurrent { parts.append("current") }
+        return parts.joined(separator: ", ")
     }
 
     private func load() async {
@@ -319,11 +338,11 @@ private struct ContactPhotoCell: View {
         if case .image(_, let crop) = loaded, crop == item.crop, item.addedAt != nil { return }
         do {
             guard let photo = try await repository.contactPhotoData(for: contactID, photoID: item.id) else {
-                loaded = .pending
+                loaded = .notHere
                 return
             }
             let image = await Task.detached(priority: .userInitiated) {
-                photo.displayImage(maxDimension: 256)
+                photo.displayImage(maxDimension: Self.thumbnailMaxDimension)
             }.value
             guard !Task.isCancelled else { return }
             loaded = image.map { .image($0, crop: photo.crop) } ?? .undecodable
@@ -334,7 +353,7 @@ private struct ContactPhotoCell: View {
             Self.log.error("photo thumbnail load failed", error.logContext([
                 "contactID": contactID.logValue, "photoID": item.id,
             ]))
-            loaded = .pending
+            loaded = .readFailed
         }
     }
 }

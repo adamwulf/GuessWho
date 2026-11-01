@@ -60,6 +60,9 @@ struct PhotoChangeModifier: ViewModifier {
     @Binding var presentingPhotoPicker: Bool
     @Binding var photoPickerItem: PhotosPickerItem?
     @Binding var photoSaveError: String?
+    /// True while the Mac file panel is up. It's modeless, so the caller must keep
+    /// anything from closing its view or starting another panel until this clears.
+    @Binding var isFilePanelOpen: Bool
     let onPick: (PhotosPickerItem) -> Void
     let onPickFileData: (Data?, Error?) -> Void
 
@@ -81,6 +84,7 @@ struct PhotoChangeModifier: ViewModifier {
             .onChange(of: presentingPhotoPicker) { _, isPresenting in
                 guard isPresenting else { return }
                 presentingPhotoPicker = false
+                guard !isFilePanelOpen else { return }
                 presentOpenPanelForPhoto()
             }
             #else
@@ -118,11 +122,13 @@ struct PhotoChangeModifier: ViewModifier {
             photoSaveError = "The photo picker couldn't be opened."
             return
         }
+        isFilePanelOpen = true
         bridge.presentOpenPanel(
             allowedExtensions: ["png", "jpg", "jpeg", "heic", "heif", "gif", "tiff", "bmp", "webp"],
             allowsMultiple: false
         ) { urls in
             // Main thread; an empty array means the user cancelled.
+            isFilePanelOpen = false
             guard let url = urls.first else { return }
             // The in-process panel selection is already blessed against the
             // sandbox, so a same-launch read needs no security-scoped bracket;
