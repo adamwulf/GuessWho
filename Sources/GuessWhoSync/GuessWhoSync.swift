@@ -291,6 +291,7 @@ public final class GuessWhoSync: @unchecked Sendable {
         func deleteBlob(blobId: String) throws { try sidecars.deleteBlob(blobId: blobId, for: key) }
         func blobIds() throws -> [String] { try sidecars.blobIds(for: key) }
         func pendingBlobIds() throws -> [String] { try sidecars.pendingBlobIds(for: key) }
+        func blobPresence(blobId: String) throws -> SidecarBlobPresence { try sidecars.blobPresence(blobId: blobId, for: key) }
     }
 
     /// Run `body` holding `key`'s per-key lock, handing it the one
@@ -803,10 +804,10 @@ public final class GuessWhoSync: @unchecked Sendable {
                     throw UnreadableProfilePhotoError(pointer: pointer, modifiedAt: field.modifiedAt)
                 }
                 guard let data = stored else {
-                    if try ctx.pendingBlobIds().contains(pointer.blobId) {
-                        throw SidecarStoreError.notYetDownloaded(key)
+                    if try ctx.blobPresence(blobId: pointer.blobId) == .missing {
+                        throw MissingProfilePhotoFileError(pointer: pointer, modifiedAt: field.modifiedAt)
                     }
-                    throw MissingProfilePhotoFileError(pointer: pointer, modifiedAt: field.modifiedAt)
+                    throw SidecarStoreError.notYetDownloaded(key)
                 }
                 var photo = ContactPhoto(data: data, kind: .fullSize, crop: pointer.photoCrop)
                 photo.systemPhotoDigest = pointer.systemPhotoDigest

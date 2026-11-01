@@ -543,14 +543,12 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
             // Recover the real `<id>.<blobId>.dat` name from a placeholder, or
             // take the name as-is for a materialized `.dat`.
             let realName: String
+            var isPlaceholder = false
             if fullName.hasSuffix(".dat") {
                 realName = fullName
             } else if let recovered = realBlobNameFromPlaceholder(fullName) {
-                let realURL = directory.appendingPathComponent(recovered)
-                // Surface the blob now so the orphan sweep counts it; kick off
-                // a download so a later read can succeed.
-                try? ubiquity.startDownloading(at: realURL)
                 realName = recovered
+                isPlaceholder = true
             } else {
                 continue
             }
@@ -559,6 +557,9 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
             let middle = realName.dropFirst(prefix.count).dropLast(".dat".count)
             let blobId = String(middle)
             guard !blobId.isEmpty else { continue }
+            // Surface the blob now so the orphan sweep counts it; kick off
+            // a download so a later read can succeed.
+            if isPlaceholder { try? ubiquity.startDownloading(at: directory.appendingPathComponent(realName)) }
             guard seen.insert(blobId).inserted else { continue }
             result.append(blobId)
         }
@@ -571,6 +572,13 @@ public final class FileSystemSidecarStore: SidecarStoreProtocol {
         try blobIds(for: key).filter {
             !FileManager.default.fileExists(atPath: blobURL(for: key, blobId: $0).path)
         }
+    }
+
+    public func blobPresence(blobId: String, for key: SidecarKey) throws -> SidecarBlobPresence {
+        let fm = FileManager.default
+        let url = blobURL(for: key, blobId: blobId)
+        if fm.fileExists(atPath: url.path) { return .local }
+        return fm.fileExists(atPath: placeholderURL(for: url).path) ? .placeholder : .missing
     }
 
     // A rename, so an older encrypted file keeps its bytes. An iCloud placeholder

@@ -225,7 +225,7 @@ extension GuessWhoSync {
 
     /// Whether this photo's file, or a placeholder for it, has reached this device.
     func hasContactPhotoFile(at key: SidecarKey, blobID: String) throws -> Bool {
-        try sidecars.blobIds(for: key).contains(blobID)
+        try sidecars.blobPresence(blobId: blobID, for: key) != .missing
     }
 
     /// The photo's bytes and crop under one lock, or nil when it isn't on the contact

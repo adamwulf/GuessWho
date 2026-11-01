@@ -114,6 +114,9 @@ private final class CommitFailingSidecarStore: SidecarStoreProtocol, @unchecked 
     func deleteBlob(blobId: String, for key: SidecarKey) throws { try base.deleteBlob(blobId: blobId, for: key) }
     func blobIds(for key: SidecarKey) throws -> [String] { try base.blobIds(for: key) }
     func pendingBlobIds(for key: SidecarKey) throws -> [String] { try base.pendingBlobIds(for: key) }
+    func blobPresence(blobId: String, for key: SidecarKey) throws -> SidecarBlobPresence {
+        try base.blobPresence(blobId: blobId, for: key)
+    }
 }
 
 @MainActor
@@ -1490,6 +1493,60 @@ struct ContactPhotoLibraryTests {
         let shown = try #require(try await fixture.repo.contactPhotoData(for: fixture.id, kind: .thumbnail))
         #expect(shown.crop == cropA)
         #expect(try await !fixture.deliverChange())
+    }
+
+    /// Reading a photo happens on display paths, so it must not ask iCloud for every
+    /// contact's files. The folder holds all of them.
+    @Test func readingAPhotoRequestsOnlyItsOwnDownload() async throws {
+        let fixture = try await Fixture(onDisk: true)
+        defer { fixture.cleanUp() }
+        try await fixture.repo.setContactPhoto(for: fixture.id, imageData: photoA)
+        let blobID = try #require(try fixture.store.blobIds(for: fixture.key).first)
+        let directory = fixture.root.appendingPathComponent("contacts")
+        for _ in 0..<25 {
+            let other = "\(UUID().uuidString.lowercased()).\(UUID().uuidString.lowercased()).dat"
+            try Data().write(to: directory.appendingPathComponent(".\(other).icloud"))
+        }
+
+        // The file is missing, with no placeholder of its own.
+        try fixture.store.deleteBlob(blobId: blobID, for: fixture.key)
+        fixture.ubiquity.startDownloadingCalls.removeAll()
+        _ = try await fixture.repo.contactPhotoData(for: fixture.id, kind: .thumbnail)
+        #expect(try !fixture.sync.hasContactPhotoFile(at: fixture.key, blobID: blobID))
+        #expect(fixture.ubiquity.startDownloadingCalls.isEmpty)
+
+        // The file is on its way.
+        let name = "\(fixture.key.id).\(blobID).dat"
+        try Data().write(to: directory.appendingPathComponent(".\(name).icloud"))
+        await #expect(throws: SidecarStoreError.notYetDownloaded(fixture.key)) {
+            _ = try await fixture.repo.contactPhotoData(for: fixture.id, kind: .thumbnail)
+        }
+        #expect(try fixture.sync.hasContactPhotoFile(at: fixture.key, blobID: blobID))
+        #expect(fixture.ubiquity.startDownloadingCalls == [directory.appendingPathComponent(name)])
+    }
+
+    @Test func listingAContactsFilesRequestsOnlyTheirDownloads() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("photo-listing-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let ubiquity = FakeUbiquityProvider()
+        let store = FileSystemSidecarStore(root: root, ubiquity: ubiquity, blobCrypto: NoKeyBlobCrypto(),
+                                           coordinatesUbiquitousAccess: false)
+        let key = SidecarKey(kind: .contact, id: Fixture.guessWhoID)
+        let directory = root.appendingPathComponent("contacts")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        for _ in 0..<25 {
+            let other = "\(UUID().uuidString.lowercased()).\(UUID().uuidString.lowercased()).dat"
+            try Data().write(to: directory.appendingPathComponent(".\(other).icloud"))
+        }
+        let blobID = UUID().uuidString.lowercased()
+        let name = "\(key.id).\(blobID).dat"
+        try Data().write(to: directory.appendingPathComponent(".\(name).icloud"))
+
+        #expect(try store.blobIds(for: key) == [blobID])
+        #expect(ubiquity.startDownloadingCalls == [directory.appendingPathComponent(name)])
+        ubiquity.startDownloadingCalls.removeAll()
+        #expect(try store.pendingBlobIds(for: key) == [blobID])
+        #expect(ubiquity.startDownloadingCalls == [directory.appendingPathComponent(name)])
     }
 
     @Test func aRealPlaceholderStaysPending() async throws {

@@ -1,5 +1,13 @@
 import Foundation
 
+/// Where one blob's file stands on this device.
+public enum SidecarBlobPresence: Sendable {
+    case local
+    /// Only an iCloud placeholder: it exists remotely, and hasn't downloaded.
+    case placeholder
+    case missing
+}
+
 public protocol SidecarStoreProtocol {
     func read(_ key: SidecarKey) throws -> SidecarEnvelope?
     func write(_ envelope: SidecarEnvelope, at key: SidecarKey) throws
@@ -59,6 +67,10 @@ public protocol SidecarStoreProtocol {
     // The blobIds of `key` that exist remotely but aren't on this device yet.
     // Asking starts their downloads.
     func pendingBlobIds(for key: SidecarKey) throws -> [String]
+
+    // Where this one file stands. Cheap enough for display paths: it lists no
+    // directory and requests no download.
+    func blobPresence(blobId: String, for key: SidecarKey) throws -> SidecarBlobPresence
 
     // Give the blob the name it has under `destination`, unchanged, so an older
     // encrypted file moves without being opened. No-op if it is already gone.
@@ -177,6 +189,12 @@ public extension SidecarStoreProtocol {
 
     // Default: a backend with no remote tier has nothing pending.
     func pendingBlobIds(for key: SidecarKey) throws -> [String] { [] }
+
+    // Default: from the two listings. A backend with a directory to scan overrides it.
+    func blobPresence(blobId: String, for key: SidecarKey) throws -> SidecarBlobPresence {
+        if try pendingBlobIds(for: key).contains(blobId) { return .placeholder }
+        return try blobIds(for: key).contains(blobId) ? .local : .missing
+    }
 
     // Default: a backend whose bytes are always local can copy, then delete.
     func moveBlob(blobId: String, from source: SidecarKey, to destination: SidecarKey) throws {
