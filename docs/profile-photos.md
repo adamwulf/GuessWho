@@ -344,30 +344,261 @@ relaunch, unrelated edits, stale crop editors, failed storage writes, pending
 download refresh, and both sync arrival orders. Catalyst rendering tests check
 that large uncropped originals still produce bounded Mail thumbnails after reset.
 
-Hand-check on iPhone/iPad and Mac Catalyst: choose a portrait and a landscape
-image, drag to every edge, pinch to minimum and maximum zoom, cancel a replacement,
-confirm a crop, reopen Edit Crop, reset it, and inspect list/favorite/detail/Mail
-photos. Repeat with an EXIF-rotated photo and resize the editor while zoomed.
+## Hand check
 
-Also hand-check All Photos on both: see every photo, add one without the current photo
-changing, remove the current photo and see it stay, make an older photo current and
-see its crop come back, delete a photo and the current photo, a photo syncing between
-devices, and the Contacts.app view of each change. Then, on both:
+The UI needs the app, so this can't run in the tests. Use throwaway contacts, because
+these steps write to Contacts and sync to your other devices. Have four different images
+ready, A to D, including a portrait and a landscape.
 
-- The viewer's All Photos button versus its X, and View Photo from the grid, which has
-  no such button.
-- Add Photo with no current photo, and the empty state.
-- The crop editor's error alert.
-- Choosing the same photo twice.
-- The monogram returning after Remove and after Delete.
-- All Photos reachable in edit mode, and a drop on the monogram.
-- A file still downloading (Delete refused), a missing file (Delete clears it), and an
-  unreadable older file on Mac.
-- An unsaved + record after adding or swapping: Cancel asks, and Back keeps it.
-- Typed edits plus an All Photos change, then Done and Cancel.
-- Tapping tile edges on wide uncropped photos.
-- VoiceOver.
-- A narrow iPhone and a small Mac window.
-- Done and Add Photo while the file panel is open.
-- `.fullScreenCover` from the sheet on Catalyst, and the full-tile Menu label on Catalyst.
-- The crop sheet opening as the Photos picker closes.
+Do the four rules and "On both" on iPhone and again on Mac. On Mac, "tap" means click, and
+the picker is a file panel.
+
+- **Photo menu:** open the contact, tap Edit, then tap the photo circle. While editing,
+  the checkmark is Done and the red X is Cancel.
+- **Saving a pick:** picking an image opens Crop Photo. Move it, then tap Choose.
+- **Contacts:** Contacts gets the whole image, not the crop. So check which image
+  Contacts.app shows, not how it's framed.
+
+### Rule 1: See all photos, current and previous
+
+1. Open a contact with no photo, then Photo menu → All Photos.
+   Expect "No Photos", "Photos you add to this contact appear here.", and an Add Photo
+   button.
+2. Tap Add Photo and save A, off-center.
+   Expect one tile showing A with that crop, labeled Current, because the contact had no
+   photo. Contacts.app shows A.
+3. Tap Done on the sheet. Photo menu → Choose Photo and save B. Photo menu → All Photos.
+   Expect B first, labeled Current, then A, unlabeled, each with its own crop.
+4. Close the sheet, tap the checkmark, then tap the photo on the card.
+   Expect B full screen, with All Photos at the top left and an X at the top right.
+5. Tap the X, then tap the photo again and tap All Photos.
+   Expect the X to return to the card with no sheet, and All Photos to close the viewer
+   and open the sheet.
+6. Tap A's tile → View Photo.
+   Expect A full screen with its crop, with an X and no All Photos button. The X returns
+   to the sheet.
+
+### Rule 2: Add a photo, remove an old one
+
+Continue with the same contact, with B current.
+
+1. In All Photos, tap Add Photo and save C.
+   Expect C first in the grid. Current stays on B, and the card and Contacts.app still
+   show B.
+2. Tap A's tile → Delete Photo, then Cancel.
+   Expect "Delete this photo?" and "It will be removed from all your devices." Cancel
+   changes nothing.
+3. Do it again and confirm Delete Photo.
+   Expect A gone and Current still on B.
+4. Tap B's tile → Delete Photo.
+   Expect the message to say "It will be removed from all your devices, and this contact
+   will have no photo."
+5. Confirm it and close the sheet.
+   Expect B gone and C not labeled Current, because no other photo takes over. Contacts.app
+   shows no photo, and the card shows the contact's initials.
+
+### Rule 3: Changing a photo keeps the previous one
+
+1. In All Photos, tap C's tile → Use as Current Photo, and close the sheet. Then Photo menu
+   → Choose Photo and save D.
+   Expect the card and Contacts.app to show D. All Photos lists D, labeled Current, and C
+   with its crop.
+2. Photo menu → Remove Photo, then tap the checkmark.
+   Expect no question, no photo in Contacts.app, and the initials on the card. All Photos
+   still lists D and C, neither labeled Current.
+3. Use a contact that has a photo and matches a LinkedIn profile with a different one.
+   Open `https://www.linkedin.com/in/<slug>` in Safari and open the GuessWho extension.
+   It sends the profile on its own. In the sheet that opens in GuessWho, leave the photo
+   row checked, uncheck the rest, and tap Save.
+   Expect the card and Contacts.app to show the LinkedIn photo, uncropped. All Photos lists
+   it, labeled Current, and the old photo with its crop.
+4. Photo menu → Edit Crop and change the crop. Then repeat step 3 with the same profile.
+   Expect no new tile, Current not moving, and the crop you just set kept.
+5. Open a contact whose photo was only ever set in Contacts.app, then All Photos.
+   Expect one tile, labeled Current.
+6. Photo menu → Choose Photo and save an image.
+   Expect it labeled Current, and the old Contacts photo now listed too.
+7. On a contact with stored photos that you've already opened on this device, replace its
+   photo in Contacts.app.
+   Expect the card to show the new image, uncropped, once Contacts delivers the change. All
+   Photos lists it, labeled Current, and every earlier photo stays.
+
+### Rule 4: Swap the current photo
+
+Use a contact with at least two photos with different crops.
+
+1. Tap a tile that isn't current, then the current one.
+   Expect View Photo, Use as Current Photo, and Delete Photo on the first. The current
+   tile has no Use as Current Photo.
+2. Tap Use as Current Photo on the first.
+   Expect Current to move to it and the card to show it with its own crop. Contacts.app
+   shows that image, and the photo it replaced stays in the grid.
+3. Swap back, then Photo menu → Edit Crop.
+   Expect the first photo's crop back exactly as it was, and the editor to start there.
+
+### On both
+
+**Syncing between devices.** Sign both devices in to the same iCloud account.
+
+1. Open All Photos for a contact on the second device. Add a photo on the first.
+   Expect a new tile on the second without closing the sheet. It can read "Not available
+   right now" until the file arrives, then fill in. Don't try Delete on it in that window:
+   see "No file and no placeholder" under [Operations](#operations).
+2. Delete that photo on the first device.
+   Expect the tile to disappear on the second.
+
+**Choosing the same photo twice.** On Mac pick the same file. On iPhone pick the same
+library photo. The match is on exact bytes, so a second tile on iPhone means the picker
+returned different bytes.
+
+1. Photo menu → Choose Photo, pick the current photo's image, and choose a new crop.
+   Expect no new tile, and the same tile still Current with the new crop.
+2. Photo menu → Choose Photo, pick an older photo's image, and tap Choose.
+   Expect no new tile. That tile becomes Current with the crop you just chose, and the
+   photo it replaced stays.
+3. In All Photos, tap Add Photo and pick an older photo's image.
+   Expect no new tile and Current not moving. That tile takes the crop you just chose.
+
+**VoiceOver.** Turn it on and move through each screen.
+
+- The card's photo reads "View photo", "Add photo" with no photo, or "Change photo" while
+  editing.
+- A tile reads "Photo added" and its date, then "current" if it is. A tile for the photo
+  only Contacts holds has no date, so it reads "Photo, current".
+- A tile with no image adds "not available right now" or "not available on this device".
+- Opening a tile with a menu reads its choices, such as View Photo and Delete Photo.
+- The viewer reads "Contact photo" and "Close", plus "All Photos" when opened from the card.
+- The crop editor reads "Photo crop", "Cancel", and "Choose".
+
+**A narrow iPhone and a small Mac window.** Use the narrowest iPhone you have, or the
+Simulator, and shrink the Mac window as far as it goes. Open All Photos on a contact with
+several photos, a crop editor, and the viewer.
+
+- Tiles stay square and 120 to 220 points wide, with as many columns as fit and no sideways
+  scrolling.
+- The Current label and any "Not available" text stay inside the tile.
+- Done and Add Photo stay visible.
+- In the crop editor the circle stays on screen, and Cancel and Choose stay visible.
+- In the viewer the X stays visible and the image stays centered.
+
+**The crop editor.**
+
+1. Save a portrait and a landscape image, dragging to every edge and pinching to minimum
+   and maximum zoom.
+   Expect the circle never to leave the image, and minimum zoom to fill it.
+2. Photo menu → Choose Photo, pick an image, and tap Cancel.
+   Expect nothing to change.
+3. Photo menu → Edit Crop, then Cancel.
+   Expect the editor to start at the stored crop.
+4. Photo menu → Reset Crop.
+   Expect the whole image on the card, and no new tile in All Photos.
+5. Set a crop again, then look at the contact's list row, favorite, card, and on Mac the
+   Mail popover.
+   Expect the same crop on each.
+6. Repeat with an EXIF-rotated photo.
+   Expect it upright, with the crop where you put it.
+7. Resize the editor while zoomed, on Mac or iPad.
+   Expect the image still to cover the circle.
+8. Open Edit Crop on one device, choose a different photo for that contact on another, wait
+   for it to sync, then tap Choose on the first.
+   Expect "Couldn't Save Photo" and "The photo changed while you were editing. Cancel and
+   open the crop editor again." The crop isn't applied.
+
+**The card.**
+
+1. On one contact, Photo menu → Remove Photo, then tap the checkmark. On another, delete the
+   current photo in All Photos.
+   Expect the initials on both. Tapping them opens the picker.
+2. Open the Photo menu on a contact with no photo.
+   Expect Choose Photo and All Photos.
+3. Drop an image on the initials, outside editing.
+   Expect Crop Photo to open. Whether a drag from another app reaches it hasn't been
+   measured since FB24490454 (see [Highlighted emails](highlighted-emails.md)), so note what
+   happens.
+4. Tap + in the People list, add a photo through All Photos, or swap between two, and tap
+   the red X.
+   Expect "Discard changes?". Discard Changes removes the contact and its photos.
+5. On iPhone, tap +, add a photo the same way, and tap Back.
+   Expect no question, and the contact stays with its photo.
+6. Tap Edit, type in a field, change the photo in All Photos, and close the sheet.
+   Expect the typed text still there. The checkmark saves it, and the photo stays changed.
+7. Do it again, but tap the red X and Discard Changes.
+   Expect the typed text gone and the photo change kept, because a photo change saves at
+   once.
+8. Make a wide photo uncropped with Reset Crop, and open All Photos with another photo beside
+   it. Tap close to the edge of each tile.
+   Expect the menu of the tile you tapped.
+
+### iPhone only
+
+iPad uses the same picker, so check it there too if you can.
+
+1. Photo menu → Choose Photo and pick an image.
+   Expect the Photos picker to close and Crop Photo to open on its own, with no second tap
+   and no frozen screen.
+2. Do the same by tapping the initials on a contact with no photo, and with Add Photo in All
+   Photos.
+   Expect the same.
+3. Tap Cancel in the editor, then Choose Photo again.
+   Expect nothing changed, and the picker to open again.
+
+### Mac only
+
+1. Photo menu → Choose Photo and pick an image.
+   Expect a file panel offering image files, then Crop Photo.
+2. On a contact with a photo, open Choose Photo again and leave the panel open. Click the
+   photo in the window.
+   Expect Choose Photo and All Photos dimmed in the menu.
+3. With the panel still open, click the checkmark, then click the photo.
+   Expect the viewer with its X and no All Photos button. Close it.
+4. Click Cancel in the panel. Open the viewer again, and the Photo menu.
+   Expect All Photos back in the viewer, and Choose Photo and All Photos enabled in the menu.
+5. In All Photos, click Add Photo and leave the panel open.
+   Expect Done and Add Photo dimmed. On a contact with no photos, the Add Photo in "No
+   Photos" is dimmed too.
+6. Click Cancel in the panel.
+   Expect Done and Add Photo enabled.
+7. In All Photos, click a tile → View Photo.
+   Expect the viewer to fill the window over the sheet. It zooms by pinch and double-click,
+   stays fitted and centered as the window resizes, and the X returns to the sheet as it
+   was.
+8. Click a tile in the middle and at each corner.
+   Expect its menu each time, and no arrow or button frame on the tile.
+
+### Files that aren't here
+
+**Setup, on Mac.** Help → Open iCloud Folder opens the synced folder in Finder. Photos are in
+`contacts`, named `<contact-uuid>.<photo-uuid>.dat`. To find one, add a new image to a
+throwaway contact, then sort by Date Modified. The newest `.dat` is that photo. Both
+setups below change the file in iCloud, so every device sees the result.
+
+**A missing file.** Delete the `.dat` in Finder.
+
+- The tile reads "Not available right now", and its menu offers only Delete Photo.
+- If it's current and Contacts has the photo, the card shows Contacts' copy, uncropped, and
+  the tile stays labeled Current.
+- Delete Photo clears the tile.
+
+**An older file this device can't read.** A file with no marker counts as an older encrypted
+one. In Terminal, run this with the file's path, which you can drag in from Finder:
+
+```sh
+printf 'not a photo' > "<path to the .dat>"
+```
+
+- The tile reads "Not available on this device" and has no menu.
+- If it's current, the card shows Contacts' copy, uncropped.
+- Photo menu → Edit Crop shows "Couldn't update photo" and "This photo was saved on another
+  device and can't be edited here. Choose a new photo to replace it."
+- Choose Photo still works, and the old tile stays listed.
+
+**A file still downloading: developer-only.** iCloud decides when a file is a placeholder, so
+this can't be set up on demand. The tile reads "Not available right now", and Delete Photo
+shows "Couldn't update photo" and "This photo is still downloading. Please try again in a
+moment." Nothing changes. `deletingAnUndownloadedPhotoIsRefusedUntilItArrives` and
+`aRefusedDeleteOfTheCurrentPhotoLeavesContactsAndEveryCellAlone` cover it.
+
+**Failed reads: developer-only.** These need storage to fail on demand: a tile reading
+"Couldn't load this photo", "Couldn't Load Photos" with Try Again, and "Couldn't Open Photo".
+`aFailedReadRefusesDeleteAndSwapInPlainLanguage` covers the refusal, but the screens
+themselves have only been compiled.
