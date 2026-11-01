@@ -358,6 +358,8 @@ public enum WireAckMessage {
         "The user declined to delete this contact. Nothing was changed."
     public static let photoSet = "The contact photo was saved."
     public static let photoDeleted = "The photo was removed as the contact's current photo. It stays on the contact."
+    /// contacts_delete_photo on a contact showing no photo.
+    public static let noCurrentPhoto = "This contact has no current photo. Nothing was changed."
     public static let groupDeleted = "The group was deleted. Its contacts were not deleted."
 
     /// Every fixed string above, for the banned-vocabulary test.
@@ -367,7 +369,7 @@ public enum WireAckMessage {
             favoriteSet, favoriteCleared, genericFavoriteSet, genericFavoriteCleared,
             favoritesReordered, guideDeleted, placeDeleted,
             placesReordered, contactDeleted, contactDeleteDeclined,
-            photoSet, photoDeleted,
+            photoSet, photoDeleted, noCurrentPhoto,
             groupDeleted,
         ]
     }

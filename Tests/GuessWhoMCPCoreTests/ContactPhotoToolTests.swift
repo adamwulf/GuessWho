@@ -124,7 +124,8 @@ final class ContactPhotoToolTests: XCTestCase {
         guard case .acknowledged(_, _, let repeatedMessage) = again else {
             return XCTFail("expected idempotent photo-delete acknowledgement")
         }
-        XCTAssertEqual(repeatedMessage, WireAckMessage.photoDeleted)
+        XCTAssertEqual(repeatedMessage, WireAckMessage.noCurrentPhoto)
+        XCTAssertEqual(repeatedMessage, "This contact has no current photo. Nothing was changed.")
         let finalCommitted = await fixture.store.committedPhotoWrites
         XCTAssertEqual(finalCommitted.count, 1, "deleting an absent photo is a no-op")
         let auditAfterNoOp = await fixture.storedAuditEntries()

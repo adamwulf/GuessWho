@@ -3119,7 +3119,7 @@ public actor ToolDispatcher {
                         // Already absent is a successful no-op.
                         return .acknowledged(
                             helperId: helperId, messageId: messageId,
-                            message: WireAckMessage.photoDeleted)
+                            message: WireAckMessage.noCurrentPhoto)
                     }
                     guard try await contacts.setContactPhoto(
                         for: contact.contactID, imageData: nil)
