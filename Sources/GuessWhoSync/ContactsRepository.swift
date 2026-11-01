@@ -1828,7 +1828,7 @@ public final class ContactsRepository: NSObject {
     /// contact shows no photo. Bytes already on the contact are reused.
     public func addContactPhoto(for id: ContactID, imageData: Data, crop: ContactPhotoCrop?) async throws {
         guard let sync else { throw SidecarUnavailableError() }
-        guard let localID = contact(id: id)?.localID else { throw ContactPhotoEditError.photoChanged }
+        guard let localID = contact(id: id)?.localID else { throw ContactPhotoEditError.photoListChanged }
         if case .none = try await shownPhoto(for: id) {
             try await setContactPhoto(for: id, imageData: imageData, crop: crop)
             return
@@ -1850,7 +1850,7 @@ public final class ContactsRepository: NSObject {
         // The photo only Contacts holds is only ever listed as current.
         guard photoID != ContactPhotoItem.contactsPhotoID else { return }
         guard let sync else { throw SidecarUnavailableError() }
-        guard let localID = contact(id: id)?.localID else { throw ContactPhotoEditError.photoChanged }
+        guard let localID = contact(id: id)?.localID else { throw ContactPhotoEditError.photoListChanged }
         guard photoWrites.insert(localID).inserted else { throw ContactPhotoEditError.saveInProgress }
         defer { photoWrites.remove(localID) }
         let key = SidecarKey(kind: .contact, id: try await resolveOrMintGuessWhoID(for: id))
@@ -1858,7 +1858,7 @@ public final class ContactsRepository: NSObject {
             try sync.storedContactPhotos(at: key)
         }.value
         guard stored.photos.contains(where: { $0.pointer.blobId == photoID }) else {
-            throw ContactPhotoEditError.photoChanged
+            throw ContactPhotoEditError.photoListChanged
         }
         guard let chosen = try await contactPhotoData(for: id, photoID: photoID) else {
             throw ContactPhotoEditError.photoPending
@@ -1890,13 +1890,13 @@ public final class ContactsRepository: NSObject {
     /// which this starts. A file that's truly missing doesn't stop the delete, so a
     /// photo stuck waiting for one can always be cleared.
     public func deleteContactPhoto(for id: ContactID, photoID: String) async throws {
-        guard let contact = contact(id: id) else { throw ContactPhotoEditError.photoChanged }
+        guard let contact = contact(id: id) else { throw ContactPhotoEditError.photoListChanged }
         let localID = contact.localID
         guard photoWrites.insert(localID).inserted else { throw ContactPhotoEditError.saveInProgress }
         defer { photoWrites.remove(localID) }
         let shown = try await shownPhoto(for: id)
         if photoID == ContactPhotoItem.contactsPhotoID {
-            guard case .contacts = shown else { throw ContactPhotoEditError.photoChanged }
+            guard case .contacts = shown else { throw ContactPhotoEditError.photoListChanged }
             let previousSystemData = try await systemPhotoBytes(localID: localID)
             Self.saveLog.notice("contact save requested", metadata: [
                 "op": "deleteContactPhoto", "localID": .string(localID), "bytes": "0",
@@ -1906,7 +1906,7 @@ public final class ContactsRepository: NSObject {
             return
         }
         guard let sync else { throw SidecarUnavailableError() }
-        guard let key = SidecarKey.forContact(contact) else { throw ContactPhotoEditError.photoChanged }
+        guard let key = SidecarKey.forContact(contact) else { throw ContactPhotoEditError.photoListChanged }
         // Another device may still read an older encrypted file, so it stays.
         _ = try await contactPhotoData(for: id, photoID: photoID)
         // Before clearing Contacts, so a refusal leaves everything as it was.

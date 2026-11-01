@@ -64,8 +64,11 @@ struct MissingProfilePhotoFileError: Error {
     let modifiedAt: Date
 }
 
-public enum ContactPhotoEditError: LocalizedError {
+public enum ContactPhotoEditError: LocalizedError, Equatable {
+    /// The crop editor's photo is no longer the one showing.
     case photoChanged
+    /// A photo chosen in All Photos has changed or gone.
+    case photoListChanged
     case saveInProgress
     case storedPhotoUnreadable
     case photoPending
@@ -74,6 +77,7 @@ public enum ContactPhotoEditError: LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .photoChanged: return "The photo changed while you were editing. Cancel and open the crop editor again."
+        case .photoListChanged: return "This photo changed. Check All Photos and try again."
         case .saveInProgress: return "A photo is being saved. Please try again."
         case .storedPhotoUnreadable:
             return "This photo was saved on another device and can’t be edited here. Choose a new photo to replace it."

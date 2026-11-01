@@ -1063,14 +1063,14 @@ struct ContactPhotoLibraryTests {
         try fixture.sealFile(blobID: blobID)
         let writes = await fixture.contacts.photoWriteCount
 
-        await #expect(throws: ContactPhotoEditError.self) {
+        await #expect(throws: ContactPhotoEditError.storedPhotoUnreadable) {
             _ = try await fixture.repo.contactPhotoData(for: fixture.id, photoID: blobID)
         }
         #expect(try await fixture.items().first { $0.id == blobID }?.isAvailable == false)
-        await #expect(throws: ContactPhotoEditError.self) {
+        await #expect(throws: ContactPhotoEditError.storedPhotoUnreadable) {
             try await fixture.repo.setCurrentContactPhoto(for: fixture.id, photoID: blobID)
         }
-        await #expect(throws: ContactPhotoEditError.self) {
+        await #expect(throws: ContactPhotoEditError.storedPhotoUnreadable) {
             try await fixture.repo.deleteContactPhoto(for: fixture.id, photoID: blobID)
         }
 
@@ -1086,7 +1086,7 @@ struct ContactPhotoLibraryTests {
         let blobID = try #require(try fixture.store.blobIds(for: fixture.key).first)
         try await fixture.repo.setContactPhoto(for: fixture.id, imageData: photoB)
         try fixture.sealFile(blobID: blobID)
-        await #expect(throws: ContactPhotoEditError.self) {
+        await #expect(throws: ContactPhotoEditError.storedPhotoUnreadable) {
             _ = try await fixture.repo.contactPhotoData(for: fixture.id, photoID: blobID)
         }
 
@@ -1110,7 +1110,7 @@ struct ContactPhotoLibraryTests {
 
         #expect(try await fixture.repo.contactPhotoData(for: fixture.id, photoID: blobID) == nil)
         #expect(try await fixture.items().first { $0.id == blobID }?.isAvailable == true)
-        await #expect(throws: ContactPhotoEditError.self) {
+        await #expect(throws: ContactPhotoEditError.photoPending) {
             try await fixture.repo.setCurrentContactPhoto(for: fixture.id, photoID: blobID)
         }
         #expect(await fixture.contacts.photoWriteCount == writes)
@@ -1213,7 +1213,7 @@ struct ContactPhotoLibraryTests {
         let envelope = try fixture.envelopeBytes()
 
         #expect(try fixture.sync.isContactPhotoFilePending(at: fixture.key, blobID: blobID))
-        #expect(throws: ContactPhotoEditError.self) {
+        #expect(throws: ContactPhotoEditError.photoPending) {
             try fixture.sync.deleteContactPhoto(at: fixture.key, blobID: blobID)
         }
 
@@ -1224,6 +1224,81 @@ struct ContactPhotoLibraryTests {
         let message = ContactPhotoEditError.photoPending.localizedDescription
         #expect(message.contains("still downloading"))
         #expect(message.contains("try again"))
+    }
+
+    // MARK: - What an alert says
+
+    /// These reach alerts, through All Photos and the crop editor.
+    @Test func storeErrorsReadPlainly() {
+        let key = SidecarKey(kind: .contact, id: Fixture.guessWhoID)
+        let pending = SidecarStoreError.notYetDownloaded(key).localizedDescription
+        #expect(pending.contains("still downloading"))
+        #expect(pending.contains("try again"))
+        let busy = SidecarStoreError.timedOut(key).localizedDescription
+        #expect(busy.contains("busy"))
+        #expect(busy.contains("try again"))
+        for error: SidecarStoreError in [.notYetDownloaded(key), .timedOut(key),
+                                         .typeValueMismatch(expected: .note, got: .string("a private value"))] {
+            let message = error.localizedDescription
+            #expect(!message.contains("SidecarStoreError"))
+            #expect(!message.contains(key.id))
+            #expect(!message.contains("a private value"))
+        }
+    }
+
+    /// The contact's own record hasn't downloaded yet: nothing can be read or written,
+    /// and what the user sees is plain.
+    @Test func anUndownloadedEnvelopeGivesAPlainError() async throws {
+        let fixture = try await Fixture(onDisk: true, contactsPhoto: photoA)
+        defer { fixture.cleanUp() }
+        let directory = fixture.root.appendingPathComponent("contacts")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try Data().write(to: directory.appendingPathComponent(".\(fixture.key.id).json.icloud"))
+        let writes = await fixture.contacts.photoWriteCount
+
+        do {
+            _ = try await fixture.items()
+            Issue.record("the list should have reported the download")
+        } catch {
+            #expect(error.localizedDescription.contains("still downloading"))
+            #expect(!error.localizedDescription.contains("SidecarStoreError"))
+        }
+        do {
+            try await fixture.repo.setContactPhoto(for: fixture.id, imageData: photoB)
+            Issue.record("the write should have reported the download")
+        } catch {
+            #expect(error.localizedDescription.contains("still downloading"))
+            #expect(!error.localizedDescription.contains("SidecarStoreError"))
+        }
+        #expect(await fixture.contacts.photoWriteCount == writes)
+        #expect(try await fixture.contactsBytes() == photoA)
+    }
+
+    /// A stale choice in All Photos mustn't talk about a crop editor it never opened.
+    @Test func aStaleChoiceInAllPhotosPointsBackThere() async throws {
+        let fixture = try await Fixture(onDisk: false)
+        defer { fixture.cleanUp() }
+        try await fixture.repo.setContactPhoto(for: fixture.id, imageData: photoA)
+        try await fixture.repo.setContactPhoto(for: fixture.id, imageData: photoB)
+        let older = try await fixture.item(with: photoA)
+        try await fixture.repo.deleteContactPhoto(for: fixture.id, photoID: older.id)
+
+        do {
+            try await fixture.repo.setCurrentContactPhoto(for: fixture.id, photoID: older.id)
+            Issue.record("the deleted photo should have been refused")
+        } catch ContactPhotoEditError.photoListChanged {
+            #expect(ContactPhotoEditError.photoListChanged.localizedDescription == "This photo changed. Check All Photos and try again.")
+        }
+        // The photo only Contacts holds is no longer there to delete.
+        do {
+            try await fixture.repo.deleteContactPhoto(for: fixture.id, photoID: ContactPhotoItem.contactsPhotoID)
+            Issue.record("the stale item should have been refused")
+        } catch ContactPhotoEditError.photoListChanged {
+        }
+        // The engine's own check, for a photo deleted after the repository looked.
+        #expect(throws: ContactPhotoEditError.photoListChanged) {
+            try fixture.sync.setCurrentContactPhoto(at: fixture.key, blobID: older.id, systemPhotoDigest: nil)
+        }
     }
 
     // MARK: - No storage

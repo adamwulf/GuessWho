@@ -359,7 +359,7 @@ extension GuessWhoSync {
                   let preferred = ContactPhotoCells.preferred(
                     ContactPhotoCells.live(in: envelope.fields).filter { $0.blobID == blobID }),
                   let pointer = BlobPointer(from: preferred.value) else {
-                throw ContactPhotoEditError.photoChanged
+                throw ContactPhotoEditError.photoListChanged
             }
             var fields = envelope.fields
             ContactPhotoCells.setCurrent(pointer.with(photoCrop: pointer.photoCrop, systemPhotoDigest: systemPhotoDigest),

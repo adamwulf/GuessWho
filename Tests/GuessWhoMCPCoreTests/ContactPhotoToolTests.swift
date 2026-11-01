@@ -104,6 +104,9 @@ final class ContactPhotoToolTests: XCTestCase {
             return XCTFail("expected photo-delete acknowledgement")
         }
         XCTAssertEqual(deletedMessage, WireAckMessage.photoDeleted)
+        // It says what happened: the photo isn't gone, it just isn't current.
+        XCTAssertTrue(deletedMessage.contains("removed as the contact's current photo"))
+        XCTAssertTrue(deletedMessage.contains("stays on the contact"))
         // Like Remove Photo: the contact shows no photo, and the photo stays on it.
         let stored = try await fixture.storedPhotos(forLocalID: MCPProductionFixture.adaLocalID)
         XCTAssertEqual(stored, [jpegA])
@@ -111,7 +114,9 @@ final class ContactPhotoToolTests: XCTestCase {
         XCTAssertEqual(committedAfterDelete.count, 1)
         XCTAssertEqual(committedAfterDelete.last?.cleared, true)
         let auditAfterDelete = await fixture.storedAuditEntries()
-        XCTAssertEqual(auditAfterDelete.filter { $0.action == .editContact }.count, 1)
+        let editAudit = auditAfterDelete.filter { $0.action == .editContact }
+        XCTAssertEqual(editAudit.count, 1)
+        XCTAssertEqual(editAudit.first?.newValue, "photo removed as current; it stays on the contact")
 
         let again = await fixture.dispatcher.handle(.contactsDeletePhoto(
             helperId: MCPProductionFixture.helper, messageId: TestMessageID.next(),

@@ -357,7 +357,7 @@ public enum WireAckMessage {
     public static let contactDeleteDeclined =
         "The user declined to delete this contact. Nothing was changed."
     public static let photoSet = "The contact photo was saved."
-    public static let photoDeleted = "The contact photo was deleted."
+    public static let photoDeleted = "The photo was removed as the contact's current photo. It stays on the contact."
     public static let groupDeleted = "The group was deleted. Its contacts were not deleted."
 
     /// Every fixed string above, for the banned-vocabulary test.

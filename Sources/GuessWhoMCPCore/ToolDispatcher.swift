@@ -3139,7 +3139,8 @@ public actor ToolDispatcher {
                     await recordAudit(
                         .editContact, kind: .contact, contact: fresh,
                         instanceID: nil, postModifiedAt: nil,
-                        priorValue: "photo (\(prior.count) bytes)", newValue: "photo deleted")
+                        priorValue: "photo (\(prior.count) bytes)",
+                        newValue: "photo removed as current; it stays on the contact")
                     return .acknowledged(
                         helperId: helperId, messageId: messageId,
                         message: WireAckMessage.photoDeleted)
