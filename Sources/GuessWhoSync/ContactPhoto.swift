@@ -85,7 +85,7 @@ public enum ContactPhotoEditError: LocalizedError, Equatable {
         case .storedPhotoUnreadable:
             return "This photo was saved on another device and can’t be edited here. Choose a new photo to replace it."
         case .photoPending: return "This photo is still downloading. Please try again in a moment."
-        case .photoReadFailed: return "This photo couldn’t be read. Please try again."
+        case .photoReadFailed: return "A photo on this contact couldn’t be read. Please try again."
         case .restoreFailed(let save, let restore):
             return "The photo could not be saved or restored. Save: \(save) Restore: \(restore)"
         }
