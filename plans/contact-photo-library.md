@@ -221,9 +221,9 @@ iPad, and Catalyst.
   Current Photo (hidden on the current one), Delete Photo (destructive, with a
   confirmation saying it's removed from all the user's devices, and that the contact
   will have no photo if it's current). A photo still downloading has no bytes to view
-  or choose, so its menu offers only Delete Photo. The view can't tell a file on its way
-  from one that's gone until it tries: the first reports it's still downloading and to
-  try again shortly, and the second is cleared.
+  or choose, so its menu offers only Delete Photo. The view can't tell what that will do
+  until it tries: with an iCloud placeholder here it reports the photo is still downloading
+  and to try again shortly, and with none the photo is cleared.
 - Toolbar: Done and Add Photo. Add Photo reuses the existing pickers and the crop
   editor, then calls `addContactPhoto`. `PhotoChangeModifier` moved to its own file, with
   the shared picked-image decoding, so both views can use it.
