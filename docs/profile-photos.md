@@ -590,13 +590,14 @@ contact.
 - Delete Photo clears the tile and Contacts' copy, and the card shows the initials.
 
 **An older file this device can't read.** A file with no marker counts as an older encrypted
-one. In Terminal, run this with the file's path, which you can drag in from Finder:
+one. In Terminal, type this, ending with a space and with no quotes:
 
 ```sh
-printf 'not a photo' > "<path to the .dat>"
+printf 'not a photo' > 
 ```
 
-Quit and reopen the app, then open the contact.
+Then drag the `.dat` from Finder into the Terminal window, which adds its escaped path, and
+press Return. Quit and reopen the app, then open the contact.
 
 - The card shows Contacts' copy, uncropped.
 - In All Photos, the tile reads "Not available on this device", stays labeled Current, and
