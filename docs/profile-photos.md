@@ -37,9 +37,9 @@ and which is current.
 Each photo's menu offers View Photo, Use as Current Photo (not on the current one),
 and Delete Photo, which asks first and says the photo is removed from all the user's
 devices, and that the contact will have no photo if it's current. A photo with no bytes
-here reads "Not available right now" and offers only Delete Photo. The view can't tell a
-file on its way from one that's gone until it tries: the first reports it's still
-downloading and to try again shortly, and the second is cleared. A read that fails reads
+here reads "Not available right now" and offers only Delete Photo. The view can't tell
+what that will do until it tries: with an iCloud placeholder here it reports the photo is
+still downloading and to try again shortly, and with none the photo is cleared. A read that fails reads
 "Couldn't load this photo" and has no actions, because a failed read can't rule out an
 older file another device may still read; the next reload tries again. A photo this
 device can't read shows a placeholder with no actions, for the same reason.
@@ -186,15 +186,20 @@ can't be read here.
 `deleteContactPhoto` tombstones every live cell naming the photo, then deletes the
 `.dat`. If the photo is current it clears Contacts first, restoring on failure. For
 the photo only Contacts holds, it just clears Contacts. It refuses an older file this
-device can't read, and a read that fails, which can't rule that out. Delete promises the photo is gone from every device, so what it
-does also depends on the file, checked before any write:
+device can't read, and a read that fails, which can't rule that out. Delete promises the
+photo is gone from every device, so what it does also depends on the file, checked before
+any write:
 
 - **Present:** deleted as above.
 - **Only an iCloud placeholder on this device:** a placeholder can't be removed, so the
   file would stay in iCloud. The delete starts its download, throws `photoPending`, and
   changes nothing, including Contacts when the photo is current.
-- **Truly missing, with no placeholder**, as when an older build deleted it: the delete
-  tombstones the cells, so a photo stuck waiting for its file can always be cleared.
+- **No file and no placeholder:** the delete tombstones the cells, so a photo stuck
+  waiting for its file can always be cleared. This doesn't mean the file is gone for good.
+  An older build may have deleted it, but a file still on its way looks identical, because
+  the JSON can land before the file's placeholder does. That file arrives later, named by
+  nothing, and stays in iCloud, because nothing calls `sweepOrphanBlobs`. So here the
+  promise holds for the photo, which no device lists again, but not for that file.
 
 All of these post the same refresh `setContactPhoto` does. A failed Contacts write
 leaves storage unchanged. With no storage (`sync == nil`), the list shows only the

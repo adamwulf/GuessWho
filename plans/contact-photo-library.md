@@ -181,6 +181,8 @@ What it does depends on the file. All of this is checked before any write:
   changes nothing, including Contacts when the photo is current.
 - **Truly missing, with no placeholder** (an older build deleted it, or a dangling
   pointer): the delete tombstones the cells, so a stuck placeholder can always be cleared.
+  A file still on its way looks the same. It arrives later, named by nothing, and stays
+  in iCloud.
 
 All of these post the same refresh `setContactPhoto` does. A failed Contacts write
 leaves storage unchanged. `sync == nil`: the list shows only the Contacts photo, and
