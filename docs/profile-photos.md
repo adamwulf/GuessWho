@@ -410,13 +410,17 @@ Continue with the same contact, with B current.
 2. Photo menu → Remove Photo, then tap the checkmark.
    Expect no question, no photo in Contacts.app, and the initials on the card. All Photos
    still lists D and C, neither labeled Current.
-3. Use a contact that has a photo and matches a LinkedIn profile with a different one.
-   Open `https://www.linkedin.com/in/<slug>` in Safari and open the GuessWho extension.
-   It sends the profile on its own. In the sheet that opens in GuessWho, leave the photo
-   row checked, uncheck the rest, and tap Save.
+3. An import writes to whichever contact it matches, by LinkedIn URL, then email, then name.
+   So pick a profile with a photo, of someone not in your Contacts. Give a throwaway contact
+   that person's name or LinkedIn URL, and a photo of its own. Open
+   `https://www.linkedin.com/in/<slug>` in Safari and open the GuessWho extension, which
+   sends the profile on its own. In the sheet that opens in GuessWho, check that the Existing
+   photo is the throwaway's, and tap Cancel if it isn't. Leave the photo row checked, uncheck
+   the rest, and tap Save.
    Expect the card and Contacts.app to show the LinkedIn photo, uncropped. All Photos lists
    it, labeled Current, and the old photo with its crop.
-4. Photo menu → Edit Crop and change the crop. Then repeat step 3 with the same profile.
+4. Photo menu → Edit Crop and change the crop. Then import the same profile again, checking
+   the Existing photo the same way before Save.
    Expect no new tile, Current not moving, and the crop you just set kept.
 5. Open a contact whose photo was only ever set in Contacts.app, then All Photos.
    Expect one tile, labeled Current.
